@@ -1399,7 +1399,7 @@ function renderSettings() {
       <div class="subtle">Tutti i dati restano solo su questo telefono (localStorage del browser). Esporta un backup se cambi dispositivo.</div>
       <button class="primary" id="exportBtn" style="margin-bottom:8px;">Esporta backup (JSON)</button>
       <label style="margin-top:4px;">Importa backup</label>
-      <input type="file" id="importFile" accept="application/json">
+      <input type="file" id="importFile" accept=".json,application/json,text/plain">
     </div>
     <div class="card">
       <h3>Importa movimenti</h3>
@@ -1583,10 +1583,12 @@ function renderSettings() {
             income: (parsed.recurring&&parsed.recurring.income)||[],
             expenses: (parsed.recurring&&parsed.recurring.expenses)||[],
             portfolio: (parsed.recurring&&parsed.recurring.portfolio)||[]
-          }
+          },
+          snapshots: parsed.snapshots||[],
+          fxHistory: parsed.fxHistory||[]
         };
         saveData(); alert("Backup importato."); renderSettings();
-      } catch(err) { alert("File non valido."); }
+      } catch(err) { alert("File non valido: " + err.message); }
     };
     reader.readAsText(file);
   });
