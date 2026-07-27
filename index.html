@@ -131,7 +131,7 @@ const DEFAULT_CATEGORIES = {
   portfolio: ["Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null },
+  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen2-VL-7B-Instruct" },
   income: [],
   expenses: [],
   portfolio: [],
@@ -670,6 +670,48 @@ function extractDateFromText(text) {
   return dateStr;
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function analyzeReceiptWithAI(file) {
+  const s = data.settings;
+  if (!s.hfToken) throw new Error("no token");
+  const base64 = await fileToBase64(file);
+  const mimeType = file.type || "image/jpeg";
+  const prompt = `Leggi questo scontrino/ricevuta. Rispondi SOLO con un oggetto JSON valido, senza testo aggiuntivo, markdown o spiegazioni, in questo formato esatto: {"amount": numero, "date": "YYYY-MM-DD", "category": "una parola tra Supermercato, Ristoranti, Bar, Trasporti, Salute, Abbigliamento, Casa, Altro"}. Se non riesci a leggere un campo, usa null per quel campo.`;
+  const res = await fetch("https://router.huggingface.co/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${s.hfToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: s.hfModel || "Qwen/Qwen2-VL-7B-Instruct",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } }
+        ]
+      }],
+      max_tokens: 200
+    })
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const json = await res.json();
+  let text = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+  if (!text) throw new Error("empty response");
+  text = text.trim().replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+  const parsed = JSON.parse(text);
+  return {
+    amount: parsed.amount ? Number(parsed.amount) : null,
+    date: parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date) ? parsed.date : null,
+    category: parsed.category || null
+  };
+}
+
 function renderExpenses() {
   document.getElementById("headerTitle").textContent = "Spese";
   const total = yearTotal(data.expenses, thisYear);
@@ -693,6 +735,7 @@ function renderExpenses() {
           <label>Scansiona scontrino (opzionale)</label>
           <input type="file" accept="image/*" capture="environment" id="receiptInput">
           <div id="ocrStatus" class="subtle" style="margin-top:6px;"></div>
+          ${data.settings.hfToken ? '<button class="secondary" type="button" id="aiRetryBtn" style="margin-top:6px; display:none;">Prova a riconoscere anche la categoria (AI)</button>' : ''}
         </div>
         <div class="row2">
           <div><label>Data</label><input type="date" name="date" value="${todayISO}" required></div>
@@ -724,9 +767,11 @@ function renderExpenses() {
   bindCategorySelects();
   document.getElementById("expenseFilterSelect").addEventListener("change", ev=>{ expenseCategoryFilter = ev.target.value; renderExpenses(); });
 
+  let lastReceiptFile = null;
   document.getElementById("receiptInput").addEventListener("change", async ev=>{
     const file = ev.target.files[0];
     if (!file) return;
+    lastReceiptFile = file;
     const statusEl = document.getElementById("ocrStatus");
     statusEl.textContent = "Lettura scontrino in corso… (la prima volta scarica il motore OCR, può richiedere qualche secondo)";
     try {
@@ -742,8 +787,31 @@ function renderExpenses() {
       statusEl.textContent = amount || dateFound
         ? `Rilevato${amount?' importo: '+fmt(amount)+' ALL':''}${dateFound?' · data: '+dateFound:''} — controlla e correggi prima di salvare.`
         : "Non sono riuscito a leggere importo/data automaticamente. Inseriscili manualmente.";
+      const aiBtn = document.getElementById("aiRetryBtn");
+      if (aiBtn) aiBtn.style.display = "inline-block";
     } catch (err) {
       statusEl.textContent = "Errore nella lettura dello scontrino. Inserisci manualmente.";
+    }
+  });
+
+  const aiRetryBtn = document.getElementById("aiRetryBtn");
+  if (aiRetryBtn) aiRetryBtn.addEventListener("click", async ()=>{
+    if (!lastReceiptFile) return;
+    const statusEl = document.getElementById("ocrStatus");
+    statusEl.textContent = "Analisi con AI in corso… (il modello gratuito può metterci 20-30 secondi se era in stand-by)";
+    try {
+      const suggestion = await analyzeReceiptWithAI(lastReceiptFile);
+      const form = document.getElementById("expenseForm");
+      if (suggestion.amount) form.querySelector('[name="amount"]').value = suggestion.amount;
+      if (suggestion.date) form.querySelector('[name="date"]').value = suggestion.date;
+      if (suggestion.category) {
+        const catSelect = form.querySelector(".cat-select");
+        const match = [...catSelect.options].find(o => o.value.toLowerCase() === suggestion.category.toLowerCase());
+        if (match) catSelect.value = match.value;
+      }
+      statusEl.textContent = `AI: importo ${suggestion.amount?fmt(suggestion.amount)+' ALL':'?'} · data ${suggestion.date||'?'} · categoria suggerita "${suggestion.category||'?'}" — controlla prima di salvare.`;
+    } catch (err) {
+      statusEl.textContent = "L'AI non è riuscita a leggere lo scontrino (token non valido, modello non disponibile, o timeout). Usa i valori letti dall'OCR o inserisci manualmente.";
     }
   });
 
@@ -1376,6 +1444,15 @@ function renderSettings() {
       ${recurringBlockPortfolio("Investimenti ricorrenti (es. fondo pensione)")}
     </div>
     <div class="card">
+      <h3>Scansione scontrini con AI (sperimentale, gratis)</h3>
+      <div class="subtle">Usa un modello open source su Hugging Face per leggere lo scontrino e provare a indovinare anche la categoria, non solo importo e data. Crea un token gratuito su <span style="color:#C9A227;">huggingface.co/settings/tokens</span> (Read access) e incollalo qui — resta salvato solo su questo dispositivo.</div>
+      <form class="entry" id="hfForm">
+        <div><label>Token Hugging Face</label><input type="password" name="hfToken" value="${s.hfToken||''}" placeholder="hf_..."></div>
+        <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'Qwen/Qwen2-VL-7B-Instruct'}"></div>
+        <button class="primary" type="submit">Salva</button>
+      </form>
+    </div>
+    <div class="card">
       <h3>Sicurezza</h3>
       <div class="subtle">${s.pinHash ? "Blocco PIN attivo. Richiesto per aprire l'app." : "Nessun blocco impostato. I dati sono comunque solo sul tuo telefono."}</div>
       <form class="entry" id="pinForm">
@@ -1409,6 +1486,15 @@ function renderSettings() {
   `;
 
   bindCategorySelects();
+
+  document.getElementById("hfForm").addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    data.settings.hfToken = (f.get("hfToken")||"").trim();
+    data.settings.hfModel = (f.get("hfModel")||"Qwen/Qwen2-VL-7B-Instruct").trim();
+    saveData();
+    alert("Salvato.");
+  });
 
   document.getElementById("pinForm").addEventListener("submit", async ev=>{
     ev.preventDefault();
