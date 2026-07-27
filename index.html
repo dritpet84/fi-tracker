@@ -699,7 +699,7 @@ async function analyzeReceiptWithAI(file) {
       max_tokens: 200
     })
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) { const bodyText = await res.text(); throw new Error(`HTTP ${res.status}: ${bodyText}`); }
   const json = await res.json();
   let text = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
   if (!text) throw new Error("empty response");
@@ -811,7 +811,7 @@ function renderExpenses() {
       }
       statusEl.textContent = `AI: importo ${suggestion.amount?fmt(suggestion.amount)+' ALL':'?'} · data ${suggestion.date||'?'} · categoria suggerita "${suggestion.category||'?'}" — controlla prima di salvare.`;
     } catch (err) {
-      statusEl.textContent = "L'AI non è riuscita a leggere lo scontrino (token non valido, modello non disponibile, o timeout). Usa i valori letti dall'OCR o inserisci manualmente.";
+      statusEl.textContent = "Errore AI: " + String(err.message||err).slice(0,200);
     }
   });
 
