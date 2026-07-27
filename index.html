@@ -11,6 +11,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2248%22 fill=%22%2312213A%22 stroke=%22%23C9A227%22 stroke-width=%224%22/><text x=%2250%22 y=%2264%22 font-size=%2244%22 text-anchor=%22middle%22 fill=%22%23C9A227%22 font-family=%22serif%22>L</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -1171,6 +1172,106 @@ function csvImportBlock() {
   </div>`;
 }
 
+// ---------- Google Drive sync ----------
+const GOOGLE_CLIENT_ID = "270840494208-cumofp8s8od3ov1436913811ms7f0nut.apps.googleusercontent.com";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const DRIVE_FILENAME = "fi-tracker-backup.json";
+let gDriveToken = null;
+let gTokenClient = null;
+
+function initGoogleClient() {
+  if (!window.google || !google.accounts || gTokenClient) return;
+  gTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: DRIVE_SCOPE,
+    callback: (resp) => {
+      if (resp && resp.access_token) {
+        gDriveToken = resp.access_token;
+        renderSettings();
+      }
+    }
+  });
+}
+function connectGoogleDrive() {
+  if (!window.google || !google.accounts) { alert("Google non è ancora pronto, riprova tra un secondo."); return; }
+  if (!gTokenClient) initGoogleClient();
+  gTokenClient.requestAccessToken();
+}
+async function findDriveFileId() {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=name%3D%27${DRIVE_FILENAME}%27+and+trashed%3Dfalse&spaces=drive&fields=files(id,name)`, {
+    headers: { Authorization: `Bearer ${gDriveToken}` }
+  });
+  const json = await res.json();
+  return (json.files && json.files[0]) ? json.files[0].id : null;
+}
+async function uploadToDrive() {
+  if (!gDriveToken) { alert("Connetti prima Google Drive."); return; }
+  const statusEl = document.getElementById("driveStatus");
+  statusEl.textContent = "Caricamento in corso...";
+  try {
+    const fileId = await findDriveFileId();
+    const metadata = { name: DRIVE_FILENAME, mimeType: "application/json" };
+    const content = JSON.stringify(data);
+    const boundary = "-------fitracker";
+    const multipartBody =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${fileId?"{}":JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+    const url = fileId
+      ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
+      : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+    const res = await fetch(url, {
+      method: fileId ? "PATCH" : "POST",
+      headers: { Authorization: `Bearer ${gDriveToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+      body: multipartBody
+    });
+    if (!res.ok) throw new Error(await res.text());
+    data.settings.lastDriveSync = todayISO;
+    saveData();
+    statusEl.textContent = "Backup caricato su Google Drive (" + todayISO + ").";
+  } catch (err) {
+    statusEl.textContent = "Errore nel caricamento su Drive. Riprova.";
+  }
+}
+async function downloadFromDrive() {
+  if (!gDriveToken) { alert("Connetti prima Google Drive."); return; }
+  const statusEl = document.getElementById("driveStatus");
+  statusEl.textContent = "Scaricamento in corso...";
+  try {
+    const fileId = await findDriveFileId();
+    if (!fileId) { statusEl.textContent = "Nessun backup trovato su Drive. Carica prima una volta."; return; }
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+      headers: { Authorization: `Bearer ${gDriveToken}` }
+    });
+    const parsed = await res.json();
+    data = {
+      settings: Object.assign({}, DEFAULT_DATA.settings, parsed.settings||{}),
+      income: parsed.income||[], expenses: parsed.expenses||[], portfolio: parsed.portfolio||[],
+      categories: {
+        income: (parsed.categories&&parsed.categories.income)||DEFAULT_CATEGORIES.income,
+        expenses: (parsed.categories&&parsed.categories.expenses)||DEFAULT_CATEGORIES.expenses,
+        portfolio: (parsed.categories&&parsed.categories.portfolio)||DEFAULT_CATEGORIES.portfolio
+      },
+      categoryBudgets: {
+        income: (parsed.categoryBudgets&&parsed.categoryBudgets.income)||{},
+        expenses: (parsed.categoryBudgets&&parsed.categoryBudgets.expenses)||{},
+        portfolio: (parsed.categoryBudgets&&parsed.categoryBudgets.portfolio)||{}
+      },
+      recurring: {
+        income: (parsed.recurring&&parsed.recurring.income)||[],
+        expenses: (parsed.recurring&&parsed.recurring.expenses)||[],
+        portfolio: (parsed.recurring&&parsed.recurring.portfolio)||[]
+      },
+      snapshots: parsed.snapshots||[],
+      fxHistory: parsed.fxHistory||[]
+    };
+    saveData();
+    statusEl.textContent = "Dati aggiornati da Google Drive.";
+    renderSettings();
+  } catch (err) {
+    statusEl.textContent = "Errore nello scaricamento da Drive.";
+  }
+}
+
 function renderSettings() {
   document.getElementById("headerTitle").textContent = "Assunzioni";
   const s = data.settings;
@@ -1224,6 +1325,16 @@ function renderSettings() {
       ${s.pinHash ? '<button class="secondary" id="removePinBtn" style="margin-top:8px;">Rimuovi PIN</button>' : ''}
     </div>
     <div class="card">
+      <h3>Sincronizza con Google Drive</h3>
+      <div class="subtle">Salva i tuoi dati su Google Drive per averli identici sia da telefono che da PC.</div>
+      <div id="driveStatus" class="subtle" style="margin-bottom:8px;">${gDriveToken ? "Connesso a Google Drive." : "Non connesso."}${s.lastDriveSync ? " Ultimo caricamento: "+s.lastDriveSync+"." : ""}</div>
+      <div class="row2">
+        <button class="secondary" type="button" id="driveConnectBtn">${gDriveToken ? "Riconnetti" : "Connetti Google Drive"}</button>
+        <button class="primary" type="button" id="driveUploadBtn" ${!gDriveToken?'disabled':''}>Carica su Drive</button>
+      </div>
+      <button class="secondary" type="button" id="driveDownloadBtn" style="margin-top:8px;" ${!gDriveToken?'disabled':''}>Scarica da Drive (sovrascrive i dati locali)</button>
+    </div>
+    <div class="card">
       <h3>Dati</h3>
       <div class="subtle">Tutti i dati restano solo su questo telefono (localStorage del browser). Esporta un backup se cambi dispositivo.</div>
       <button class="primary" id="exportBtn" style="margin-bottom:8px;">Esporta backup (JSON)</button>
@@ -1252,6 +1363,12 @@ function renderSettings() {
   const removeBtn = document.getElementById("removePinBtn");
   if (removeBtn) removeBtn.addEventListener("click", ()=>{
     if (confirm("Rimuovere il blocco PIN?")) { data.settings.pinHash = null; saveData(); renderSettings(); }
+  });
+
+  document.getElementById("driveConnectBtn").addEventListener("click", connectGoogleDrive);
+  document.getElementById("driveUploadBtn").addEventListener("click", uploadToDrive);
+  document.getElementById("driveDownloadBtn").addEventListener("click", ()=>{
+    if (confirm("Questo sovrascriverà i dati presenti su questo dispositivo con quelli salvati su Drive. Continuare?")) downloadFromDrive();
   });
 
   const csvFileInput = document.getElementById("csvFileInput");
@@ -1436,6 +1553,8 @@ async function tryUnlock() {
     input.focus();
   }
 }
+
+window.addEventListener("load", ()=> setTimeout(initGoogleClient, 800));
 
 if (data.settings.pinHash) {
   document.getElementById("app").style.display = "none";
