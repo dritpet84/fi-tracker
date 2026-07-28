@@ -1583,11 +1583,13 @@ function renderSettings() {
     <div class="card">
       <h3>Scansione scontrini con AI (sperimentale, gratis)</h3>
       <div class="subtle">Usa un modello open source su Hugging Face per leggere lo scontrino e provare a indovinare anche la categoria, non solo importo e data. Crea un token gratuito su <span style="color:#C9A227;">huggingface.co/settings/tokens</span> (Read access) e incollalo qui — resta salvato solo su questo dispositivo.</div>
+      <div class="subtle">${s.hfToken ? "Token già salvato (nascosto per sicurezza). Lascia il campo vuoto per mantenerlo invariato, oppure incollane uno nuovo per sostituirlo." : "Nessun token salvato ancora."}</div>
       <form class="entry" id="hfForm">
-        <div><label>Token Hugging Face</label><input type="password" name="hfToken" value="${s.hfToken||''}" placeholder="hf_..."></div>
+        <div><label>Token Hugging Face ${s.hfToken ? '(vuoto = non modificare)' : ''}</label><input type="password" name="hfToken" value="" placeholder="${s.hfToken ? '••••••••' : 'hf_...'}"></div>
         <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'Qwen/Qwen2.5-VL-3B-Instruct'}"></div>
         <button class="primary" type="submit">Salva</button>
       </form>
+      ${s.hfToken ? '<button class="secondary" id="removeHfTokenBtn" style="margin-top:8px;">Rimuovi token</button>' : ''}
     </div>
     <div class="card">
       <h3>Sicurezza</h3>
@@ -1606,10 +1608,20 @@ function renderSettings() {
   document.getElementById("hfForm").addEventListener("submit", ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
-    data.settings.hfToken = (f.get("hfToken")||"").trim();
+    const newToken = (f.get("hfToken")||"").trim();
+    if (newToken) data.settings.hfToken = newToken;
     data.settings.hfModel = (f.get("hfModel")||"Qwen/Qwen2.5-VL-3B-Instruct").trim();
     saveData();
     alert("Salvato.");
+    renderSettings();
+  });
+  const removeHfBtn = document.getElementById("removeHfTokenBtn");
+  if (removeHfBtn) removeHfBtn.addEventListener("click", ()=>{
+    if (confirm("Rimuovere il token Hugging Face? La scansione con AI smetterà di funzionare finché non ne inserisci uno nuovo.")) {
+      data.settings.hfToken = "";
+      saveData();
+      renderSettings();
+    }
   });
 
   document.getElementById("pinForm").addEventListener("submit", async ev=>{
