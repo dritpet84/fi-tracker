@@ -132,7 +132,7 @@ const DEFAULT_CATEGORIES = {
   portfolio: ["Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen2.5-VL-3B-Instruct" },
+  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "meta-llama/Llama-3.2-11B-Vision-Instruct" },
   income: [],
   expenses: [],
   portfolio: [],
@@ -710,7 +710,7 @@ async function analyzeReceiptWithAI(file) {
     method: "POST",
     headers: { Authorization: `Bearer ${s.hfToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: s.hfModel || "Qwen/Qwen2.5-VL-3B-Instruct",
+      model: s.hfModel || "meta-llama/Llama-3.2-11B-Vision-Instruct",
       messages: [{
         role: "user",
         content: [
@@ -1586,7 +1586,7 @@ function renderSettings() {
       <div class="subtle">${s.hfToken ? "Token già salvato (nascosto per sicurezza). Lascia il campo vuoto per mantenerlo invariato, oppure incollane uno nuovo per sostituirlo." : "Nessun token salvato ancora."}</div>
       <form class="entry" id="hfForm">
         <div><label>Token Hugging Face ${s.hfToken ? '(vuoto = non modificare)' : ''}</label><input type="password" name="hfToken" value="" placeholder="${s.hfToken ? '••••••••' : 'hf_...'}"></div>
-        <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'Qwen/Qwen2.5-VL-3B-Instruct'}"></div>
+        <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'meta-llama/Llama-3.2-11B-Vision-Instruct'}"></div>
         <button class="primary" type="submit">Salva</button>
       </form>
       ${s.hfToken ? '<button class="secondary" id="removeHfTokenBtn" style="margin-top:8px;">Rimuovi token</button>' : ''}
@@ -1610,7 +1610,7 @@ function renderSettings() {
     const f = new FormData(ev.target);
     const newToken = (f.get("hfToken")||"").trim();
     if (newToken) data.settings.hfToken = newToken;
-    data.settings.hfModel = (f.get("hfModel")||"Qwen/Qwen2.5-VL-3B-Instruct").trim();
+    data.settings.hfModel = (f.get("hfModel")||"meta-llama/Llama-3.2-11B-Vision-Instruct").trim();
     saveData();
     alert("Salvato.");
     renderSettings();
