@@ -117,6 +117,7 @@ nav.tabs button.active { color:#C9A227; }
     <button data-tab="expenses"><span class="ic">－</span>Spese</button>
     <button data-tab="portfolio"><span class="ic">▤</span>Patrimonio</button>
     <button data-tab="budget"><span class="ic">◧</span>Budget</button>
+    <button data-tab="drive"><span class="ic">☁</span>Drive</button>
     <button data-tab="settings"><span class="ic">⚙</span>Assunzioni</button>
   </nav>
 </div>
@@ -794,6 +795,31 @@ function renderExpenses() {
     if (!file) return;
     lastReceiptFile = file;
     const statusEl = document.getElementById("ocrStatus");
+    const form = document.getElementById("expenseForm");
+
+    if (data.settings.hfToken) {
+      statusEl.textContent = "Lettura scontrino con AI in corso… (può metterci 20-30 secondi se il modello era in stand-by)";
+      try {
+        const suggestion = await analyzeReceiptWithAI(file);
+        if (suggestion.amount) form.querySelector('[name="amount"]').value = suggestion.amount;
+        if (suggestion.date) form.querySelector('[name="date"]').value = suggestion.date;
+        if (suggestion.category) {
+          const catSelect = form.querySelector(".cat-select");
+          const match = [...catSelect.options].find(o => o.value.toLowerCase() === suggestion.category.toLowerCase());
+          if (match) catSelect.value = match.value;
+        }
+        if (suggestion.amount || suggestion.date) {
+          statusEl.textContent = `AI: importo ${suggestion.amount?fmt(suggestion.amount)+' ALL':'?'} · data ${suggestion.date||'?'} · categoria "${suggestion.category||'?'}" — controlla prima di salvare.`;
+          const aiBtn = document.getElementById("aiRetryBtn");
+          if (aiBtn) aiBtn.style.display = "none";
+          return;
+        }
+        statusEl.textContent = "L'AI non ha trovato importo/data. Provo con l'OCR di riserva…";
+      } catch (err) {
+        statusEl.textContent = "AI non disponibile (" + String(err.message||err).slice(0,80) + "), provo con l'OCR di riserva…";
+      }
+    }
+
     statusEl.textContent = "Lettura scontrino in corso… (la prima volta scarica il motore OCR, può richiedere qualche secondo)";
     try {
       const result = await Tesseract.recognize(file, "ita+eng", {
@@ -802,7 +828,6 @@ function renderExpenses() {
       const text = result.data.text;
       const amount = extractAmountFromText(text);
       const dateFound = extractDateFromText(text);
-      const form = document.getElementById("expenseForm");
       if (amount) form.querySelector('[name="amount"]').value = amount;
       if (dateFound) form.querySelector('[name="date"]').value = dateFound;
       statusEl.textContent = amount || dateFound
@@ -1305,7 +1330,7 @@ function initGoogleClient() {
         gDriveToken = resp.access_token;
         saveTokenToSession(resp.access_token, resp.expires_in);
         updateSyncBadge();
-        if (document.getElementById("driveStatus")) renderSettings();
+        if (document.getElementById("driveStatus")) renderDrive();
       }
     }
   });
@@ -1401,7 +1426,7 @@ async function downloadFromDrive(silent) {
     persistLocalOnly();
     if (statusEl) statusEl.textContent = "Dati aggiornati da Google Drive.";
     updateSyncBadge();
-    if (document.getElementById("driveStatus")) renderSettings();
+    if (document.getElementById("driveStatus")) renderDrive();
     else if (document.querySelector("nav.tabs button.active[data-tab='dashboard']")) renderDashboard();
   } catch (err) {
     if (statusEl) statusEl.textContent = "Errore nello scaricamento da Drive.";
@@ -1418,6 +1443,97 @@ function updateSyncBadge() {
     el.textContent = `· Drive sincronizzato ${t.toLocaleTimeString("it-IT",{hour:'2-digit',minute:'2-digit'})}`;
   } else {
     el.textContent = "· Drive connesso";
+  }
+}
+
+function renderDrive() {
+  document.getElementById("headerTitle").textContent = "Google Drive";
+  const s = data.settings;
+  document.getElementById("main").innerHTML = `
+    <div class="card">
+      <h3>Sincronizza con Google Drive</h3>
+      <div class="subtle">Salva i tuoi dati su Google Drive per averli identici sia da telefono che da PC. Dopo la connessione, ogni modifica si carica da sola in background.</div>
+      <div id="driveStatus" class="subtle" style="margin-bottom:8px;">${gDriveToken ? "Connesso a Google Drive." : "Non connesso."}${s.lastDriveSync ? " Ultimo caricamento: "+new Date(s.lastDriveSync).toLocaleString("it-IT")+"." : ""}</div>
+      <div class="row2">
+        <button class="secondary" type="button" id="driveConnectBtn">${gDriveToken ? "Riconnetti" : "Connetti Google Drive"}</button>
+        <button class="primary" type="button" id="driveUploadBtn" ${!gDriveToken?'disabled':''}>Carica su Drive</button>
+      </div>
+      <button class="secondary" type="button" id="driveDownloadBtn" style="margin-top:8px;" ${!gDriveToken?'disabled':''}>Scarica da Drive (sovrascrive i dati locali)</button>
+    </div>
+    <div class="card">
+      <h3>Dati</h3>
+      <div class="subtle">Tutti i dati restano solo su questo telefono (localStorage del browser), oltre a Drive se connesso. Esporta un backup se cambi dispositivo.</div>
+      <button class="primary" id="exportBtn" style="margin-bottom:8px;">Esporta backup (JSON)</button>
+      <label style="margin-top:4px;">Importa backup</label>
+      <input type="file" id="importFile" accept=".json,application/json,text/plain">
+    </div>
+    <div class="card">
+      <h3>Importa movimenti</h3>
+      ${csvImportBlock()}
+    </div>
+  `;
+  document.getElementById("driveConnectBtn").addEventListener("click", connectGoogleDrive);
+  document.getElementById("driveUploadBtn").addEventListener("click", uploadToDrive);
+  document.getElementById("driveDownloadBtn").addEventListener("click", ()=>{
+    if (confirm("Questo sovrascriverà i dati presenti su questo dispositivo con quelli salvati su Drive. Continuare?")) downloadFromDrive();
+  });
+
+  document.getElementById("exportBtn").addEventListener("click", ()=>{
+    const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `fi-tracker-backup-${todayISO}.json`;
+    a.click(); URL.revokeObjectURL(url);
+  });
+  document.getElementById("importFile").addEventListener("change", ev=>{
+    const file = ev.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        data = {
+          settings: Object.assign({}, DEFAULT_DATA.settings, parsed.settings||{}),
+          income: parsed.income||[], expenses: parsed.expenses||[], portfolio: parsed.portfolio||[],
+          categories: {
+            income: (parsed.categories&&parsed.categories.income)||DEFAULT_CATEGORIES.income,
+            expenses: (parsed.categories&&parsed.categories.expenses)||DEFAULT_CATEGORIES.expenses,
+            portfolio: (parsed.categories&&parsed.categories.portfolio)||DEFAULT_CATEGORIES.portfolio
+          },
+          categoryBudgets: {
+            income: (parsed.categoryBudgets&&parsed.categoryBudgets.income)||{},
+            expenses: (parsed.categoryBudgets&&parsed.categoryBudgets.expenses)||{},
+            portfolio: (parsed.categoryBudgets&&parsed.categoryBudgets.portfolio)||{}
+          },
+          recurring: {
+            income: (parsed.recurring&&parsed.recurring.income)||[],
+            expenses: (parsed.recurring&&parsed.recurring.expenses)||[],
+            portfolio: (parsed.recurring&&parsed.recurring.portfolio)||[]
+          },
+          snapshots: parsed.snapshots||[],
+          fxHistory: parsed.fxHistory||[]
+        };
+        saveData(); alert("Backup importato."); renderDrive();
+      } catch(err) { alert("File non valido: " + err.message); }
+    };
+    reader.readAsText(file);
+  });
+
+  const csvFileInput = document.getElementById("csvFileInput");
+  if (csvFileInput) csvFileInput.addEventListener("change", ev=>{
+    const f = ev.target.files[0]; if (f) handleCsvFile(f);
+  });
+  if (csvImportState) {
+    document.getElementById("csvGroupSelect").addEventListener("change", ev=>{
+      csvImportState.group = ev.target.value;
+      csvImportState.category = data.categories[csvImportState.group][0] || "Altro";
+      renderDrive();
+    });
+    document.getElementById("csvCategorySelect").addEventListener("change", ev=>{ csvImportState.category = ev.target.value; });
+    document.getElementById("csvDateCol").addEventListener("change", ev=>{ csvImportState.dateColIdx = Number(ev.target.value); });
+    document.getElementById("csvAmountCol").addEventListener("change", ev=>{ csvImportState.amountColIdx = Number(ev.target.value); });
+    document.getElementById("csvNoteCol").addEventListener("change", ev=>{ csvImportState.noteColIdx = Number(ev.target.value); });
+    document.getElementById("csvConfirmBtn").addEventListener("click", ()=>{ confirmCsvImport(); renderDrive(); });
+    document.getElementById("csvCancelBtn").addEventListener("click", ()=>{ csvImportState = null; renderDrive(); });
   }
 }
 
@@ -1482,27 +1598,6 @@ function renderSettings() {
       </form>
       ${s.pinHash ? '<button class="secondary" id="removePinBtn" style="margin-top:8px;">Rimuovi PIN</button>' : ''}
     </div>
-    <div class="card">
-      <h3>Sincronizza con Google Drive</h3>
-      <div class="subtle">Salva i tuoi dati su Google Drive per averli identici sia da telefono che da PC.</div>
-      <div id="driveStatus" class="subtle" style="margin-bottom:8px;">${gDriveToken ? "Connesso a Google Drive." : "Non connesso."}${s.lastDriveSync ? " Ultimo caricamento: "+s.lastDriveSync+"." : ""}</div>
-      <div class="row2">
-        <button class="secondary" type="button" id="driveConnectBtn">${gDriveToken ? "Riconnetti" : "Connetti Google Drive"}</button>
-        <button class="primary" type="button" id="driveUploadBtn" ${!gDriveToken?'disabled':''}>Carica su Drive</button>
-      </div>
-      <button class="secondary" type="button" id="driveDownloadBtn" style="margin-top:8px;" ${!gDriveToken?'disabled':''}>Scarica da Drive (sovrascrive i dati locali)</button>
-    </div>
-    <div class="card">
-      <h3>Dati</h3>
-      <div class="subtle">Tutti i dati restano solo su questo telefono (localStorage del browser). Esporta un backup se cambi dispositivo.</div>
-      <button class="primary" id="exportBtn" style="margin-bottom:8px;">Esporta backup (JSON)</button>
-      <label style="margin-top:4px;">Importa backup</label>
-      <input type="file" id="importFile" accept=".json,application/json,text/plain">
-    </div>
-    <div class="card">
-      <h3>Importa movimenti</h3>
-      ${csvImportBlock()}
-    </div>
     
   `;
 
@@ -1531,30 +1626,6 @@ function renderSettings() {
   if (removeBtn) removeBtn.addEventListener("click", ()=>{
     if (confirm("Rimuovere il blocco PIN?")) { data.settings.pinHash = null; saveData(); renderSettings(); }
   });
-
-  document.getElementById("driveConnectBtn").addEventListener("click", connectGoogleDrive);
-  document.getElementById("driveUploadBtn").addEventListener("click", uploadToDrive);
-  document.getElementById("driveDownloadBtn").addEventListener("click", ()=>{
-    if (confirm("Questo sovrascriverà i dati presenti su questo dispositivo con quelli salvati su Drive. Continuare?")) downloadFromDrive();
-  });
-
-  const csvFileInput = document.getElementById("csvFileInput");
-  if (csvFileInput) csvFileInput.addEventListener("change", ev=>{
-    const f = ev.target.files[0]; if (f) handleCsvFile(f);
-  });
-  if (csvImportState) {
-    document.getElementById("csvGroupSelect").addEventListener("change", ev=>{
-      csvImportState.group = ev.target.value;
-      csvImportState.category = data.categories[csvImportState.group][0] || "Altro";
-      renderSettings();
-    });
-    document.getElementById("csvCategorySelect").addEventListener("change", ev=>{ csvImportState.category = ev.target.value; });
-    document.getElementById("csvDateCol").addEventListener("change", ev=>{ csvImportState.dateColIdx = Number(ev.target.value); });
-    document.getElementById("csvAmountCol").addEventListener("change", ev=>{ csvImportState.amountColIdx = Number(ev.target.value); });
-    document.getElementById("csvNoteCol").addEventListener("change", ev=>{ csvImportState.noteColIdx = Number(ev.target.value); });
-    document.getElementById("csvConfirmBtn").addEventListener("click", confirmCsvImport);
-    document.getElementById("csvCancelBtn").addEventListener("click", ()=>{ csvImportState = null; renderSettings(); });
-  }
 
   document.getElementById("budgetForm").addEventListener("submit", ev=>{
     ev.preventDefault();
@@ -1659,49 +1730,9 @@ function renderSettings() {
       saveData(); renderSettings();
     });
   });
-
-  document.getElementById("exportBtn").addEventListener("click", ()=>{
-    const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `fi-tracker-backup-${todayISO}.json`;
-    a.click(); URL.revokeObjectURL(url);
-  });
-  document.getElementById("importFile").addEventListener("change", ev=>{
-    const file = ev.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const parsed = JSON.parse(e.target.result);
-        data = {
-          settings: Object.assign({}, DEFAULT_DATA.settings, parsed.settings||{}),
-          income: parsed.income||[], expenses: parsed.expenses||[], portfolio: parsed.portfolio||[],
-          categories: {
-            income: (parsed.categories&&parsed.categories.income)||DEFAULT_CATEGORIES.income,
-            expenses: (parsed.categories&&parsed.categories.expenses)||DEFAULT_CATEGORIES.expenses,
-            portfolio: (parsed.categories&&parsed.categories.portfolio)||DEFAULT_CATEGORIES.portfolio
-          },
-          categoryBudgets: {
-            income: (parsed.categoryBudgets&&parsed.categoryBudgets.income)||{},
-            expenses: (parsed.categoryBudgets&&parsed.categoryBudgets.expenses)||{},
-            portfolio: (parsed.categoryBudgets&&parsed.categoryBudgets.portfolio)||{}
-          },
-          recurring: {
-            income: (parsed.recurring&&parsed.recurring.income)||[],
-            expenses: (parsed.recurring&&parsed.recurring.expenses)||[],
-            portfolio: (parsed.recurring&&parsed.recurring.portfolio)||[]
-          },
-          snapshots: parsed.snapshots||[],
-          fxHistory: parsed.fxHistory||[]
-        };
-        saveData(); alert("Backup importato."); renderSettings();
-      } catch(err) { alert("File non valido: " + err.message); }
-    };
-    reader.readAsText(file);
-  });
 }
 
-const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, budget: renderBudget, settings: renderSettings };
+const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, budget: renderBudget, drive: renderDrive, settings: renderSettings };
 function switchTab(tab) {
   document.querySelectorAll("nav.tabs button").forEach(b=> b.classList.toggle("active", b.dataset.tab===tab));
   RENDERERS[tab]();
