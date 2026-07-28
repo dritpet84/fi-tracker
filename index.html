@@ -132,7 +132,7 @@ const DEFAULT_CATEGORIES = {
   portfolio: ["Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen2.5-VL-7B-Instruct" },
+  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen2.5-VL-3B-Instruct" },
   income: [],
   expenses: [],
   portfolio: [],
@@ -710,7 +710,7 @@ async function analyzeReceiptWithAI(file) {
     method: "POST",
     headers: { Authorization: `Bearer ${s.hfToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: s.hfModel || "Qwen/Qwen2.5-VL-7B-Instruct",
+      model: s.hfModel || "Qwen/Qwen2.5-VL-3B-Instruct",
       messages: [{
         role: "user",
         content: [
@@ -1585,7 +1585,7 @@ function renderSettings() {
       <div class="subtle">Usa un modello open source su Hugging Face per leggere lo scontrino e provare a indovinare anche la categoria, non solo importo e data. Crea un token gratuito su <span style="color:#C9A227;">huggingface.co/settings/tokens</span> (Read access) e incollalo qui — resta salvato solo su questo dispositivo.</div>
       <form class="entry" id="hfForm">
         <div><label>Token Hugging Face</label><input type="password" name="hfToken" value="${s.hfToken||''}" placeholder="hf_..."></div>
-        <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'Qwen/Qwen2.5-VL-7B-Instruct'}"></div>
+        <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'Qwen/Qwen2.5-VL-3B-Instruct'}"></div>
         <button class="primary" type="submit">Salva</button>
       </form>
     </div>
@@ -1607,7 +1607,7 @@ function renderSettings() {
     ev.preventDefault();
     const f = new FormData(ev.target);
     data.settings.hfToken = (f.get("hfToken")||"").trim();
-    data.settings.hfModel = (f.get("hfModel")||"Qwen/Qwen2.5-VL-7B-Instruct").trim();
+    data.settings.hfModel = (f.get("hfModel")||"Qwen/Qwen2.5-VL-3B-Instruct").trim();
     saveData();
     alert("Salvato.");
   });
