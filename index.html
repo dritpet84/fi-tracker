@@ -740,15 +740,30 @@ async function analyzeReceiptWithAI(file) {
           { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } }
         ]
       }],
-      max_tokens: 200
+      max_tokens: 400
     })
   });
   if (!res.ok) { const bodyText = await res.text(); throw new Error(`HTTP ${res.status}: ${bodyText}`); }
   const json = await res.json();
-  let text = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-  if (!text) throw new Error("empty response");
-  text = text.trim().replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
-  const parsed = JSON.parse(text);
+  const message = json.choices && json.choices[0] && json.choices[0].message;
+  let text = "";
+  if (message) {
+    if (typeof message.content === "string") text = message.content;
+    else if (Array.isArray(message.content)) {
+      text = message.content.map(part => (typeof part === "string" ? part : (part.text || ""))).join("");
+    } else if (message.reasoning_content) text = message.reasoning_content;
+  }
+  text = (text || "").trim();
+  if (!text) throw new Error("Risposta vuota dal modello. Dettaglio: " + JSON.stringify(json).slice(0, 300));
+  text = text.replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) text = jsonMatch[0];
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    throw new Error("Il modello non ha risposto in JSON valido: " + text.slice(0, 200));
+  }
   return {
     amount: parsed.amount ? Number(parsed.amount) : null,
     date: parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date) ? parsed.date : null,
