@@ -70,6 +70,7 @@ nav.tabs button.active { color:#C9A227; }
 .cat-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid #24374F; }
 .cat-row:last-child { border-bottom:none; }
 .cat-name { flex:1; font-size:13px; color:#EDE6D6; }
+.cat-name-input { flex:1; font-size:13px; padding:6px 8px; min-width:0; }
 .cat-budget-input { width:104px; font-size:12px; padding:6px 8px; }
 .cat-row button { background:none; border:none; color:#8B3A2F; cursor:pointer; font-size:14px; padding:0 2px; }
 .cat-add-row { display:flex; gap:8px; }
@@ -132,12 +133,14 @@ const DEFAULT_CATEGORIES = {
   portfolio: ["Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "meta-llama/Llama-3.2-11B-Vision-Instruct" },
+  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B" },
   income: [],
   expenses: [],
   portfolio: [],
   categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
   categoryBudgets: { income: {}, expenses: {}, portfolio: {} },
+  macroCategories: { income: [], expenses: [], portfolio: [] },
+  categoryMacroMap: { income: {}, expenses: {}, portfolio: {} },
   recurring: { income: [], expenses: [], portfolio: [] },
   snapshots: [],
   fxHistory: []
@@ -164,6 +167,16 @@ function loadData() {
         income: (parsed.categoryBudgets && parsed.categoryBudgets.income) || {},
         expenses: (parsed.categoryBudgets && parsed.categoryBudgets.expenses) || {},
         portfolio: (parsed.categoryBudgets && parsed.categoryBudgets.portfolio) || {}
+      },
+      macroCategories: {
+        income: (parsed.macroCategories && parsed.macroCategories.income) || [],
+        expenses: (parsed.macroCategories && parsed.macroCategories.expenses) || [],
+        portfolio: (parsed.macroCategories && parsed.macroCategories.portfolio) || []
+      },
+      categoryMacroMap: {
+        income: (parsed.categoryMacroMap && parsed.categoryMacroMap.income) || {},
+        expenses: (parsed.categoryMacroMap && parsed.categoryMacroMap.expenses) || {},
+        portfolio: (parsed.categoryMacroMap && parsed.categoryMacroMap.portfolio) || {}
       },
       recurring: {
         income: (parsed.recurring && parsed.recurring.income) || [],
@@ -314,6 +327,7 @@ let chartInstance = null;
 let categoryChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
+let catManagerOpen = { income:false, expenses:false, portfolio:false };
 
 function freqSelect(selected) {
   return `<select name="frequency">${FREQUENCIES.map(f=>`<option value="${f.key}" ${f.key===(selected||"monthly")?'selected':''}>${f.label}</option>`).join('')}</select>`;
@@ -601,6 +615,7 @@ function renderIncome() {
           <div><label>Importo (ALL)</label><input type="number" name="amount" placeholder="0" required></div>
         </div>
         <div><label>Categoria</label>${categorySelect("income")}</div>
+        <button class="secondary" type="button" id="toggleCatManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.income ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         ${bondOptions ? `<div><label>Bond collegato (opzionale, per cedole)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptions}</select></div>` : ''}
         <div style="display:flex; align-items:center; gap:8px;">
           <input type="checkbox" name="applyTax" id="applyTaxChk" style="width:auto;">
@@ -610,6 +625,11 @@ function renderIncome() {
         <button class="primary" type="submit">Aggiungi</button>
       </form>
     </div>
+    ${catManagerOpen.income ? `<div class="card">
+      <h3>Gestisci categorie · Reddito</h3>
+      <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
+      ${categoryManageBlock("income", "Reddito")}
+    </div>` : ''}
     <div class="card">
       <h3>Storico ${thisYear} <span class="pill">${data.income.length} voci totali</span></h3>
       <div style="margin-bottom:10px;"><label>Filtra per categoria</label><select id="incomeFilterSelect">${incomeFilterOptions}</select></div>
@@ -626,6 +646,8 @@ function renderIncome() {
   `;
   bindCategorySelects();
   document.getElementById("incomeFilterSelect").addEventListener("change", ev=>{ incomeCategoryFilter = ev.target.value; renderIncome(); });
+  document.getElementById("toggleCatManage-income").addEventListener("click", ()=>{ catManagerOpen.income = !catManagerOpen.income; renderIncome(); });
+  if (catManagerOpen.income) bindCategoryManagement("income", renderIncome);
   document.getElementById("incomeForm").addEventListener("submit", ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
@@ -710,7 +732,7 @@ async function analyzeReceiptWithAI(file) {
     method: "POST",
     headers: { Authorization: `Bearer ${s.hfToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: s.hfModel || "meta-llama/Llama-3.2-11B-Vision-Instruct",
+      model: s.hfModel || "Qwen/Qwen3.5-9B",
       messages: [{
         role: "user",
         content: [
@@ -764,10 +786,16 @@ function renderExpenses() {
           <div><label>Importo (ALL)</label><input type="number" name="amount" placeholder="0" required></div>
         </div>
         <div><label>Categoria</label>${categorySelect("expenses")}</div>
+        <button class="secondary" type="button" id="toggleCatManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.expenses ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
     </div>
+    ${catManagerOpen.expenses ? `<div class="card">
+      <h3>Gestisci categorie · Spese</h3>
+      <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
+      ${categoryManageBlock("expenses", "Spese")}
+    </div>` : ''}
     ${allCats.length>0 ? `<div class="card">
       <h3>Categorie: questo mese vs mese scorso</h3>
       <div class="chart-wrap"><canvas id="catChart" height="${Math.max(140, allCats.length*30)}"></canvas></div>
@@ -788,6 +816,8 @@ function renderExpenses() {
   `;
   bindCategorySelects();
   document.getElementById("expenseFilterSelect").addEventListener("change", ev=>{ expenseCategoryFilter = ev.target.value; renderExpenses(); });
+  document.getElementById("toggleCatManage-expenses").addEventListener("click", ()=>{ catManagerOpen.expenses = !catManagerOpen.expenses; renderExpenses(); });
+  if (catManagerOpen.expenses) bindCategoryManagement("expenses", renderExpenses);
 
   let lastReceiptFile = null;
   document.getElementById("receiptInput").addEventListener("change", async ev=>{
@@ -936,6 +966,7 @@ function renderPortfolio() {
       <h3>Nuova posizione</h3>
       <form class="entry" id="portForm">
         <div><label>Tipo</label>${categorySelect("portfolio")}</div>
+        <button class="secondary" type="button" id="toggleCatManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.portfolio ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div class="row2">
           <div><label>Importo nominale</label><input type="number" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option></select></div>
@@ -949,6 +980,11 @@ function renderPortfolio() {
         <button class="primary" type="submit">Aggiungi</button>
       </form>
     </div>
+    ${catManagerOpen.portfolio ? `<div class="card">
+      <h3>Gestisci categorie · Patrimonio</h3>
+      <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
+      ${categoryManageBlock("portfolio", "Patrimonio / Investimenti")}
+    </div>` : ''}
     <div class="card">
       <h3>Allocazione</h3>
       <div class="grid3" style="grid-template-columns:1fr 1fr;">
@@ -1018,6 +1054,8 @@ function renderPortfolio() {
   }
 
   document.getElementById("portFilterSelect").addEventListener("change", ev=>{ portfolioTypeFilter = ev.target.value; renderPortfolio(); });
+  document.getElementById("toggleCatManage-portfolio").addEventListener("click", ()=>{ catManagerOpen.portfolio = !catManagerOpen.portfolio; renderPortfolio(); });
+  if (catManagerOpen.portfolio) bindCategoryManagement("portfolio", renderPortfolio);
 
   document.getElementById("portForm").addEventListener("submit", ev=>{
     ev.preventDefault();
@@ -1069,23 +1107,61 @@ function renderBudget() {
   `;
 }
 
+function bindCategoryManagement(group, refreshFn) {
+  const addBtn = document.querySelector(`[data-catadd="${group}"]`);
+  if (addBtn) addBtn.addEventListener("click", ()=>{
+    const input = document.querySelector(`[data-catinput="${group}"]`);
+    const val = input.value.trim();
+    if (val && !data.categories[group].includes(val)) { data.categories[group].push(val); saveData(); refreshFn(); }
+  });
+  document.querySelectorAll(`[data-catdel]`).forEach(btn=>{
+    const [g, name] = btn.dataset.catdel.split("|");
+    if (g !== group) return;
+    btn.addEventListener("click", ()=>{
+      if (!confirm(`Eliminare la categoria "${name}"? Le voci già registrate la manterranno come testo libero.`)) return;
+      data.categories[group] = data.categories[group].filter(c=>c!==name);
+      if (data.categoryBudgets[group]) delete data.categoryBudgets[group][name];
+      saveData(); refreshFn();
+    });
+  });
+  const saveBtn = document.querySelector(`[data-catsave="${group}"]`);
+  if (saveBtn) saveBtn.addEventListener("click", ()=>{
+    const container = document.getElementById(`cat-block-${group}`);
+    let renamedAny = false;
+    container.querySelectorAll(".cat-row[data-origname]").forEach(row=>{
+      const origName = row.dataset.origname;
+      const nameInput = row.querySelector(".cat-name-input");
+      const budgetInput = row.querySelector(".cat-budget-input");
+      const newName = nameInput.value.trim();
+      if (newName && newName !== origName) { renameCategory(group, origName, newName); renamedAny = true; }
+      const finalName = data.categories[group].includes(newName) ? newName : origName;
+      if (!data.categoryBudgets[group]) data.categoryBudgets[group] = {};
+      data.categoryBudgets[group][finalName] = Number(budgetInput.value) || 0;
+    });
+    saveData();
+    alert("Modifiche salvate." + (renamedAny ? " Le voci già registrate sono state aggiornate col nuovo nome." : ""));
+    refreshFn();
+  });
+}
+
 function categoryManageBlock(groupKey, title) {
   const rows = data.categories[groupKey].map(c => {
     const budget = (data.categoryBudgets[groupKey] && data.categoryBudgets[groupKey][c]) || "";
-    return `<div class="cat-row">
-      <span class="cat-name">${c}</span>
-      <input type="number" class="cat-budget-input" placeholder="Budget/anno" data-catbudget="${groupKey}|${c}" value="${budget}">
+    return `<div class="cat-row" data-origname="${c}">
+      <input type="text" class="cat-name-input" value="${c}">
+      <input type="number" class="cat-budget-input" placeholder="Budget/anno" value="${budget}">
       <button data-catdel="${groupKey}|${c}">✕</button>
     </div>`;
   }).join('');
   return `
-    <div style="margin-bottom:18px;">
+    <div style="margin-bottom:18px;" id="cat-block-${groupKey}">
       <label>${title}</label>
       <div class="cat-rows">${rows || '<div class="subtle">Nessuna categoria</div>'}</div>
       <div class="cat-add-row" style="margin-top:8px;">
         <input type="text" placeholder="Nuova categoria" data-catinput="${groupKey}">
         <button class="secondary" type="button" data-catadd="${groupKey}">Aggiungi</button>
       </div>
+      ${data.categories[groupKey].length>0 ? `<button class="primary" type="button" data-catsave="${groupKey}" style="margin-top:8px;">Salva modifiche (nomi e budget)</button>` : ''}
     </div>`;
 }
 
@@ -1415,6 +1491,16 @@ async function downloadFromDrive(silent) {
         expenses: (parsed.categoryBudgets&&parsed.categoryBudgets.expenses)||{},
         portfolio: (parsed.categoryBudgets&&parsed.categoryBudgets.portfolio)||{}
       },
+      macroCategories: {
+        income: (parsed.macroCategories&&parsed.macroCategories.income)||[],
+        expenses: (parsed.macroCategories&&parsed.macroCategories.expenses)||[],
+        portfolio: (parsed.macroCategories&&parsed.macroCategories.portfolio)||[]
+      },
+      categoryMacroMap: {
+        income: (parsed.categoryMacroMap&&parsed.categoryMacroMap.income)||{},
+        expenses: (parsed.categoryMacroMap&&parsed.categoryMacroMap.expenses)||{},
+        portfolio: (parsed.categoryMacroMap&&parsed.categoryMacroMap.portfolio)||{}
+      },
       recurring: {
         income: (parsed.recurring&&parsed.recurring.income)||[],
         expenses: (parsed.recurring&&parsed.recurring.expenses)||[],
@@ -1504,6 +1590,16 @@ function renderDrive() {
             expenses: (parsed.categoryBudgets&&parsed.categoryBudgets.expenses)||{},
             portfolio: (parsed.categoryBudgets&&parsed.categoryBudgets.portfolio)||{}
           },
+          macroCategories: {
+            income: (parsed.macroCategories&&parsed.macroCategories.income)||[],
+            expenses: (parsed.macroCategories&&parsed.macroCategories.expenses)||[],
+            portfolio: (parsed.macroCategories&&parsed.macroCategories.portfolio)||[]
+          },
+          categoryMacroMap: {
+            income: (parsed.categoryMacroMap&&parsed.categoryMacroMap.income)||{},
+            expenses: (parsed.categoryMacroMap&&parsed.categoryMacroMap.expenses)||{},
+            portfolio: (parsed.categoryMacroMap&&parsed.categoryMacroMap.portfolio)||{}
+          },
           recurring: {
             income: (parsed.recurring&&parsed.recurring.income)||[],
             expenses: (parsed.recurring&&parsed.recurring.expenses)||[],
@@ -1537,6 +1633,29 @@ function renderDrive() {
   }
 }
 
+function renameCategory(group, oldName, newName) {
+  if (!newName || newName === oldName) return;
+  if (data.categories[group].includes(newName)) {
+    alert(`Esiste già una categoria "${newName}" in questo gruppo — rinomina di "${oldName}" annullata.`);
+    return;
+  }
+  const idx = data.categories[group].indexOf(oldName);
+  if (idx >= 0) data.categories[group][idx] = newName;
+  if (data.categoryBudgets[group] && oldName in data.categoryBudgets[group]) {
+    data.categoryBudgets[group][newName] = data.categoryBudgets[group][oldName];
+    delete data.categoryBudgets[group][oldName];
+  }
+  if (data.categoryMacroMap[group] && oldName in data.categoryMacroMap[group]) {
+    data.categoryMacroMap[group][newName] = data.categoryMacroMap[group][oldName];
+    delete data.categoryMacroMap[group][oldName];
+  }
+  const field = group === "portfolio" ? "type" : "category";
+  (data[group] || []).forEach(e => { if (e[field] === oldName) e[field] = newName; });
+  (data.recurring[group] || []).forEach(r => {
+    if (group === "portfolio") { if (r.type === oldName) r.type = newName; }
+    else { if (r.category === oldName) r.category = newName; }
+  });
+}
 function renderSettings() {
   document.getElementById("headerTitle").textContent = "Assunzioni";
   const s = data.settings;
@@ -1568,7 +1687,7 @@ function renderSettings() {
     </div>` : ''}
     <div class="card">
       <h3>Gestisci categorie</h3>
-      <div class="subtle">Aggiungi o rimuovi categorie per reddito, spese e patrimonio/investimenti, e assegna un budget annuo a ciascuna.</div>
+      <div class="subtle">Modifica nome e budget annuo di ciascuna voce, elimina quelle che non ti servono più, o aggiungine di nuove — indipendentemente per Reddito, Spese e Patrimonio. Ricorda di premere "Salva modifiche" dopo aver cambiato un nome.</div>
       ${categoryManageBlock("income", "Reddito")}
       ${categoryManageBlock("expenses", "Spese")}
       ${categoryManageBlock("portfolio", "Patrimonio / Investimenti")}
@@ -1586,7 +1705,7 @@ function renderSettings() {
       <div class="subtle">${s.hfToken ? "Token già salvato (nascosto per sicurezza). Lascia il campo vuoto per mantenerlo invariato, oppure incollane uno nuovo per sostituirlo." : "Nessun token salvato ancora."}</div>
       <form class="entry" id="hfForm">
         <div><label>Token Hugging Face ${s.hfToken ? '(vuoto = non modificare)' : ''}</label><input type="password" name="hfToken" value="" placeholder="${s.hfToken ? '••••••••' : 'hf_...'}"></div>
-        <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'meta-llama/Llama-3.2-11B-Vision-Instruct'}"></div>
+        <div><label>Modello (avanzato, lascialo com'è se non sai cosa cambiare)</label><input type="text" name="hfModel" value="${s.hfModel||'Qwen/Qwen3.5-9B'}"></div>
         <button class="primary" type="submit">Salva</button>
       </form>
       ${s.hfToken ? '<button class="secondary" id="removeHfTokenBtn" style="margin-top:8px;">Rimuovi token</button>' : ''}
@@ -1610,7 +1729,7 @@ function renderSettings() {
     const f = new FormData(ev.target);
     const newToken = (f.get("hfToken")||"").trim();
     if (newToken) data.settings.hfToken = newToken;
-    data.settings.hfModel = (f.get("hfModel")||"meta-llama/Llama-3.2-11B-Vision-Instruct").trim();
+    data.settings.hfModel = (f.get("hfModel")||"Qwen/Qwen3.5-9B").trim();
     saveData();
     alert("Salvato.");
     renderSettings();
@@ -1664,29 +1783,9 @@ function renderSettings() {
     renderSettings();
   });
 
-  document.querySelectorAll("[data-catadd]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      const group = btn.dataset.catadd;
-      const input = document.querySelector(`[data-catinput="${group}"]`);
-      const val = input.value.trim();
-      if (val && !data.categories[group].includes(val)) { data.categories[group].push(val); saveData(); renderSettings(); }
-    });
-  });
-  document.querySelectorAll("[data-catdel]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      const [group, name] = btn.dataset.catdel.split("|");
-      data.categories[group] = data.categories[group].filter(c=>c!==name);
-      saveData(); renderSettings();
-    });
-  });
-  document.querySelectorAll("[data-catbudget]").forEach(inp=>{
-    inp.addEventListener("change", ()=>{
-      const [group, name] = inp.dataset.catbudget.split("|");
-      if (!data.categoryBudgets[group]) data.categoryBudgets[group] = {};
-      data.categoryBudgets[group][name] = Number(inp.value) || 0;
-      saveData();
-    });
-  });
+  bindCategoryManagement("income", renderSettings);
+  bindCategoryManagement("expenses", renderSettings);
+  bindCategoryManagement("portfolio", renderSettings);
 
   document.querySelectorAll("[data-recform]").forEach(form=>{
     form.addEventListener("submit", ev=>{
