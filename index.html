@@ -754,7 +754,7 @@ async function analyzeReceiptWithAI(file) {
     } else if (message.reasoning_content) text = message.reasoning_content;
   }
   text = (text || "").trim();
-  if (!text) throw new Error("Risposta vuota dal modello. Dettaglio: " + JSON.stringify(json).slice(0, 300));
+  if (!text) throw new Error("Risposta vuota dal modello. Dettaglio: " + JSON.stringify(json).slice(0, 900));
   text = text.replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (jsonMatch) text = jsonMatch[0];
