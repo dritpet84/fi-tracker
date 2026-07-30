@@ -107,7 +107,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare</div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.0</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
   </header>
@@ -328,6 +328,7 @@ let categoryChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
 let catManagerOpen = { income:false, expenses:false, portfolio:false };
+let macroManagerOpen = { income:false, expenses:false, portfolio:false };
 
 function freqSelect(selected) {
   return `<select name="frequency">${FREQUENCIES.map(f=>`<option value="${f.key}" ${f.key===(selected||"monthly")?'selected':''}>${f.label}</option>`).join('')}</select>`;
@@ -373,6 +374,29 @@ function bindCategorySelects() {
         if (name && name.trim()) {
           const g = sel.dataset.group;
           if (!data.categories[g].includes(name.trim())) { data.categories[g].push(name.trim()); saveData(); }
+          const opt = document.createElement("option");
+          opt.value = name.trim(); opt.textContent = name.trim();
+          sel.insertBefore(opt, sel.lastElementChild);
+          sel.value = name.trim();
+        } else { sel.selectedIndex = 0; }
+      }
+    });
+  });
+}
+
+function macroSelect(groupKey, selected) {
+  const macros = data.macroCategories[groupKey] || [];
+  const opts = `<option value="">— nessuna —</option>` + macros.map(m => `<option ${m===selected?'selected':''}>${m}</option>`).join('');
+  return `<select class="macro-select" data-group="${groupKey}">${opts}<option value="__new__">+ Nuova macro-categoria...</option></select>`;
+}
+function bindMacroSelects() {
+  document.querySelectorAll(".macro-select").forEach(sel => {
+    sel.addEventListener("change", () => {
+      if (sel.value === "__new__") {
+        const name = window.prompt("Nome nuova macro-categoria:");
+        if (name && name.trim()) {
+          const g = sel.dataset.group;
+          if (!data.macroCategories[g].includes(name.trim())) { data.macroCategories[g].push(name.trim()); saveData(); }
           const opt = document.createElement("option");
           opt.value = name.trim(); opt.textContent = name.trim();
           sel.insertBefore(opt, sel.lastElementChild);
@@ -802,6 +826,8 @@ function renderExpenses() {
         </div>
         <div><label>Categoria</label>${categorySelect("expenses")}</div>
         <button class="secondary" type="button" id="toggleCatManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.expenses ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
+        <div><label>Macro-categoria</label>${macroSelect("expenses")}</div>
+        <button class="secondary" type="button" id="toggleMacroManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.expenses ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -810,6 +836,11 @@ function renderExpenses() {
       <h3>Gestisci categorie · Spese</h3>
       <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
       ${categoryManageBlock("expenses", "Spese")}
+    </div>` : ''}
+    ${macroManagerOpen.expenses ? `<div class="card">
+      <h3>Gestisci macro-categorie · Spese</h3>
+      <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
+      ${macroManageBlock("expenses", "Macro-categorie")}
     </div>` : ''}
     ${allCats.length>0 ? `<div class="card">
       <h3>Categorie: questo mese vs mese scorso</h3>
@@ -820,7 +851,7 @@ function renderExpenses() {
       <div style="margin-bottom:10px;"><label>Filtra per categoria</label><select id="expenseFilterSelect">${expenseFilterOptions}</select></div>
       ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=>`
         <div class="list-item">
-          <div class="li-main"><span class="li-cat">${e.category}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}</span><span class="li-date">${e.date}</span></div>
+          <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}</span><span class="li-date">${e.date}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt exp">${fmt(e.amount)} ALL</span>
             <button class="li-del" data-del-expense="${e.id}">✕</button>
@@ -830,9 +861,12 @@ function renderExpenses() {
     </div>
   `;
   bindCategorySelects();
+  bindMacroSelects();
   document.getElementById("expenseFilterSelect").addEventListener("change", ev=>{ expenseCategoryFilter = ev.target.value; renderExpenses(); });
   document.getElementById("toggleCatManage-expenses").addEventListener("click", ()=>{ catManagerOpen.expenses = !catManagerOpen.expenses; renderExpenses(); });
   if (catManagerOpen.expenses) bindCategoryManagement("expenses", renderExpenses);
+  document.getElementById("toggleMacroManage-expenses").addEventListener("click", ()=>{ macroManagerOpen.expenses = !macroManagerOpen.expenses; renderExpenses(); });
+  if (macroManagerOpen.expenses) bindMacroManagement("expenses", renderExpenses);
 
   let lastReceiptFile = null;
   document.getElementById("receiptInput").addEventListener("change", async ev=>{
@@ -910,7 +944,8 @@ function renderExpenses() {
     ev.preventDefault();
     const f = new FormData(ev.target);
     const cat = ev.target.querySelector(".cat-select").value;
-    data.expenses.push({id:uid(), date:f.get("date"), amount:Number(f.get("amount")), category:cat, note:f.get("note")||""});
+    const macro = ev.target.querySelector(".macro-select").value;
+    data.expenses.push({id:uid(), date:f.get("date"), amount:Number(f.get("amount")), category:cat, macro:macro||null, note:f.get("note")||""});
     saveData(); renderExpenses();
   });
   document.querySelectorAll("[data-del-expense]").forEach(btn=>{
@@ -1671,6 +1706,65 @@ function renameCategory(group, oldName, newName) {
     else { if (r.category === oldName) r.category = newName; }
   });
 }
+function renameMacroField(group, oldName, newName) {
+  if (!newName || newName === oldName) return;
+  if ((data.macroCategories[group]||[]).includes(newName)) {
+    alert(`Esiste già la macro-categoria "${newName}" — rinomina di "${oldName}" annullata.`);
+    return;
+  }
+  const idx = data.macroCategories[group].indexOf(oldName);
+  if (idx >= 0) data.macroCategories[group][idx] = newName;
+  (data[group] || []).forEach(e => { if (e.macro === oldName) e.macro = newName; });
+}
+
+function macroManageBlock(groupKey, title) {
+  const rows = (data.macroCategories[groupKey]||[]).map(m => `<div class="cat-row" data-origname="${m}">
+    <input type="text" class="cat-name-input" value="${m}">
+    <button data-macrodel="${groupKey}|${m}">✕</button>
+  </div>`).join('');
+  return `
+    <div style="margin-bottom:18px;" id="macro-block-${groupKey}">
+      <label>${title}</label>
+      <div class="cat-rows">${rows || '<div class="subtle">Nessuna macro-categoria</div>'}</div>
+      <div class="cat-add-row" style="margin-top:8px;">
+        <input type="text" placeholder="Nuova macro-categoria" data-macroinput="${groupKey}">
+        <button class="secondary" type="button" data-macroadd="${groupKey}">Aggiungi</button>
+      </div>
+      ${(data.macroCategories[groupKey]||[]).length>0 ? `<button class="primary" type="button" data-macrosave="${groupKey}" style="margin-top:8px;">Salva modifiche ai nomi</button>` : ''}
+    </div>`;
+}
+
+function bindMacroManagement(group, refreshFn) {
+  const addBtn = document.querySelector(`[data-macroadd="${group}"]`);
+  if (addBtn) addBtn.addEventListener("click", ()=>{
+    const input = document.querySelector(`[data-macroinput="${group}"]`);
+    const val = input.value.trim();
+    if (val && !data.macroCategories[group].includes(val)) { data.macroCategories[group].push(val); saveData(); refreshFn(); }
+  });
+  document.querySelectorAll(`[data-macrodel]`).forEach(btn=>{
+    const [g, name] = btn.dataset.macrodel.split("|");
+    if (g !== group) return;
+    btn.addEventListener("click", ()=>{
+      if (!confirm(`Eliminare la macro-categoria "${name}"? Le voci già registrate la manterranno come testo libero.`)) return;
+      data.macroCategories[group] = data.macroCategories[group].filter(m=>m!==name);
+      saveData(); refreshFn();
+    });
+  });
+  const saveBtn = document.querySelector(`[data-macrosave="${group}"]`);
+  if (saveBtn) saveBtn.addEventListener("click", ()=>{
+    const container = document.getElementById(`macro-block-${group}`);
+    let renamedAny = false;
+    container.querySelectorAll(".cat-row[data-origname]").forEach(row=>{
+      const origName = row.dataset.origname;
+      const newName = row.querySelector(".cat-name-input").value.trim();
+      if (newName && newName !== origName) { renameMacroField(group, origName, newName); renamedAny = true; }
+    });
+    saveData();
+    alert("Modifiche salvate." + (renamedAny ? " Le voci già registrate sono state aggiornate col nuovo nome." : ""));
+    refreshFn();
+  });
+}
+
 function renderSettings() {
   document.getElementById("headerTitle").textContent = "Assunzioni";
   const s = data.settings;
