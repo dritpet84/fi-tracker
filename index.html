@@ -107,7 +107,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.0</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.5</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
   </header>
@@ -325,10 +325,13 @@ function project(wealth0, income0, savingsRate, expense0, expenseGrowth, incomeG
 
 let chartInstance = null;
 let categoryChartInstance = null;
+let macroCompareChartInstance = null;
+let monthlyTotalsChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
 let catManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroManagerOpen = { income:false, expenses:false, portfolio:false };
+let macroAssignOpen = { income:false, expenses:false, portfolio:false };
 
 function freqSelect(selected) {
   return `<select name="frequency">${FREQUENCIES.map(f=>`<option value="${f.key}" ${f.key===(selected||"monthly")?'selected':''}>${f.label}</option>`).join('')}</select>`;
@@ -746,9 +749,8 @@ function compressImageToBase64(file, maxDim, quality) {
     img.src = url;
   });
 }
-async function analyzeReceiptWithAI(file) {
+async function callHuggingFaceOnce(file) {
   const s = data.settings;
-  if (!s.hfToken) throw new Error("no token");
   const base64 = await compressImageToBase64(file, 1024, 0.7);
   const mimeType = "image/jpeg";
   const prompt = `Leggi questo scontrino/ricevuta. Rispondi SOLO con un oggetto JSON valido, senza testo aggiuntivo, markdown o spiegazioni, in questo formato esatto: {"amount": numero, "date": "YYYY-MM-DD", "category": "una parola tra Supermercato, Ristoranti, Bar, Trasporti, Salute, Abbigliamento, Casa, Altro"}. Se non riesci a leggere un campo, usa null per quel campo.`;
@@ -795,6 +797,25 @@ async function analyzeReceiptWithAI(file) {
   };
 }
 
+async function analyzeReceiptWithAI(file, onRetry) {
+  const s = data.settings;
+  if (!s.hfToken) throw new Error("no token");
+  const maxAttempts = 3;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await callHuggingFaceOnce(file);
+    } catch (err) {
+      lastErr = err;
+      const isEmptyOrServerIssue = /Risposta vuota|HTTP 5\d\d|HTTP 429/i.test(err.message || "");
+      if (!isEmptyOrServerIssue || attempt === maxAttempts) throw err;
+      if (onRetry) onRetry(attempt, maxAttempts);
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+  throw lastErr;
+}
+
 function renderExpenses() {
   document.getElementById("headerTitle").textContent = "Spese";
   const total = yearTotal(data.expenses, thisYear);
@@ -809,6 +830,25 @@ function renderExpenses() {
   });
   const allCats = [...new Set([...Object.keys(catsThisMonth), ...Object.keys(catsLastMonth)])]
     .sort((a,b)=> (catsThisMonth[b]||0)-(catsThisMonth[a]||0)).slice(0,8);
+
+  const macrosThisMonth = {}; const macrosLastMonth = {};
+  data.expenses.forEach(e=>{
+    if (!e.macro) return;
+    if (e.date.slice(0,7)===thisMonth) macrosThisMonth[e.macro] = (macrosThisMonth[e.macro]||0)+Number(e.amount);
+    if (e.date.slice(0,7)===lastMonthStr) macrosLastMonth[e.macro] = (macrosLastMonth[e.macro]||0)+Number(e.amount);
+  });
+  const allMacros = [...new Set([...Object.keys(macrosThisMonth), ...Object.keys(macrosLastMonth)])]
+    .sort((a,b)=> (macrosThisMonth[b]||0)-(macrosThisMonth[a]||0)).slice(0,8);
+
+  const monthlyTotalsThisYear = new Array(12).fill(0);
+  data.expenses.forEach(e=>{
+    const d = new Date(e.date);
+    if (d.getFullYear()===thisYear) monthlyTotalsThisYear[d.getMonth()] += Number(e.amount);
+  });
+  const monthsWithData = monthlyTotalsThisYear.filter(v=>v>0).length;
+  const totalThisYearForAvg = monthlyTotalsThisYear.reduce((s,v)=>s+v,0);
+  const monthlyAvgSimple = (now.getMonth()+1) > 0 ? totalThisYearForAvg/(now.getMonth()+1) : 0;
+  const monthlyAvgEffective = monthsWithData > 0 ? totalThisYearForAvg/monthsWithData : 0;
 
   document.getElementById("main").innerHTML = `
     <div class="card">
@@ -828,6 +868,7 @@ function renderExpenses() {
         <button class="secondary" type="button" id="toggleCatManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.expenses ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div><label>Macro-categoria</label>${macroSelect("expenses")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.expenses ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
+        <button class="secondary" type="button" id="toggleMacroAssign-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.expenses ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -842,10 +883,25 @@ function renderExpenses() {
       <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
       ${macroManageBlock("expenses", "Macro-categorie")}
     </div>` : ''}
+    ${macroAssignOpen.expenses ? `<div class="card">
+      <h3>Assegna macro-categoria alle categorie · Spese</h3>
+      <div class="subtle">Scegli la macro-categoria per ciascuna categoria: da qui in poi, selezionando quella categoria nel form, la macro si compilerà da sola (resta comunque modificabile).</div>
+      ${macroAssignBlock("expenses")}
+    </div>` : ''}
     ${allCats.length>0 ? `<div class="card">
       <h3>Categorie: questo mese vs mese scorso</h3>
       <div class="chart-wrap"><canvas id="catChart" height="${Math.max(140, allCats.length*30)}"></canvas></div>
     </div>` : ''}
+    ${allMacros.length>0 ? `<div class="card">
+      <h3>Macro-categorie: questo mese vs mese scorso</h3>
+      <div class="chart-wrap"><canvas id="macroCompareChart" height="${Math.max(140, allMacros.length*30)}"></canvas></div>
+    </div>` : ''}
+    ${monthsWithData>0 ? `<div class="card">
+      <h3>Spesa mensile · ${thisYear}</h3>
+      <div class="subtle">Media semplice (÷${now.getMonth()+1} mesi trascorsi): ${fmt(monthlyAvgSimple)} ALL/mese · media reale (÷${monthsWithData} mesi con almeno una spesa): ${fmt(monthlyAvgEffective)} ALL/mese</div>
+      <div class="chart-wrap"><canvas id="monthlyTotalsChart" height="220"></canvas></div>
+    </div>` : ''}
+    ${renderDailyAveragesCard()}
     <div class="card">
       <h3>Storico ${thisYear} <span class="pill">${data.expenses.length} voci totali</span></h3>
       <div style="margin-bottom:10px;"><label>Filtra per categoria</label><select id="expenseFilterSelect">${expenseFilterOptions}</select></div>
@@ -867,6 +923,19 @@ function renderExpenses() {
   if (catManagerOpen.expenses) bindCategoryManagement("expenses", renderExpenses);
   document.getElementById("toggleMacroManage-expenses").addEventListener("click", ()=>{ macroManagerOpen.expenses = !macroManagerOpen.expenses; renderExpenses(); });
   if (macroManagerOpen.expenses) bindMacroManagement("expenses", renderExpenses);
+  document.getElementById("toggleMacroAssign-expenses").addEventListener("click", ()=>{ macroAssignOpen.expenses = !macroAssignOpen.expenses; renderExpenses(); });
+  if (macroAssignOpen.expenses) bindMacroAssign("expenses", renderExpenses);
+
+  const expCatSelect = document.getElementById("expenseForm").querySelector(".cat-select");
+  const expMacroSelect = document.getElementById("expenseForm").querySelector(".macro-select");
+  if (expCatSelect && expMacroSelect) {
+    const initialMapped = data.categoryMacroMap.expenses && data.categoryMacroMap.expenses[expCatSelect.value];
+    if (initialMapped && [...expMacroSelect.options].some(o=>o.value===initialMapped)) expMacroSelect.value = initialMapped;
+    expCatSelect.addEventListener("change", ()=>{
+      const mapped = data.categoryMacroMap.expenses && data.categoryMacroMap.expenses[expCatSelect.value];
+      if (mapped && [...expMacroSelect.options].some(o=>o.value===mapped)) expMacroSelect.value = mapped;
+    });
+  }
 
   let lastReceiptFile = null;
   document.getElementById("receiptInput").addEventListener("change", async ev=>{
@@ -879,7 +948,7 @@ function renderExpenses() {
     if (data.settings.hfToken) {
       statusEl.textContent = "Lettura scontrino con AI in corso… (può metterci 20-30 secondi se il modello era in stand-by)";
       try {
-        const suggestion = await analyzeReceiptWithAI(file);
+        const suggestion = await analyzeReceiptWithAI(file, (attempt, max) => { statusEl.textContent = `Il modello non ha risposto bene, riprovo (tentativo ${attempt+1}/${max})…`; });
         if (suggestion.amount) form.querySelector('[name="amount"]').value = suggestion.amount;
         if (suggestion.date) form.querySelector('[name="date"]').value = suggestion.date;
         if (suggestion.category) {
@@ -925,7 +994,7 @@ function renderExpenses() {
     const statusEl = document.getElementById("ocrStatus");
     statusEl.textContent = "Analisi con AI in corso… (il modello gratuito può metterci 20-30 secondi se era in stand-by)";
     try {
-      const suggestion = await analyzeReceiptWithAI(lastReceiptFile);
+      const suggestion = await analyzeReceiptWithAI(lastReceiptFile, (attempt, max) => { statusEl.textContent = `Il modello non ha risposto bene, riprovo (tentativo ${attempt+1}/${max})…`; });
       const form = document.getElementById("expenseForm");
       if (suggestion.amount) form.querySelector('[name="amount"]').value = suggestion.amount;
       if (suggestion.date) form.querySelector('[name="date"]').value = suggestion.date;
@@ -970,6 +1039,52 @@ function renderExpenses() {
         scales:{
           x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
           y:{ ticks:{ color:'#8FA3BF', font:{size:11} }, grid:{ display:false } }
+        }
+      }
+    });
+  }
+
+  if (allMacros.length>0) {
+    const ctx2 = document.getElementById("macroCompareChart");
+    if (macroCompareChartInstance) macroCompareChartInstance.destroy();
+    macroCompareChartInstance = new Chart(ctx2, {
+      type: 'bar',
+      data: {
+        labels: allMacros,
+        datasets: [
+          { label:'Mese scorso', data: allMacros.map(m=>macrosLastMonth[m]||0), backgroundColor:'#3F5A72' },
+          { label:'Questo mese', data: allMacros.map(m=>macrosThisMonth[m]||0), backgroundColor:'#C9A227' }
+        ]
+      },
+      options: {
+        indexAxis:'y', responsive:true,
+        plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales:{
+          x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+          y:{ ticks:{ color:'#8FA3BF', font:{size:11} }, grid:{ display:false } }
+        }
+      }
+    });
+  }
+
+  if (monthsWithData>0) {
+    const ctx3 = document.getElementById("monthlyTotalsChart");
+    if (monthlyTotalsChartInstance) monthlyTotalsChartInstance.destroy();
+    monthlyTotalsChartInstance = new Chart(ctx3, {
+      data: {
+        labels: MONTH_LABELS,
+        datasets: [
+          { type:'bar', label:'Spesa mensile', data: monthlyTotalsThisYear, backgroundColor:'#C9A227' },
+          { type:'line', label:'Media reale', data: new Array(12).fill(monthlyAvgEffective), borderColor:'#3F6E5E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 },
+          { type:'line', label:'Media semplice', data: new Array(12).fill(monthlyAvgSimple), borderColor:'#8B3A2F', borderDash:[2,3], pointRadius:0, borderWidth:1.5 }
+        ]
+      },
+      options: {
+        responsive:true,
+        plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales:{
+          x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+          y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k' }, grid:{ color:'#1E2E47' } }
         }
       }
     });
@@ -1145,6 +1260,45 @@ function renderBudgetGroupCard(groupKey, title) {
     </div>`;
   }).join('');
   return `<div class="card"><h3>${title}</h3>${blocks}</div>`;
+}
+
+function avgStatsFor(entries, dayOfMonth) {
+  const total = entries.reduce((s,e)=>s+Number(e.amount),0);
+  const distinctDays = new Set(entries.map(e=>e.date)).size;
+  return { total, simple: dayOfMonth>0 ? total/dayOfMonth : 0, effective: distinctDays>0 ? total/distinctDays : 0, distinctDays };
+}
+function avgRowHtml(label, stats) {
+  return `<div style="display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-bottom:1px dashed #24374F; gap:10px;">
+    <span style="font-family:'Inter',sans-serif; font-size:12.5px; color:#EDE6D6; flex:1;">${label}</span>
+    <span style="text-align:right; font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#C9A227; white-space:nowrap;">${fmt(stats.total)} ALL
+      <div style="font-size:10px; color:#8FA3BF; font-family:'Inter',sans-serif; margin-top:2px;">semplice: ${fmt(stats.simple)}/gg · reale (${stats.distinctDays}gg): ${fmt(stats.effective)}/gg</div>
+    </span>
+  </div>`;
+}
+function renderDailyAveragesCard() {
+  const monthEntries = data.expenses.filter(e => e.date.slice(0,7) === thisMonth);
+  const dayOfMonth = now.getDate();
+  if (monthEntries.length === 0) {
+    return `<div class="card"><h3>Medie giornaliere · Spese (${thisMonth})</h3><div class="empty">Nessuna spesa registrata questo mese.</div></div>`;
+  }
+  const totalStats = avgStatsFor(monthEntries, dayOfMonth);
+  const cats = [...new Set(monthEntries.map(e=>e.category))].sort((a,b)=>{
+    const ta = monthEntries.filter(e=>e.category===a).reduce((s,e)=>s+Number(e.amount),0);
+    const tb = monthEntries.filter(e=>e.category===b).reduce((s,e)=>s+Number(e.amount),0);
+    return tb-ta;
+  });
+  const macros = [...new Set(monthEntries.map(e=>e.macro).filter(Boolean))];
+  return `<div class="card">
+    <h3>Medie giornaliere · Spese (${thisMonth})</h3>
+    <div class="subtle">"Semplice" = totale ÷ ${dayOfMonth} (giorni trascorsi nel mese). "Reale" = totale ÷ giorni in cui hai effettivamente registrato una spesa.</div>
+    <div style="margin-top:10px; margin-bottom:4px; font-family:'Fraunces',serif; color:#C9A227; font-size:13px;">Totale</div>
+    ${avgRowHtml("Tutte le spese", totalStats)}
+    <div style="margin-top:14px; margin-bottom:4px; font-family:'Fraunces',serif; color:#C9A227; font-size:13px;">Per categoria</div>
+    ${cats.map(c => avgRowHtml(c, avgStatsFor(monthEntries.filter(e=>e.category===c), dayOfMonth))).join('')}
+    ${macros.length>0 ? `
+    <div style="margin-top:14px; margin-bottom:4px; font-family:'Fraunces',serif; color:#C9A227; font-size:13px;">Per macro-categoria</div>
+    ${macros.map(m => avgRowHtml(m, avgStatsFor(monthEntries.filter(e=>e.macro===m), dayOfMonth))).join('')}` : ''}
+  </div>`;
 }
 
 function renderBudget() {
@@ -1761,6 +1915,41 @@ function bindMacroManagement(group, refreshFn) {
     });
     saveData();
     alert("Modifiche salvate." + (renamedAny ? " Le voci già registrate sono state aggiornate col nuovo nome." : ""));
+    refreshFn();
+  });
+}
+
+function macroAssignBlock(groupKey) {
+  const macros = data.macroCategories[groupKey] || [];
+  const cats = data.categories[groupKey] || [];
+  if (macros.length === 0) {
+    return `<div class="subtle">Crea prima almeno una macro-categoria (pulsante "✎ Gestisci macro-categorie") per poterla assegnare qui.</div>`;
+  }
+  const macroOptions = (selected) => `<option value="">— nessuna —</option>` + macros.map(m=>`<option value="${m}" ${m===selected?'selected':''}>${m}</option>`).join('');
+  const rows = cats.map(c => {
+    const current = (data.categoryMacroMap[groupKey] && data.categoryMacroMap[groupKey][c]) || "";
+    return `<div class="cat-row">
+      <span class="cat-name" style="flex:1;">${c}</span>
+      <select class="assign-macro-select" data-assigncat="${c}">${macroOptions(current)}</select>
+    </div>`;
+  }).join('');
+  return `<div id="macro-assign-block-${groupKey}">
+    <div class="cat-rows">${rows || '<div class="subtle">Nessuna categoria</div>'}</div>
+    <button class="primary" type="button" data-macroassignsave="${groupKey}" style="margin-top:10px;">Salva assegnazioni</button>
+  </div>`;
+}
+function bindMacroAssign(group, refreshFn) {
+  const saveBtn = document.querySelector(`[data-macroassignsave="${group}"]`);
+  if (saveBtn) saveBtn.addEventListener("click", ()=>{
+    const container = document.getElementById(`macro-assign-block-${group}`);
+    if (!data.categoryMacroMap[group]) data.categoryMacroMap[group] = {};
+    container.querySelectorAll(".assign-macro-select").forEach(sel=>{
+      const cat = sel.dataset.assigncat;
+      if (sel.value) data.categoryMacroMap[group][cat] = sel.value;
+      else delete data.categoryMacroMap[group][cat];
+    });
+    saveData();
+    alert("Assegnazioni salvate.");
     refreshFn();
   });
 }
