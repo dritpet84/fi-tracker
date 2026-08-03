@@ -107,7 +107,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.5</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.17</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
   </header>
@@ -130,10 +130,10 @@ const STORE_KEY = "fiTrackerData_v1";
 const DEFAULT_CATEGORIES = {
   income: ["Reddito principale","Interessi","Altro"],
   expenses: ["Palestra","Assicurazione auto","Tasse auto","Caffè ufficio","Bar","Acqua","Luce","Telefono","Riparazioni auto","Tagliando auto","Supermercato","Gite/concerti","Vestiti","Vacanze","Ristoranti/uscite","Arredamento casa","Auto (acquisto)","Altro"],
-  portfolio: ["Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
+  portfolio: ["Banca","Cash","Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B" },
+  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1 },
   income: [],
   expenses: [],
   portfolio: [],
@@ -200,24 +200,31 @@ let data = loadData();
 
 const fmt = n => Math.round(n).toLocaleString("it-IT");
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+function localDateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+function localMonthStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
 const thisYear = thisYearNum;
-const todayISO = new Date().toISOString().slice(0,10);
-const thisMonth = todayISO.slice(0,7);
 const now = new Date();
+const todayISO = localDateStr(now);
+const thisMonth = localMonthStr(now);
 const lastMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
-const lastMonthStr = lastMonthDate.toISOString().slice(0,7);
+const lastMonthStr = localMonthStr(lastMonthDate);
 const lastYear = thisYear - 1;
 
 // ---------- Totals ----------
 function yearTotal(arr, year) { return arr.filter(e => new Date(e.date).getFullYear() === year).reduce((s,e)=>s+Number(e.amount),0); }
 function monthTotal(arr, monthStr) { return arr.filter(e => e.date.slice(0,7) === monthStr).reduce((s,e)=>s+Number(e.amount),0); }
 function dayTotal(arr, dayStr) { return arr.filter(e => e.date === dayStr).reduce((s,e)=>s+Number(e.amount),0); }
-function portfolioTotalALL() { return data.portfolio.reduce((s,p)=> s + ((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount) * (p.currency === "EUR" ? data.settings.fx : 1), 0); }
+function toALL(amount, currency) {
+  if (currency === "EUR") return amount * data.settings.fx;
+  if (currency === "USD") return amount * data.settings.fxUsd;
+  return amount;
+}
+function portfolioTotalALL() { return data.portfolio.reduce((s,p)=> s + toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency), 0); }
 function annualBudgetForYear(y) { const s = data.settings; return s.expenseBase + s.expenseGrowth * (y - s.startYear); }
 
 function normalizedEntries(group, catName) {
   if (group === "portfolio") {
-    return data.portfolio.filter(p => p.type === catName && p.date).map(p => ({ date: p.date, amount: p.amount * (p.currency === "EUR" ? data.settings.fx : 1) }));
+    return data.portfolio.filter(p => p.type === catName && p.date).map(p => ({ date: p.date, amount: toALL(p.amount, p.currency) }));
   }
   return data[group].filter(e => e.category === catName).map(e => ({ date: e.date, amount: Number(e.amount) }));
 }
@@ -251,6 +258,208 @@ function shouldGenerateThisMonth(rule) {
   return shouldGenerateForMonth(rule, thisYearNum, now.getMonth()+1);
 }
 
+function createLiquidityAdjustment(paymentType, signedAmountALL, date, note, linkedTxnId) {
+  if (!paymentType) return null;
+  const id = uid();
+  data.portfolio.push({ id, type: paymentType, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[paymentType]) || null, amount: signedAmountALL, currency: "ALL", marketValue: null, date, maturityDate: null, note: note||"", linkedTxnId });
+  return id;
+}
+function removeLiquidityAdjustment(linkedTxnId) {
+  data.portfolio = data.portfolio.filter(p => p.linkedTxnId !== linkedTxnId);
+}
+
+function ensureBondDepositCategories() {
+  let changed = false;
+  const ensureCat = (group, cat) => { if (!data.categories[group].includes(cat)) { data.categories[group].push(cat); changed = true; } };
+  ensureCat("income", "Cedola e le info");
+  ensureCat("income", "Capital gain obbligazioni");
+  ensureCat("income", "Interesse deposito");
+  ensureCat("expenses", "Commissione collocamento titoli");
+  ensureCat("expenses", "Commissione disbursement cedola");
+  ensureCat("expenses", "Commissione vendita titoli");
+  ensureCat("expenses", "Commissione titoli custodia");
+  ensureCat("income", "Capital gain fondi");
+  ensureCat("expenses", "Tassazione capital gain fondi");
+  if (data.categoryMacroMap.income["Capital gain fondi"] !== "Interessi da Titoli - Standard") { data.categoryMacroMap.income["Capital gain fondi"] = "Interessi da Titoli - Standard"; changed = true; }
+  if (!data.categoryMacroMap.expenses) data.categoryMacroMap.expenses = {};
+  if (data.categoryMacroMap.expenses["Tassazione capital gain fondi"] !== "Tassazione da Titoli - Standard") { data.categoryMacroMap.expenses["Tassazione capital gain fondi"] = "Tassazione da Titoli - Standard"; changed = true; }
+  if (!data.macroCategories.income.includes("Interessi da Titoli - Standard")) { data.macroCategories.income.push("Interessi da Titoli - Standard"); changed = true; }
+  if (!data.macroCategories.expenses.includes("Tassazione da Titoli - Standard")) { data.macroCategories.expenses.push("Tassazione da Titoli - Standard"); changed = true; }
+  if (!data.categoryMacroMap.income) data.categoryMacroMap.income = {};
+  ["Cedola e le info","Capital gain obbligazioni","Interesse deposito"].forEach(c=>{
+    if (data.categoryMacroMap.income[c] !== "Interessi da Titoli - Standard") { data.categoryMacroMap.income[c] = "Interessi da Titoli - Standard"; changed = true; }
+  });
+  if (changed) saveData();
+}
+function ensureBondTaxCategory(years) {
+  const label = years ? `${years}y` : "";
+  const catName = `Tassa titoli obbligazioni ${label} - Standard`.replace(/\s+/g," ").trim();
+  if (!data.categories.expenses.includes(catName)) data.categories.expenses.push(catName);
+  if (!data.categoryMacroMap.expenses) data.categoryMacroMap.expenses = {};
+  data.categoryMacroMap.expenses[catName] = "Tassazione da Titoli - Standard";
+  return catName;
+}
+function ensureDepositTaxCategory(years) {
+  const label = years ? `${years}y` : "";
+  const catName = `Tassa depositi ${label} - Standard`.replace(/\s+/g," ").trim();
+  if (!data.categories.expenses.includes(catName)) data.categories.expenses.push(catName);
+  if (!data.categoryMacroMap.expenses) data.categoryMacroMap.expenses = {};
+  data.categoryMacroMap.expenses[catName] = "Tassazione da Titoli - Standard";
+  return catName;
+}
+function computeCommissionAmount(type, value, base) {
+  value = Number(value) || 0;
+  if (type === "percent") return base * value / 100;
+  return value;
+}
+function peekNextSecurityCode() {
+  const seq = data.settings.nextSecurityCodeSeq || 1;
+  return "T" + String(seq).padStart(7, "0");
+}
+function consumeNextSecurityCode() {
+  const code = peekNextSecurityCode();
+  data.settings.nextSecurityCodeSeq = (data.settings.nextSecurityCodeSeq || 1) + 1;
+  return code;
+}
+
+function autoGenerateSecurityIncome() {
+  let changed = false;
+  data.portfolio.forEach(p => {
+    if (!p.amount || p.amount <= 0 || !p.type) return;
+    const typeLower = p.type.toLowerCase();
+    const isBondCoupon = typeLower.includes("obbligazione") && p.bondMode === "cedola";
+    const isDepositCoupon = typeLower.includes("deposito") && p.depositMode === "cedola";
+    if (!isBondCoupon && !isDepositCoupon) return;
+    if (p.maturityDate && new Date(p.maturityDate) < now) return;
+    const freqKey = p.couponFrequency || "annual";
+    const freqObj = FREQUENCIES.find(f => f.key === freqKey) || FREQUENCIES.find(f => f.key === "annual");
+    const rule = { frequency: freqKey, startMonth: p.startMonth || localMonthStr(new Date(p.date)), dayOfMonth: new Date(p.date).getDate() };
+    if (!shouldGenerateThisMonth(rule)) return;
+    const already = data.income.some(i => i.linkedBondId === p.id && i.date.slice(0,7) === thisMonth);
+    if (already) return;
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+    const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
+    const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
+    if (new Date(dateStr) > now) return;
+
+    const nominal = p.amount;
+    const rate = isBondCoupon ? (Number(p.couponRate)||0) : (Number(p.depositRate)||0);
+    const paymentsPerYear = 12 / freqObj.months;
+    const grossAmt = nominal * rate/100 / paymentsPerYear;
+    const taxRate = isBondCoupon ? (Number(p.bondTaxRate)||15) : (Number(p.depositTaxRate)||15);
+    const taxAmt = grossAmt * taxRate/100;
+    const commAmt = isBondCoupon ? computeCommissionAmount(p.couponCommissionType, p.couponCommissionValue, grossAmt) : 0;
+    const netAmt = grossAmt - taxAmt - commAmt;
+    const cat = isBondCoupon ? "Cedola e le info" : "Interesse deposito";
+    const taxCat = isBondCoupon ? ensureBondTaxCategory(p.bondYears) : ensureDepositTaxCategory(p.depositYears);
+    const code = p.securityCode || "";
+    const incId = uid();
+    data.income.push({ id: incId, date: dateStr, amount: grossAmt, category: cat, macro: "Interessi da Titoli - Standard", paymentType: null, note: code, linkedBondId: p.id, securityCode: code||null });
+    data.expenses.push({ id: uid(), date: dateStr, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: code, securityCode: code||null });
+    if (commAmt > 0) data.expenses.push({ id: uid(), date: dateStr, amount: commAmt, category: "Commissione disbursement cedola", note: code, securityCode: code||null });
+    createLiquidityAdjustment("Banca", netAmt, dateStr, `${cat} netta ${code}`.trim(), incId);
+    changed = true;
+  });
+  if (changed) saveData();
+}
+
+function autoChargeCustodyFees() {
+  let changed = false;
+  data.portfolio.forEach(p => {
+    if (!p.amount || p.amount <= 0 || !p.type) return;
+    if (!p.type.toLowerCase().includes("obbligazione")) return;
+    const rate = Number(p.custodyFeeRate) || 0;
+    if (rate <= 0 || !p.date) return;
+    if (p.maturityDate && new Date(p.maturityDate) < now) return;
+    const start = new Date(p.date);
+    const anniversaryThisYear = new Date(now.getFullYear(), start.getMonth(), start.getDate());
+    if (anniversaryThisYear > now) return;
+    const already = data.expenses.some(e => e.linkedBondId === p.id && e.category === "Commissione titoli custodia" && e.date.slice(0,4) === String(now.getFullYear()));
+    if (already) return;
+    const feeAmt = p.amount * rate / 100;
+    if (feeAmt <= 0) return;
+    const code = p.securityCode || "";
+    const dateStr = localDateStr(anniversaryThisYear);
+    const feeId = uid();
+    data.expenses.push({ id: feeId, date: dateStr, amount: feeAmt, category: "Commissione titoli custodia", note: code, linkedBondId: p.id, securityCode: code||null });
+    createLiquidityAdjustment("Banca", -feeAmt, dateStr, `Commissione titoli custodia ${code}`.trim(), feeId);
+    changed = true;
+  });
+  if (changed) saveData();
+}
+
+function autoMatureBondsAndDeposits() {
+  let changed = false;
+  data.portfolio.forEach(p => {
+    if (!p.amount || p.amount <= 0 || !p.type || !p.maturityDate) return;
+    if (new Date(p.maturityDate) > now) return;
+    const typeLower = p.type.toLowerCase();
+    const code = p.securityCode || "";
+
+    if (typeLower.includes("deposito") && p.depositMode === "finale") {
+      const already = data.income.some(i => i.linkedBondId === p.id && i.note && i.note.includes("Liquidazione finale"));
+      if (already) return;
+      const nominal = p.amount;
+      const rate = Number(p.depositRate)||0;
+      const years = Number(p.depositYears)||1;
+      const grossInterest = nominal * rate/100 * years;
+      const taxRate = Number(p.depositTaxRate)||15;
+      const taxAmt = grossInterest * taxRate/100;
+      const netInterest = grossInterest - taxAmt;
+      const taxCat = ensureDepositTaxCategory(p.depositYears);
+      const incId = uid();
+      data.income.push({ id: incId, date: p.maturityDate, amount: grossInterest, category: "Interesse deposito", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Liquidazione finale ${code}`.trim(), linkedBondId: p.id, securityCode: code||null });
+      data.expenses.push({ id: uid(), date: p.maturityDate, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `Liquidazione ${code}`.trim() });
+      createLiquidityAdjustment("Banca", netInterest, p.maturityDate, `Liquidazione netta ${code}`.trim(), incId);
+      changed = true;
+    }
+
+    if (typeLower.includes("obbligazione") && p.bondMode === "finale") {
+      const already = data.income.some(i => i.linkedBondId === p.id && i.category === "Capital gain obbligazioni" && i.note && i.note.includes("Rimborso a scadenza"));
+      if (already) return;
+      const nominal = p.amount;
+      const purchasePrice = Number(p.purchasePrice)||100;
+      const redemptionPrice = Number(p.redemptionPrice)||100;
+      const valoreTotale = nominal * redemptionPrice/100;
+      const costo = nominal * purchasePrice/100;
+      const capitalGainLordo = valoreTotale - costo;
+      const taxRate = Number(p.bondTaxRate)||15;
+      const tassazione = capitalGainLordo>0 ? capitalGainLordo*taxRate/100 : 0;
+      const capitalGainNetto = capitalGainLordo - tassazione;
+      const saleId = uid();
+      data.portfolio.push({ id: uid(), type: p.type, macro: p.macro||null, amount: -nominal, currency: p.currency, marketValue: null, date: p.maturityDate, maturityDate: null, note: `Rimborso a scadenza ${code}`.trim() });
+      createLiquidityAdjustment("Banca", nominal, p.maturityDate, `Rimborso capitale ${code}`.trim(), saleId);
+      data.income.push({ id: saleId, date: p.maturityDate, amount: capitalGainLordo, category: "Capital gain obbligazioni", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Rimborso a scadenza ${code}`.trim(), linkedBondId: p.id, securityCode: code||null });
+      if (tassazione > 0) {
+        const taxCat = ensureBondTaxCategory(p.bondYears);
+        data.expenses.push({ id: uid(), date: p.maturityDate, amount: tassazione, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `Rimborso ${code}`.trim() });
+      }
+      createLiquidityAdjustment("Banca", capitalGainNetto, p.maturityDate, `Plusvalenza netta rimborso ${code}`.trim(), saleId+"-gain");
+      changed = true;
+    }
+  });
+  if (changed) saveData();
+}
+
+function ensureLiquidityCategories() {
+  let changed = false;
+  if (!data.categories.portfolio.includes("Banca")) { data.categories.portfolio.unshift("Banca"); changed = true; }
+  if (!data.categories.portfolio.includes("Cash")) { data.categories.portfolio.push("Cash"); changed = true; }
+  if (changed) saveData();
+}
+
+function backfillMacroFromMapping() {
+  let changed = false;
+  ["income","expenses","portfolio"].forEach(group => {
+    const map = data.categoryMacroMap[group] || {};
+    const field = group === "portfolio" ? "type" : "category";
+    (data[group]||[]).forEach(e => {
+      if (!e.macro && map[e[field]]) { e.macro = map[e[field]]; changed = true; }
+    });
+  });
+  if (changed) saveData();
+}
+
 function generateSnapshot() {
   const exists = data.snapshots.some(s => s.date.slice(0,7) === thisMonth);
   if (!exists) {
@@ -280,13 +489,24 @@ function generateRecurring() {
   ["income","expenses"].forEach(group => {
     (data.recurring[group]||[]).forEach(rule => {
       if (!shouldGenerateThisMonth(rule)) return;
+      if (group === "income" && rule.linkedBondId) {
+        const bond = data.portfolio.find(p => p.id === rule.linkedBondId);
+        if (bond && bond.maturityDate && new Date(bond.maturityDate) < now) return;
+      }
       const already = data[group].some(e => e.recurringId === rule.id && e.date.slice(0,7) === thisMonth);
       if (!already) {
         const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
         const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
         const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
         if (new Date(dateStr) <= now) {
-          data[group].push({ id: uid(), date: dateStr, amount: rule.amount, category: rule.category, note: rule.note||"", recurringId: rule.id });
+          const mappedMacro = (data.categoryMacroMap[group] && data.categoryMacroMap[group][rule.category]) || null;
+          const genId = uid();
+          const paymentType = rule.paymentType !== undefined ? rule.paymentType : "Banca";
+          data[group].push({ id: genId, date: dateStr, amount: rule.amount, category: rule.category, macro: mappedMacro, paymentType: paymentType||null, note: rule.note||"", recurringId: rule.id, linkedBondId: rule.linkedBondId||null });
+          if (paymentType) {
+            const sign = group === "income" ? 1 : -1;
+            createLiquidityAdjustment(paymentType, sign*rule.amount, dateStr, `${group==='income'?'Reddito':'Spesa'} ricorrente: ${rule.category}`, genId);
+          }
           changed = true;
         }
       }
@@ -300,7 +520,8 @@ function generateRecurring() {
       const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
       const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
       if (new Date(dateStr) <= now) {
-        data.portfolio.push({ id: uid(), type: rule.type, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id });
+        const mappedMacro = (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[rule.type]) || null;
+        data.portfolio.push({ id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id });
         changed = true;
       }
     }
@@ -327,11 +548,13 @@ let chartInstance = null;
 let categoryChartInstance = null;
 let macroCompareChartInstance = null;
 let monthlyTotalsChartInstance = null;
+let macroDrilldownChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
 let catManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroAssignOpen = { income:false, expenses:false, portfolio:false };
+let macroDrilldownSelected = { income:null, expenses:null, portfolio:null };
 
 function freqSelect(selected) {
   return `<select name="frequency">${FREQUENCIES.map(f=>`<option value="${f.key}" ${f.key===(selected||"monthly")?'selected':''}>${f.label}</option>`).join('')}</select>`;
@@ -415,7 +638,7 @@ function budgetStreak() {
   let streak = 0;
   let cursor = new Date(now.getFullYear(), now.getMonth()-1, 1); // start from last full month
   while (true) {
-    const mStr = cursor.toISOString().slice(0,7);
+    const mStr = localMonthStr(cursor);
     const actual = monthTotal(data.expenses, mStr);
     if (actual === 0) break; // no data that far back, stop counting
     const y = cursor.getFullYear();
@@ -430,6 +653,12 @@ function budgetStreak() {
 function renderDashboard() {
   generateRecurring();
   generateSnapshot();
+  backfillMacroFromMapping();
+  ensureLiquidityCategories();
+  ensureBondDepositCategories();
+  autoGenerateSecurityIncome();
+  autoMatureBondsAndDeposits();
+  autoChargeCustodyFees();
   const s = data.settings;
   const incomeThisYear = yearTotal(data.income, thisYear);
   const expenseThisYear = yearTotal(data.expenses, thisYear);
@@ -480,7 +709,7 @@ function renderDashboard() {
 
   // Recurring commitments (monthly)
   const recurringExpMonthly = (data.recurring.expenses||[]).reduce((sum,r)=>sum+Number(r.amount)/((FREQUENCIES.find(f=>f.key===(r.frequency||"monthly"))||FREQUENCIES[0]).months),0);
-  const recurringInvMonthly = (data.recurring.portfolio||[]).reduce((sum,r)=>sum+(Number(r.amount)*(r.currency==="EUR"?s.fx:1))/((FREQUENCIES.find(f=>f.key===(r.frequency||"monthly"))||FREQUENCIES[0]).months),0);
+  const recurringInvMonthly = (data.recurring.portfolio||[]).reduce((sum,r)=>sum+toALL(Number(r.amount), r.currency)/((FREQUENCIES.find(f=>f.key===(r.frequency||"monthly"))||FREQUENCIES[0]).months),0);
   const recurringTotalMonthly = recurringExpMonthly + recurringInvMonthly;
   const incomeMonthlyAvg = incomeThisYear>0 ? incomeThisYear/12 : (data.settings.savingsRateTarget!==undefined ? null : null);
   const incomeMonthlyRef = incomeThisMonth>0 ? incomeThisMonth : incomeMonthlyAvg;
@@ -496,12 +725,25 @@ function renderDashboard() {
   const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
   const pace = dayOfMonth/daysInMonth;
   const monthlyPace = monthlyBudget>0 ? spentMonth/monthlyBudget : 0;
-  let alertHtml = "";
-  if (monthlyPace > 0.8 && pace < 0.8) {
-    alertHtml = `<div class="alert-banner">⚠ Hai già speso ${(monthlyPace*100).toFixed(0)}% del budget mensile, ma è passato solo il ${(pace*100).toFixed(0)}% del mese. Rallenta il ritmo di spesa.</div>`;
+  const annualPace = annualBudget>0 ? spentYear/annualBudget : 0;
+  const projectedMonthEnd = pace>0 ? spentMonth/pace : spentMonth;
+  const projectedPct = monthlyBudget>0 ? (projectedMonthEnd/monthlyBudget*100) : 0;
+  let banners = [];
+  if (monthlyBudget>0 && monthlyPace > 1) {
+    banners.push(`<div class="alert-banner" style="background:#2A1313;border-color:#8B3A2F;color:#E8A08A;">✕ Budget mensile già superato: ${(monthlyPace*100).toFixed(0)}% (${fmt(spentMonth)} su ${fmt(monthlyBudget)} ALL).</div>`);
+  } else if (monthlyBudget>0 && monthlyPace > 0.75) {
+    banners.push(`<div class="alert-banner">⚠ Hai superato il 75% del budget mensile: ${(monthlyPace*100).toFixed(0)}% (${fmt(spentMonth)} su ${fmt(monthlyBudget)} ALL), con il ${(pace*100).toFixed(0)}% del mese trascorso.</div>`);
+  } else if (monthlyBudget>0 && spentMonth>0 && projectedPct > 110) {
+    banners.push(`<div class="alert-banner">⚠ Al ritmo attuale (${fmt(spentMonth)} ALL in ${dayOfMonth} giorni), a fine mese saresti a circa ${projectedPct.toFixed(0)}% del budget mensile. Rallenta il ritmo di spesa.</div>`);
   } else if (spentMonth>0 && monthlyBudget>0) {
-    alertHtml = `<div class="alert-banner ok">✓ Ritmo di spesa sotto controllo questo mese (${(monthlyPace*100).toFixed(0)}% del budget, ${(pace*100).toFixed(0)}% del mese trascorso).</div>`;
+    banners.push(`<div class="alert-banner ok">✓ Ritmo di spesa sotto controllo (proiezione fine mese: ${projectedPct.toFixed(0)}% del budget, al ritmo attuale).</div>`);
   }
+  if (annualBudget>0 && annualPace >= 0.9 && annualPace <= 1) {
+    banners.push(`<div class="alert-banner">⚠ Stai arrivando al budget annuale: ${(annualPace*100).toFixed(0)}% (${fmt(spentYear)} su ${fmt(annualBudget)} ALL).</div>`);
+  } else if (annualBudget>0 && annualPace > 1) {
+    banners.push(`<div class="alert-banner" style="background:#2A1313;border-color:#8B3A2F;color:#E8A08A;">✕ Budget annuale superato: ${(annualPace*100).toFixed(0)}% (${fmt(spentYear)} su ${fmt(annualBudget)} ALL).</div>`);
+  }
+  const alertHtml = banners.join('');
 
   function trendVal(cur, prev, suffix) {
     if (prev===null || prev===undefined) return `<span class="val">${cur!==null?cur.toFixed(1)+suffix:"—"}</span>`;
@@ -625,14 +867,17 @@ function renderDashboard() {
 }
 
 let incomeCategoryFilter = "all";
+let incomeMacroFilter = "all";
 
 function renderIncome() {
   document.getElementById("headerTitle").textContent = "Reddito";
   const total = yearTotal(data.income, thisYear);
   const sorted = [...data.income].sort((a,b)=> new Date(b.date)-new Date(a.date));
-  const filtered = incomeCategoryFilter==="all" ? sorted : sorted.filter(e=>e.category===incomeCategoryFilter);
+  let filtered = incomeCategoryFilter==="all" ? sorted : sorted.filter(e=>e.category===incomeCategoryFilter);
+  if (incomeMacroFilter !== "all") filtered = filtered.filter(e=>e.macro===incomeMacroFilter);
   const bondOptions = data.portfolio.filter(p=>p.type && p.type.toLowerCase().includes("obbligazione")).map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''}</option>`).join('');
   const incomeFilterOptions = ["all", ...data.categories.income].map(c=>`<option value="${c}" ${incomeCategoryFilter===c?'selected':''}>${c==='all'?'Tutte le categorie':c}</option>`).join('');
+  const incomeMacroFilterOptions = ["all", ...data.macroCategories.income].map(m=>`<option value="${m}" ${incomeMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
   document.getElementById("main").innerHTML = `
     <div class="card">
       <h3>Nuova voce</h3>
@@ -643,7 +888,11 @@ function renderIncome() {
         </div>
         <div><label>Categoria</label>${categorySelect("income")}</div>
         <button class="secondary" type="button" id="toggleCatManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.income ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
+        <div><label>Macro-categoria</label>${macroSelect("income")}</div>
+        <button class="secondary" type="button" id="toggleMacroManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.income ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
+        <button class="secondary" type="button" id="toggleMacroAssign-income" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.income ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         ${bondOptions ? `<div><label>Bond collegato (opzionale, per cedole)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptions}</select></div>` : ''}
+        <div><label>Ricevuto su</label><select name="paymentType"><option value="Banca">Banca</option><option value="Cash">Cash</option><option value="">— non tracciare in Patrimonio —</option></select></div>
         <div style="display:flex; align-items:center; gap:8px;">
           <input type="checkbox" name="applyTax" id="applyTaxChk" style="width:auto;">
           <label style="margin:0;" for="applyTaxChk">Applica ritenuta 15% (interessi/cedole) — importo inserito è lordo</label>
@@ -657,12 +906,25 @@ function renderIncome() {
       <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
       ${categoryManageBlock("income", "Reddito")}
     </div>` : ''}
+    ${macroManagerOpen.income ? `<div class="card">
+      <h3>Gestisci macro-categorie · Reddito</h3>
+      <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
+      ${macroManageBlock("income", "Macro-categorie")}
+    </div>` : ''}
+    ${macroAssignOpen.income ? `<div class="card">
+      <h3>Assegna macro-categoria alle categorie · Reddito</h3>
+      <div class="subtle">Scegli la macro-categoria per ciascuna categoria: da qui in poi, selezionando quella categoria nel form, la macro si compilerà da sola (resta comunque modificabile).</div>
+      ${macroAssignBlock("income")}
+    </div>` : ''}
     <div class="card">
       <h3>Storico ${thisYear} <span class="pill">${data.income.length} voci totali</span></h3>
-      <div style="margin-bottom:10px;"><label>Filtra per categoria</label><select id="incomeFilterSelect">${incomeFilterOptions}</select></div>
+      <div class="row2" style="margin-bottom:10px;">
+        <div><label>Filtra per categoria</label><select id="incomeFilterSelect">${incomeFilterOptions}</select></div>
+        <div><label>Filtra per macro-categoria</label><select id="incomeMacroFilterSelect">${incomeMacroFilterOptions}</select></div>
+      </div>
       ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=>`
         <div class="list-item">
-          <div class="li-main"><span class="li-cat">${e.category}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}${e.taxApplied?` <span class=\"pill\">netto, lordo ${fmt(e.grossAmount)}</span>`:''}</span><span class="li-date">${e.date}</span></div>
+          <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}${e.taxApplied?` <span class=\"pill\">netto, lordo ${fmt(e.grossAmount)}</span>`:''}</span><span class="li-date">${e.date}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(e.amount)} ALL</span>
             <button class="li-del" data-del-income="${e.id}">✕</button>
@@ -672,25 +934,51 @@ function renderIncome() {
     </div>
   `;
   bindCategorySelects();
+  bindMacroSelects();
   document.getElementById("incomeFilterSelect").addEventListener("change", ev=>{ incomeCategoryFilter = ev.target.value; renderIncome(); });
+  document.getElementById("incomeMacroFilterSelect").addEventListener("change", ev=>{ incomeMacroFilter = ev.target.value; renderIncome(); });
   document.getElementById("toggleCatManage-income").addEventListener("click", ()=>{ catManagerOpen.income = !catManagerOpen.income; renderIncome(); });
   if (catManagerOpen.income) bindCategoryManagement("income", renderIncome);
+  document.getElementById("toggleMacroManage-income").addEventListener("click", ()=>{ macroManagerOpen.income = !macroManagerOpen.income; renderIncome(); });
+  if (macroManagerOpen.income) bindMacroManagement("income", renderIncome);
+  document.getElementById("toggleMacroAssign-income").addEventListener("click", ()=>{ macroAssignOpen.income = !macroAssignOpen.income; renderIncome(); });
+  if (macroAssignOpen.income) bindMacroAssign("income", renderIncome);
+  const incCatSelect = document.getElementById("incomeForm").querySelector(".cat-select");
+  const incMacroSelect = document.getElementById("incomeForm").querySelector(".macro-select");
+  if (incCatSelect && incMacroSelect) {
+    const initialMapped = data.categoryMacroMap.income && data.categoryMacroMap.income[incCatSelect.value];
+    if (initialMapped && [...incMacroSelect.options].some(o=>o.value===initialMapped)) incMacroSelect.value = initialMapped;
+    incCatSelect.addEventListener("change", ()=>{
+      const mapped = data.categoryMacroMap.income && data.categoryMacroMap.income[incCatSelect.value];
+      if (mapped && [...incMacroSelect.options].some(o=>o.value===mapped)) incMacroSelect.value = mapped;
+    });
+  }
   document.getElementById("incomeForm").addEventListener("submit", ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
     const cat = ev.target.querySelector(".cat-select").value;
+    const macro = ev.target.querySelector(".macro-select").value;
     const gross = Number(f.get("amount"));
     const applyTax = f.get("applyTax") === "on";
     const net = applyTax ? gross * 0.85 : gross;
-    data.income.push({id:uid(), date:f.get("date"), amount:net, grossAmount: applyTax?gross:null, taxApplied: applyTax, category:cat, note:f.get("note")||"", linkedBondId: f.get("linkedBondId")||null});
+    const paymentType = f.get("paymentType") || "";
+    const date = f.get("date");
+    const incId = uid();
+    data.income.push({id:incId, date, amount:net, grossAmount: applyTax?gross:null, taxApplied: applyTax, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||"", linkedBondId: f.get("linkedBondId")||null});
+    if (paymentType) createLiquidityAdjustment(paymentType, net, date, `Reddito: ${cat}`, incId);
     saveData(); renderIncome();
   });
   document.querySelectorAll("[data-del-income]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ data.income = data.income.filter(e=>e.id!==btn.dataset.delIncome); saveData(); renderIncome(); });
+    btn.addEventListener("click", ()=>{
+      data.income = data.income.filter(e=>e.id!==btn.dataset.delIncome);
+      removeLiquidityAdjustment(btn.dataset.delIncome);
+      saveData(); renderIncome();
+    });
   });
 }
 
 let expenseCategoryFilter = "all";
+let expenseMacroFilter = "all";
 
 function extractAmountFromText(text) {
   const lines = text.split(/\n/);
@@ -816,12 +1104,59 @@ async function analyzeReceiptWithAI(file, onRetry) {
   throw lastErr;
 }
 
+function categoriesForMacro(group, macro, year) {
+  const map = data.categoryMacroMap[group] || {};
+  const catsInMacro = Object.keys(map).filter(c => map[c] === macro);
+  const totals = {};
+  catsInMacro.forEach(c => {
+    let sum = 0;
+    if (group === "portfolio") {
+      data.portfolio.filter(p=>p.type===c && p.date).forEach(p=>{
+        if (new Date(p.date).getFullYear()===year) sum += toALL(Number(p.amount), p.currency);
+      });
+    } else {
+      (data[group]||[]).filter(e=>e.category===c).forEach(e=>{
+        if (new Date(e.date).getFullYear()===year) sum += Number(e.amount);
+      });
+    }
+    totals[c] = sum;
+  });
+  return totals;
+}
+function drawMacroDrilldownChart(group) {
+  const canvasId = "macroDrilldownChart";
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (!macroDrilldownSelected[group] && (data.macroCategories[group]||[]).length>0) {
+    macroDrilldownSelected[group] = data.macroCategories[group][0];
+  }
+  const macro = macroDrilldownSelected[group];
+  const totals = macro ? categoriesForMacro(group, macro, thisYear) : {};
+  const labels = Object.keys(totals);
+  if (macroDrilldownChartInstance) macroDrilldownChartInstance.destroy();
+  if (labels.length === 0) return;
+  macroDrilldownChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: macro, data: labels.map(l=>totals[l]), backgroundColor:'#C9A227' }] },
+    options: {
+      indexAxis:'y', responsive:true,
+      plugins:{ legend:{ display:false } },
+      scales:{
+        x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+        y:{ ticks:{ color:'#8FA3BF', font:{size:11} }, grid:{ display:false } }
+      }
+    }
+  });
+}
+
 function renderExpenses() {
   document.getElementById("headerTitle").textContent = "Spese";
   const total = yearTotal(data.expenses, thisYear);
   const sorted = [...data.expenses].sort((a,b)=> new Date(b.date)-new Date(a.date));
-  const filtered = expenseCategoryFilter==="all" ? sorted : sorted.filter(e=>e.category===expenseCategoryFilter);
+  let filtered = expenseCategoryFilter==="all" ? sorted : sorted.filter(e=>e.category===expenseCategoryFilter);
+  if (expenseMacroFilter !== "all") filtered = filtered.filter(e=>e.macro===expenseMacroFilter);
   const expenseFilterOptions = ["all", ...data.categories.expenses].map(c=>`<option value="${c}" ${expenseCategoryFilter===c?'selected':''}>${c==='all'?'Tutte le categorie':c}</option>`).join('');
+  const expenseMacroFilterOptions = ["all", ...data.macroCategories.expenses].map(m=>`<option value="${m}" ${expenseMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
 
   const catsThisMonth = {}; const catsLastMonth = {};
   data.expenses.forEach(e=>{
@@ -869,6 +1204,7 @@ function renderExpenses() {
         <div><label>Macro-categoria</label>${macroSelect("expenses")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.expenses ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <button class="secondary" type="button" id="toggleMacroAssign-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.expenses ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
+        <div><label>Pagato con</label><select name="paymentType"><option value="Banca">Banca</option><option value="Cash">Cash</option><option value="">— non tracciare in Patrimonio —</option></select></div>
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -896,6 +1232,12 @@ function renderExpenses() {
       <h3>Macro-categorie: questo mese vs mese scorso</h3>
       <div class="chart-wrap"><canvas id="macroCompareChart" height="${Math.max(140, allMacros.length*30)}"></canvas></div>
     </div>` : ''}
+    ${(data.macroCategories.expenses||[]).length>0 ? `<div class="card">
+      <h3>Dettaglio per macro-categoria</h3>
+      <div class="subtle">Scegli una macro-categoria per vedere il totale (${thisYear}) delle categorie che la compongono.</div>
+      <div style="margin-bottom:10px;"><select id="macroDrilldownSelect">${data.macroCategories.expenses.map(m=>`<option value="${m}" ${macroDrilldownSelected.expenses===m?'selected':''}>${m}</option>`).join('')}</select></div>
+      <div class="chart-wrap"><canvas id="macroDrilldownChart" height="180"></canvas></div>
+    </div>` : ''}
     ${monthsWithData>0 ? `<div class="card">
       <h3>Spesa mensile · ${thisYear}</h3>
       <div class="subtle">Media semplice (÷${now.getMonth()+1} mesi trascorsi): ${fmt(monthlyAvgSimple)} ALL/mese · media reale (÷${monthsWithData} mesi con almeno una spesa): ${fmt(monthlyAvgEffective)} ALL/mese</div>
@@ -904,10 +1246,13 @@ function renderExpenses() {
     ${renderDailyAveragesCard()}
     <div class="card">
       <h3>Storico ${thisYear} <span class="pill">${data.expenses.length} voci totali</span></h3>
-      <div style="margin-bottom:10px;"><label>Filtra per categoria</label><select id="expenseFilterSelect">${expenseFilterOptions}</select></div>
+      <div class="row2" style="margin-bottom:10px;">
+        <div><label>Filtra per categoria</label><select id="expenseFilterSelect">${expenseFilterOptions}</select></div>
+        <div><label>Filtra per macro-categoria</label><select id="expenseMacroFilterSelect">${expenseMacroFilterOptions}</select></div>
+      </div>
       ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=>`
         <div class="list-item">
-          <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}</span><span class="li-date">${e.date}</span></div>
+          <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}</span><span class="li-date">${e.date}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt exp">${fmt(e.amount)} ALL</span>
             <button class="li-del" data-del-expense="${e.id}">✕</button>
@@ -919,6 +1264,7 @@ function renderExpenses() {
   bindCategorySelects();
   bindMacroSelects();
   document.getElementById("expenseFilterSelect").addEventListener("change", ev=>{ expenseCategoryFilter = ev.target.value; renderExpenses(); });
+  document.getElementById("expenseMacroFilterSelect").addEventListener("change", ev=>{ expenseMacroFilter = ev.target.value; renderExpenses(); });
   document.getElementById("toggleCatManage-expenses").addEventListener("click", ()=>{ catManagerOpen.expenses = !catManagerOpen.expenses; renderExpenses(); });
   if (catManagerOpen.expenses) bindCategoryManagement("expenses", renderExpenses);
   document.getElementById("toggleMacroManage-expenses").addEventListener("click", ()=>{ macroManagerOpen.expenses = !macroManagerOpen.expenses; renderExpenses(); });
@@ -1014,11 +1360,20 @@ function renderExpenses() {
     const f = new FormData(ev.target);
     const cat = ev.target.querySelector(".cat-select").value;
     const macro = ev.target.querySelector(".macro-select").value;
-    data.expenses.push({id:uid(), date:f.get("date"), amount:Number(f.get("amount")), category:cat, macro:macro||null, note:f.get("note")||""});
+    const paymentType = f.get("paymentType") || "";
+    const amount = Number(f.get("amount"));
+    const date = f.get("date");
+    const expId = uid();
+    data.expenses.push({id:expId, date, amount, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||""});
+    if (paymentType) createLiquidityAdjustment(paymentType, -amount, date, `Spesa: ${cat}`, expId);
     saveData(); renderExpenses();
   });
   document.querySelectorAll("[data-del-expense]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ data.expenses = data.expenses.filter(e=>e.id!==btn.dataset.delExpense); saveData(); renderExpenses(); });
+    btn.addEventListener("click", ()=>{
+      data.expenses = data.expenses.filter(e=>e.id!==btn.dataset.delExpense);
+      removeLiquidityAdjustment(btn.dataset.delExpense);
+      saveData(); renderExpenses();
+    });
   });
 
   if (allCats.length>0) {
@@ -1067,6 +1422,13 @@ function renderExpenses() {
     });
   }
 
+  drawMacroDrilldownChart("expenses");
+  const macroDrilldownSelectEl = document.getElementById("macroDrilldownSelect");
+  if (macroDrilldownSelectEl) macroDrilldownSelectEl.addEventListener("change", ev=>{
+    macroDrilldownSelected.expenses = ev.target.value;
+    drawMacroDrilldownChart("expenses");
+  });
+
   if (monthsWithData>0) {
     const ctx3 = document.getElementById("monthlyTotalsChart");
     if (monthlyTotalsChartInstance) monthlyTotalsChartInstance.destroy();
@@ -1092,31 +1454,103 @@ function renderExpenses() {
 }
 
 let portfolioTypeFilter = "all";
+let portfolioMacroFilter = "all";
 
 function computeWeightedDuration() {
   const items = data.portfolio.filter(p => p.maturityDate);
   if (items.length === 0) return null;
   let weightSum = 0, weightedYears = 0;
   items.forEach(p => {
-    const mv = ((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount) * (p.currency==="EUR"?data.settings.fx:1);
-    const years = Math.max(0,(new Date(p.maturityDate) - now) / (365.25*86400000));
+    const mv = toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency);
     weightSum += mv; weightedYears += mv*years;
   });
   return weightSum > 0 ? weightedYears/weightSum : null;
+}
+
+function registerBondCoupon(bondId) {
+  const bond = data.portfolio.find(p=>p.id===bondId);
+  if (!bond) return;
+  const dateStr = window.prompt("Data di pagamento della cedola (YYYY-MM-DD):", todayISO);
+  if (!dateStr) return;
+  const nominal = bond.amount;
+  const rate = Number(bond.couponRate) || 0;
+  const grossCoupon = nominal * rate / 100;
+  const taxRate = Number(bond.bondTaxRate) || 15;
+  const taxAmt = grossCoupon * taxRate / 100;
+  const commAmt = computeCommissionAmount(bond.couponCommissionType, bond.couponCommissionValue, grossCoupon);
+  const netCoupon = grossCoupon - taxAmt - commAmt;
+  const taxCat = ensureBondTaxCategory(bond.bondYears);
+  const msg = `Cedola lorda: ${fmt(grossCoupon)} ALL\nTassazione (${taxRate}%): -${fmt(taxAmt)} ALL\nCommissione: -${fmt(commAmt)} ALL\nNetto accreditato in Banca: ${fmt(netCoupon)} ALL\n\nConfermi?`;
+  if (!confirm(msg)) return;
+  const incId = uid();
+  data.income.push({id:incId, date:dateStr, amount:grossCoupon, category:"Cedola e le info", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Cedola ${bond.type}`, linkedBondId:bond.id});
+  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione cedola"});
+  if (commAmt > 0) data.expenses.push({id:uid(), date:dateStr, amount:commAmt, category:"Commissione disbursement cedola", note:"Commissione cedola"});
+  createLiquidityAdjustment("Banca", netCoupon, dateStr, `Cedola netta: ${bond.type}`, incId);
+  saveData(); renderPortfolio();
+}
+function registerDepositInterest(depId) {
+  const dep = data.portfolio.find(p=>p.id===depId);
+  if (!dep) return;
+  const dateStr = window.prompt("Data di pagamento dell'interesse (YYYY-MM-DD):", todayISO);
+  if (!dateStr) return;
+  const nominal = dep.amount;
+  const rate = Number(dep.depositRate) || 0;
+  const grossInterest = nominal * rate / 100;
+  const taxRate = Number(dep.depositTaxRate) || 15;
+  const taxAmt = grossInterest * taxRate / 100;
+  const netInterest = grossInterest - taxAmt;
+  const taxCat = ensureDepositTaxCategory(dep.depositYears);
+  const msg = `Interesse lordo: ${fmt(grossInterest)} ALL\nTassazione (${taxRate}%): -${fmt(taxAmt)} ALL\nNetto accreditato in Banca: ${fmt(netInterest)} ALL\n\nConfermi?`;
+  if (!confirm(msg)) return;
+  const incId = uid();
+  data.income.push({id:incId, date:dateStr, amount:grossInterest, category:"Interesse deposito", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Interesse ${dep.type}`, linkedBondId:dep.id});
+  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione interesse deposito"});
+  createLiquidityAdjustment("Banca", netInterest, dateStr, `Interesse netto: ${dep.type}`, incId);
+  saveData(); renderPortfolio();
+}
+function registerDepositMaturity(depId) {
+  const dep = data.portfolio.find(p=>p.id===depId);
+  if (!dep) return;
+  const dateStr = window.prompt("Data di scadenza/liquidazione (YYYY-MM-DD):", dep.maturityDate || todayISO);
+  if (!dateStr) return;
+  const nominal = dep.amount;
+  const rate = Number(dep.depositRate) || 0;
+  const years = Number(dep.depositYears) || 1;
+  const grossInterest = nominal * rate / 100 * years;
+  const taxRate = Number(dep.depositTaxRate) || 15;
+  const taxAmt = grossInterest * taxRate / 100;
+  const netInterest = grossInterest - taxAmt;
+  const taxCat = ensureDepositTaxCategory(dep.depositYears);
+  const msg = `Deposito a pagamento finale — interesse semplice stimato su ${years} anni al ${rate}%.\nInteresse lordo: ${fmt(grossInterest)} ALL\nTassazione (${taxRate}%): -${fmt(taxAmt)} ALL\nNetto accreditato in Banca: ${fmt(netInterest)} ALL\n(Il capitale nominale resta registrato come posizione separata.)\n\nConfermi?`;
+  if (!confirm(msg)) return;
+  const incId = uid();
+  data.income.push({id:incId, date:dateStr, amount:grossInterest, category:"Interesse deposito", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Liquidazione finale ${dep.type}`, linkedBondId:dep.id});
+  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione liquidazione deposito"});
+  createLiquidityAdjustment("Banca", netInterest, dateStr, `Liquidazione netta: ${dep.type}`, incId);
+  saveData(); renderPortfolio();
 }
 
 function renderPortfolio() {
   document.getElementById("headerTitle").textContent = "Patrimonio";
   const totalALL = portfolioTotalALL();
   const duration = computeWeightedDuration();
+  const bondPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("obbligazione") && p.amount > 0);
+  const bondSaleOptions = bondPositions.map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''} — ${fmt(p.amount)} ${p.currency}</option>`).join('');
+  const fundPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("fondo") && !p.type.toLowerCase().includes("pensione") && p.amount > 0);
+  const fundSaleOptions = fundPositions.map(p=>`<option value="${p.id}">${p.fundName||p.type}${p.note?' · '+p.note:''} — ${p.fundQuotaCount||0} quote</option>`).join('');
   const eurTotal = data.portfolio.reduce((s,p)=>{
     const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount;
-    return s + (p.currency==="EUR" ? mv*data.settings.fx : 0);
+    return s + (p.currency==="EUR" ? toALL(mv,"EUR") : 0);
   },0);
-  const allTotal = totalALL - eurTotal;
+  const usdTotal = data.portfolio.reduce((s,p)=>{
+    const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount;
+    return s + (p.currency==="USD" ? toALL(mv,"USD") : 0);
+  },0);
+  const allTotal = totalALL - eurTotal - usdTotal;
   const typeTotals = {};
   data.portfolio.forEach(p=>{
-    const mv = ((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount) * (p.currency==="EUR"?data.settings.fx:1);
+    const mv = toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency);
     typeTotals[p.type] = (typeTotals[p.type]||0) + mv;
   });
   const typeKeys = Object.keys(typeTotals).sort((a,b)=>typeTotals[b]-typeTotals[a]);
@@ -1124,7 +1558,9 @@ function renderPortfolio() {
   const sortedSnapshots = [...data.snapshots].sort((a,b)=> new Date(a.date)-new Date(b.date));
 
   const filterOptions = ["all", ...data.categories.portfolio].map(t=>`<option value="${t}" ${portfolioTypeFilter===t?'selected':''}>${t==='all'?'Tutti i tipi':t}</option>`).join('');
-  const filteredPositions = data.portfolio.filter(p=> portfolioTypeFilter==="all" || p.type===portfolioTypeFilter);
+  const macroFilterOptions = ["all", ...data.macroCategories.portfolio].map(m=>`<option value="${m}" ${portfolioMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
+  let filteredPositions = data.portfolio.filter(p=> portfolioTypeFilter==="all" || p.type===portfolioTypeFilter);
+  if (portfolioMacroFilter !== "all") filteredPositions = filteredPositions.filter(p=>p.macro===portfolioMacroFilter);
 
   document.getElementById("main").innerHTML = `
     <div class="card">
@@ -1132,16 +1568,77 @@ function renderPortfolio() {
       <form class="entry" id="portForm">
         <div><label>Tipo</label>${categorySelect("portfolio")}</div>
         <button class="secondary" type="button" id="toggleCatManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.portfolio ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
+        <div><label>Macro-categoria</label>${macroSelect("portfolio")}</div>
+        <button class="secondary" type="button" id="toggleMacroManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.portfolio ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
+        <button class="secondary" type="button" id="toggleMacroAssign-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.portfolio ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         <div class="row2">
           <div><label>Importo nominale</label><input type="number" name="amount" placeholder="0" required></div>
-          <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option></select></div>
+          <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
         </div>
         <div class="row2">
           <div><label>Valore di mercato (opz.)</label><input type="number" name="marketValue" placeholder="= nominale se vuoto"></div>
-          <div><label>Data movimento</label><input type="date" name="date" value="${todayISO}"></div>
+          <div><label>Data di partenza</label><input type="date" name="date" value="${todayISO}"></div>
         </div>
-        <div><label>Data scadenza (opz., per bond)</label><input type="date" name="maturityDate"></div>
-        <div><label>Nota (es. banca, cedola %)</label><input type="text" name="note" placeholder=""></div>
+        <div><label>Data scadenza (opz., per bond/deposito)</label><input type="date" name="maturityDate"></div>
+
+        <div id="titleCodeField" style="display:none;">
+          <label>Codice titolo</label><input type="text" name="securityCode" id="securityCodeInput" maxlength="8" value="${peekNextSecurityCode()}">
+        </div>
+
+        <div id="bondFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
+          <label style="color:#C9A227;">Dettagli obbligazione</label>
+          <div class="row2">
+            <div><label>Modalità</label><select name="bondMode" id="bondModeSelect"><option value="cedola">Con cedola periodica</option><option value="finale">Liquidazione finale (zero-coupon)</option></select></div>
+            <div><label>Durata (anni, per la tassa)</label><input type="number" name="bondYears" placeholder="es. 7"></div>
+          </div>
+          <div class="row2" id="bondCouponRow">
+            <div><label>Cedola annua (%)</label><input type="number" step="0.01" name="couponRate" placeholder="es. 4.5"></div>
+            <div><label>Frequenza cedola</label><select name="couponFrequency"><option value="monthly">Mensile</option><option value="quarterly">Trimestrale</option><option value="semiannual">Semestrale</option><option value="annual" selected>Annuale</option><option value="biennial">Biennale</option></select></div>
+          </div>
+          <div class="row2">
+            <div><label>Tassazione cedola/rendimento (%)</label><input type="number" step="0.01" name="bondTaxRate" value="15"></div>
+            <div></div>
+          </div>
+          <div class="row2" id="bondPriceRow" style="display:none;">
+            <div><label>Prezzo di collocamento</label><input type="number" step="0.01" name="purchasePrice" placeholder="es. 97"></div>
+            <div><label>Prezzo di rimborso</label><input type="number" step="0.01" name="redemptionPrice" value="100"></div>
+          </div>
+          <div class="row2">
+            <div><label>Commissione collocamento</label><input type="number" step="0.01" name="placementCommissionValue" placeholder="0"></div>
+            <div><label>Tipo</label><select name="placementCommissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
+          </div>
+          <div class="row2">
+            <div><label>Commissione disbursement cedola</label><input type="number" step="0.01" name="couponCommissionValue" placeholder="0"></div>
+            <div><label>Tipo</label><select name="couponCommissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
+          </div>
+          <div><label>Commissione titoli annua (%) — 0 in Albania, >0 es. Italia</label><input type="number" step="0.01" name="custodyFeeRate" value="0"></div>
+        </div>
+
+        <div id="depositFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
+          <label style="color:#C9A227;">Dettagli deposito</label>
+          <div class="row2">
+            <div><label>Modalità</label><select name="depositMode"><option value="cedola">Con cedola periodica</option><option value="finale">Pagamento finale a scadenza</option></select></div>
+            <div><label>Tasso annuo (%)</label><input type="number" step="0.01" name="depositRate" placeholder="es. 3.2"></div>
+          </div>
+          <div class="row2">
+            <div><label>Frequenza cedola (se con cedola)</label><select name="couponFrequency"><option value="monthly">Mensile</option><option value="quarterly">Trimestrale</option><option value="semiannual">Semestrale</option><option value="annual" selected>Annuale</option></select></div>
+            <div><label>Tassazione (%)</label><input type="number" step="0.01" name="depositTaxRate" value="15"></div>
+          </div>
+          <div><label>Durata (anni)</label><input type="number" name="depositYears" placeholder="es. 3"></div>
+        </div>
+
+        <div id="fundFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
+          <label style="color:#C9A227;">Dettagli fondo</label>
+          <div><label>Nome fondo</label><input type="text" name="fundName" placeholder="es. Raiffeisen Prestigj"></div>
+          <div class="row2">
+            <div><label>Prezzo per quota (acquisto)</label><input type="number" step="0.0001" name="fundPurchaseQuotaPrice" id="fundPurchaseQuotaPrice" placeholder="es. 1780.65"></div>
+            <div><label>Numero di quote</label><input type="number" step="0.0001" name="fundQuotaCount" id="fundQuotaCount" placeholder="es. 10"></div>
+          </div>
+          <div><label>Valore totale investito (auto)</label><input type="number" id="fundInvestedPreview" readonly style="opacity:0.7;"></div>
+          <div><label>Prezzo attuale per quota (opz., per il rendimento)</label><input type="number" step="0.0001" name="fundCurrentQuotaPrice" placeholder="lascia vuoto se = prezzo acquisto"></div>
+        </div>
+
+        <div><label>Nota (es. banca)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
     </div>
@@ -1150,6 +1647,76 @@ function renderPortfolio() {
       <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
       ${categoryManageBlock("portfolio", "Patrimonio / Investimenti")}
     </div>` : ''}
+    ${macroManagerOpen.portfolio ? `<div class="card">
+      <h3>Gestisci macro-categorie · Patrimonio</h3>
+      <div class="subtle">Modifica il nome (poi "Salva modifiche" per applicarlo anche alle voci già registrate), elimina, o aggiungine di nuove.</div>
+      ${macroManageBlock("portfolio", "Macro-categorie")}
+    </div>` : ''}
+    ${macroAssignOpen.portfolio ? `<div class="card">
+      <h3>Assegna macro-categoria alle categorie · Patrimonio</h3>
+      <div class="subtle">Scegli la macro-categoria per ciascun tipo: da qui in poi, selezionando quel tipo nel form, la macro si compilerà da sola (resta comunque modificabile).</div>
+      ${macroAssignBlock("portfolio")}
+    </div>` : ''}
+    ${bondPositions.length>0 ? `<div class="card">
+      <h3>Vendita obbligazione</h3>
+      <div class="subtle">Registra la vendita (o il rimborso a scadenza) di un'obbligazione: calcola capital gain, tassazione e commissione, e aggiorna Patrimonio, Reddito e Costi.</div>
+      <form class="entry" id="bondSaleForm">
+        <div><label>Obbligazione</label><select id="bondSaleSelect" name="bondId">${bondSaleOptions}</select></div>
+        <div class="row2">
+          <div><label>Capitale investito (nominale)</label><input type="number" id="bondSaleNominal" name="nominal" required></div>
+          <div><label>Prezzo di collocamento</label><input type="number" step="0.01" id="bondSalePurchasePrice" name="purchasePrice" value="100"></div>
+        </div>
+        <div class="row2">
+          <div><label>Data di vendita</label><input type="date" name="saleDate" value="${todayISO}"></div>
+          <div><label>Prezzo di vendita</label><input type="number" step="0.01" name="salePrice" value="100" required></div>
+        </div>
+        <div class="row2">
+          <div><label>Aliquota tassazione capital gain (%)</label><input type="number" step="0.01" id="bondSaleTaxRate" name="taxRate" value="15"></div>
+          <div><label>Commissione operazione</label><input type="number" step="0.01" name="commissionValue" value="0"></div>
+        </div>
+        <div><label>Tipo commissione</label><select name="commissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
+        <div id="bondSalePreview" style="background:#0F1B2B; border:1px solid #2E4159; border-radius:6px; padding:12px; margin-top:6px; font-family:'IBM Plex Mono',monospace; font-size:12.5px;"></div>
+        <button class="primary" type="submit">Registra vendita</button>
+      </form>
+    </div>` : ''}
+    ${fundPositions.length>0 ? `<div class="card">
+      <h3>Vendita fondo</h3>
+      <div class="subtle">Registra la vendita di quote di un fondo: calcola capital gain, tassazione e commissione, e aggiorna Patrimonio, Reddito e Costi.</div>
+      <form class="entry" id="fundSaleForm">
+        <div><label>Fondo</label><select id="fundSaleSelect" name="fundId">${fundSaleOptions}</select></div>
+        <div class="row2">
+          <div><label>Quote vendute</label><input type="number" step="0.0001" id="fundSaleQuotaCount" name="quotaCount" required></div>
+          <div><label>Prezzo per quota (acquisto)</label><input type="number" step="0.0001" id="fundSalePurchasePrice" name="purchasePrice" required></div>
+        </div>
+        <div class="row2">
+          <div><label>Data di vendita</label><input type="date" name="saleDate" value="${todayISO}"></div>
+          <div><label>Prezzo di vendita per quota</label><input type="number" step="0.0001" name="salePrice" required></div>
+        </div>
+        <div class="row2">
+          <div><label>Aliquota tassazione capital gain (%)</label><input type="number" step="0.01" name="taxRate" value="15"></div>
+          <div><label>Commissione operazione</label><input type="number" step="0.01" name="commissionValue" value="0"></div>
+        </div>
+        <div><label>Tipo commissione</label><select name="commissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
+        <div id="fundSalePreview" style="background:#0F1B2B; border:1px solid #2E4159; border-radius:6px; padding:12px; margin-top:6px; font-family:'IBM Plex Mono',monospace; font-size:12.5px;"></div>
+        <button class="primary" type="submit">Registra vendita</button>
+      </form>
+    </div>` : ''}
+    <div class="card">
+      <h3>Trasferimento liquidità</h3>
+      <div class="subtle">Sposta denaro tra Banca e Cash (es. prelievo contanti). Registra due movimenti collegati, senza toccare il totale complessivo del patrimonio.</div>
+      <form class="entry" id="liquidityTransferForm">
+        <div class="row2">
+          <div><label>Da</label><select name="from"><option value="Banca">Banca</option><option value="Cash">Cash</option></select></div>
+          <div><label>A</label><select name="to"><option value="Cash">Cash</option><option value="Banca">Banca</option></select></div>
+        </div>
+        <div class="row2">
+          <div><label>Importo (ALL)</label><input type="number" name="amount" placeholder="0" required></div>
+          <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
+        </div>
+        <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
+        <button class="secondary" type="submit">Trasferisci</button>
+      </form>
+    </div>
     <div class="card">
       <h3>Allocazione</h3>
       <div class="grid3" style="grid-template-columns:1fr 1fr;">
@@ -1171,7 +1738,10 @@ function renderPortfolio() {
     </div>` : ''}
     <div class="card">
       <h3>Posizioni attuali</h3>
-      <div style="margin-bottom:10px;"><label>Filtra per tipo</label><select id="portFilterSelect">${filterOptions}</select></div>
+      <div class="row2" style="margin-bottom:10px;">
+        <div><label>Filtra per tipo</label><select id="portFilterSelect">${filterOptions}</select></div>
+        <div><label>Filtra per macro-categoria</label><select id="portMacroFilterSelect">${macroFilterOptions}</select></div>
+      </div>
       ${filteredPositions.length===0 ? '<div class="empty">Nessuna posizione con questo filtro.</div>' : filteredPositions.map(p=>{
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
         let maturityTag = "";
@@ -1181,24 +1751,78 @@ function renderPortfolio() {
           else if (daysLeft < 0) maturityTag = `<span class="maturity-tag">scaduta</span>`;
         }
         const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? p.marketValue : p.amount;
-        return `<div class="list-item">
-          <div class="li-main"><span class="li-cat">${p.type}${p.note?' · '+p.note:''}${maturityTag}</span><span class="li-date">${p.date||''} · ${p.currency}${coupons>0?' · cedole ricevute: '+fmt(coupons)+' ALL':''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
-          <div style="display:flex;align-items:center;">
-            <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+        const autoNote = (p.bondMode==="cedola"||p.depositMode==="cedola") ? '<div class="subtle" style="margin-top:4px;">Cedola/interesse generati automaticamente in base alla frequenza impostata.</div>'
+          : (p.depositMode==="finale"||p.bondMode==="finale") ? '<div class="subtle" style="margin-top:4px;">Liquidazione automatica alla scadenza.</div>' : '';
+        let rendHtml = "";
+        const typeL = (p.type||"").toLowerCase();
+        if (typeL.includes("fondo") && !typeL.includes("pensione") && p.amount>0) {
+          const rendValore = mv - p.amount;
+          const rendPct = (rendValore/p.amount*100);
+          const rc = rendValore>=0 ? "#3F6E5E" : "#8B3A2F";
+          rendHtml = `<div class="subtle" style="margin-top:4px; color:${rc};">Rendimento: ${rendPct>=0?'+':''}${rendPct.toFixed(2)}% (${rendValore>=0?'+':''}${fmt(rendValore)} ALL) — ${p.fundQuotaCount||0} quote a ${fmt(p.fundCurrentQuotaPrice||p.fundPurchaseQuotaPrice||0)}/quota</div>`;
+        } else if (typeL.includes("obbligazione") && p.amount>0) {
+          const rendValore = coupons;
+          const rendPct = (rendValore/p.amount*100);
+          const rc = rendValore>=0 ? "#3F6E5E" : "#8B3A2F";
+          rendHtml = `<div class="subtle" style="margin-top:4px; color:${rc};">Rendimento cedole/plusvalenze ricevute: +${rendPct.toFixed(2)}% (+${fmt(rendValore)} ALL) sul capitale investito</div>`;
+        }
+        return `<div class="list-item" style="flex-direction:column; align-items:stretch;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="li-main"><span class="li-cat">${p.fundName || p.type}${p.securityCode?' <span class=\"pill\">'+p.securityCode+'</span>':''}${p.macro?' <span class=\"pill\">'+p.macro+'</span>':''}${p.note?' · '+p.note:''}${maturityTag}</span><span class="li-date">${p.date||''} · ${p.currency}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
+            <div style="display:flex;align-items:center;">
+              <span class="li-amt">${fmt(mv)} ${p.currency}</span>
+              <button class="li-del" data-del-port="${p.id}">✕</button>
+            </div>
           </div>
+          ${rendHtml}
+          ${autoNote}
         </div>`;
       }).join('')}
-      <div class="section-total"><span>Totale (mercato)</span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} €</span></div>
+      <div class="section-total"><span>Totale (mercato)</span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} € · ${fmt(totalALL/data.settings.fxUsd)} $</span></div>
     </div>
   `;
   bindCategorySelects();
+  bindMacroSelects();
+
+  function updatePortFieldsVisibility() {
+    const catSel = document.getElementById("portForm").querySelector(".cat-select");
+    const val = (catSel.value || "").toLowerCase();
+    const bondFields = document.getElementById("bondFields");
+    const depositFields = document.getElementById("depositFields");
+    const fundFields = document.getElementById("fundFields");
+    const isFund = val.includes("fondo") && !val.includes("pensione");
+    const isSecurity = val.includes("obbligazione") || val.includes("deposito") || isFund;
+    bondFields.style.display = val.includes("obbligazione") ? "block" : "none";
+    depositFields.style.display = val.includes("deposito") ? "block" : "none";
+    fundFields.style.display = isFund ? "block" : "none";
+    document.getElementById("titleCodeField").style.display = isSecurity ? "block" : "none";
+  }
+  function updateFundInvestedPreview() {
+    const price = Number(document.getElementById("fundPurchaseQuotaPrice").value) || 0;
+    const qty = Number(document.getElementById("fundQuotaCount").value) || 0;
+    const invested = price * qty;
+    document.getElementById("fundInvestedPreview").value = invested ? invested.toFixed(2) : "";
+    const amountInput = document.getElementById("portForm").querySelector('[name="amount"]');
+    if (invested) amountInput.value = invested.toFixed(2);
+  }
+  document.getElementById("fundPurchaseQuotaPrice").addEventListener("input", updateFundInvestedPreview);
+  document.getElementById("fundQuotaCount").addEventListener("input", updateFundInvestedPreview);
+  function updateBondModeVisibility() {
+    const mode = document.getElementById("bondModeSelect").value;
+    document.getElementById("bondCouponRow").style.display = mode === "cedola" ? "flex" : "none";
+    document.getElementById("bondPriceRow").style.display = mode === "finale" ? "flex" : "none";
+  }
+  const portCatSelectForFields = document.getElementById("portForm").querySelector(".cat-select");
+  portCatSelectForFields.addEventListener("change", updatePortFieldsVisibility);
+  document.getElementById("bondModeSelect").addEventListener("change", updateBondModeVisibility);
+  updatePortFieldsVisibility();
+  updateBondModeVisibility();
 
   const allocCtx = document.getElementById("allocCurrencyChart");
   if (window.allocCurrencyChartInstance) window.allocCurrencyChartInstance.destroy();
   window.allocCurrencyChartInstance = new Chart(allocCtx, {
     type:'doughnut',
-    data:{ labels:['ALL','EUR'], datasets:[{ data:[allTotal, eurTotal], backgroundColor:['#C9A227','#3F6E5E'] }] },
+    data:{ labels:['ALL','EUR','USD'], datasets:[{ data:[allTotal, eurTotal, usdTotal], backgroundColor:['#C9A227','#3F6E5E','#3F5A72'] }] },
     options:{ plugins:{ legend:{ position:'bottom', labels:{ color:'#8FA3BF', font:{size:10} } } } }
   });
   const allocTypeCtx = document.getElementById("allocTypeChart");
@@ -1219,22 +1843,236 @@ function renderPortfolio() {
   }
 
   document.getElementById("portFilterSelect").addEventListener("change", ev=>{ portfolioTypeFilter = ev.target.value; renderPortfolio(); });
+  document.getElementById("portMacroFilterSelect").addEventListener("change", ev=>{ portfolioMacroFilter = ev.target.value; renderPortfolio(); });
   document.getElementById("toggleCatManage-portfolio").addEventListener("click", ()=>{ catManagerOpen.portfolio = !catManagerOpen.portfolio; renderPortfolio(); });
   if (catManagerOpen.portfolio) bindCategoryManagement("portfolio", renderPortfolio);
+  document.getElementById("toggleMacroManage-portfolio").addEventListener("click", ()=>{ macroManagerOpen.portfolio = !macroManagerOpen.portfolio; renderPortfolio(); });
+  if (macroManagerOpen.portfolio) bindMacroManagement("portfolio", renderPortfolio);
+  document.getElementById("toggleMacroAssign-portfolio").addEventListener("click", ()=>{ macroAssignOpen.portfolio = !macroAssignOpen.portfolio; renderPortfolio(); });
+  if (macroAssignOpen.portfolio) bindMacroAssign("portfolio", renderPortfolio);
+  const portCatSelect = document.getElementById("portForm").querySelector(".cat-select");
+  const portMacroSelect = document.getElementById("portForm").querySelector(".macro-select");
+  if (portCatSelect && portMacroSelect) {
+    const initialMapped = data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[portCatSelect.value];
+    if (initialMapped && [...portMacroSelect.options].some(o=>o.value===initialMapped)) portMacroSelect.value = initialMapped;
+    portCatSelect.addEventListener("change", ()=>{
+      const mapped = data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[portCatSelect.value];
+      if (mapped && [...portMacroSelect.options].some(o=>o.value===mapped)) portMacroSelect.value = mapped;
+    });
+  }
 
   document.getElementById("portForm").addEventListener("submit", ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
     const type = ev.target.querySelector(".cat-select").value;
-    data.portfolio.push({
-      id:uid(), type, amount:Number(f.get("amount")), currency:f.get("currency"),
-      marketValue: f.get("marketValue")? Number(f.get("marketValue")) : null,
-      date:f.get("date")||todayISO, maturityDate: f.get("maturityDate")||null, note:f.get("note")||""
-    });
+    const macro = ev.target.querySelector(".macro-select").value;
+    const typeLower = type.toLowerCase();
+    const isBond = typeLower.includes("obbligazione");
+    const isDeposit = typeLower.includes("deposito");
+    const isFund = typeLower.includes("fondo") && !typeLower.includes("pensione");
+    const date = f.get("date") || todayISO;
+    const fundQuotaCount = isFund ? (Number(f.get("fundQuotaCount"))||0) : 0;
+    const fundPurchasePrice = isFund ? (Number(f.get("fundPurchaseQuotaPrice"))||0) : 0;
+    const fundCurrentPrice = isFund ? (Number(f.get("fundCurrentQuotaPrice"))||fundPurchasePrice) : 0;
+    const nominal = isFund ? (fundQuotaCount*fundPurchasePrice) : Number(f.get("amount"));
+    const posId = uid();
+    const posObj = {
+      id:posId, type, macro:macro||null, amount:nominal, currency:f.get("currency"),
+      marketValue: isFund ? (fundQuotaCount*fundCurrentPrice) : (f.get("marketValue")? Number(f.get("marketValue")) : null),
+      date, maturityDate: f.get("maturityDate")||null, note:f.get("note")||""
+    };
+    let placementCommissionAmt = 0;
+    if (isBond) {
+      posObj.bondMode = f.get("bondMode") || "cedola";
+      posObj.bondYears = f.get("bondYears") || null;
+      posObj.couponRate = f.get("couponRate") ? Number(f.get("couponRate")) : null;
+      posObj.couponFrequency = f.get("couponFrequency") || "annual";
+      posObj.bondTaxRate = f.get("bondTaxRate") ? Number(f.get("bondTaxRate")) : 15;
+      posObj.purchasePrice = f.get("purchasePrice") ? Number(f.get("purchasePrice")) : 100;
+      posObj.redemptionPrice = f.get("redemptionPrice") ? Number(f.get("redemptionPrice")) : 100;
+      posObj.placementCommissionType = f.get("placementCommissionType") || "percent";
+      posObj.placementCommissionValue = f.get("placementCommissionValue") ? Number(f.get("placementCommissionValue")) : 0;
+      posObj.couponCommissionType = f.get("couponCommissionType") || "percent";
+      posObj.couponCommissionValue = f.get("couponCommissionValue") ? Number(f.get("couponCommissionValue")) : 0;
+      posObj.custodyFeeRate = f.get("custodyFeeRate") ? Number(f.get("custodyFeeRate")) : 0;
+      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+      placementCommissionAmt = computeCommissionAmount(posObj.placementCommissionType, posObj.placementCommissionValue, nominal);
+    } else if (isDeposit) {
+      posObj.depositMode = f.get("depositMode") || "cedola";
+      posObj.depositRate = f.get("depositRate") ? Number(f.get("depositRate")) : null;
+      posObj.couponFrequency = f.get("couponFrequency") || "annual";
+      posObj.depositTaxRate = f.get("depositTaxRate") ? Number(f.get("depositTaxRate")) : 15;
+      posObj.depositYears = f.get("depositYears") || null;
+      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+    } else if (isFund) {
+      posObj.fundName = f.get("fundName") || "";
+      posObj.fundQuotaCount = fundQuotaCount;
+      posObj.fundPurchaseQuotaPrice = fundPurchasePrice;
+      posObj.fundCurrentQuotaPrice = fundCurrentPrice;
+      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+    }
+    data.portfolio.push(posObj);
+    if (placementCommissionAmt > 0) {
+      const commId = uid();
+      data.expenses.push({id:commId, date, amount:placementCommissionAmt, category:"Commissione collocamento titoli", macro:null, note:`Collocamento: ${type} ${posObj.securityCode||''}`.trim()});
+      createLiquidityAdjustment("Banca", -placementCommissionAmt, date, `Commissione collocamento: ${type} ${posObj.securityCode||''}`.trim(), commId);
+    }
     saveData(); renderPortfolio();
   });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort); saveData(); renderPortfolio(); });
+  });
+
+  const bondSaleSelectEl = document.getElementById("bondSaleSelect");
+  if (bondSaleSelectEl) {
+    const fillFromBond = () => {
+      const bond = data.portfolio.find(p=>p.id===bondSaleSelectEl.value);
+      if (!bond) return;
+      document.getElementById("bondSaleNominal").value = bond.amount;
+      document.getElementById("bondSalePurchasePrice").value = bond.purchasePrice || 100;
+      document.getElementById("bondSaleTaxRate").value = bond.bondTaxRate || 15;
+      updateBondSalePreview();
+    };
+    function computeBondSale() {
+      const form = document.getElementById("bondSaleForm");
+      const f = new FormData(form);
+      const nominal = Number(f.get("nominal")) || 0;
+      const purchasePrice = Number(f.get("purchasePrice")) || 100;
+      const salePrice = Number(f.get("salePrice")) || 0;
+      const taxRate = Number(f.get("taxRate")) || 15;
+      const commType = f.get("commissionType") || "percent";
+      const commValue = Number(f.get("commissionValue")) || 0;
+      const valoreTotaleVendita = nominal * salePrice / 100;
+      const costoAcquisto = nominal * purchasePrice / 100;
+      const capitalGainLordo = valoreTotaleVendita - costoAcquisto;
+      const commissione = computeCommissionAmount(commType, commValue, valoreTotaleVendita);
+      const tassazione = capitalGainLordo > 0 ? capitalGainLordo * taxRate / 100 : 0;
+      const capitalGainNetto = capitalGainLordo - tassazione - commissione;
+      return { nominal, purchasePrice, salePrice, taxRate, commissione, valoreTotaleVendita, costoAcquisto, capitalGainLordo, tassazione, capitalGainNetto };
+    }
+    function updateBondSalePreview() {
+      const c = computeBondSale();
+      const gainColor = c.capitalGainLordo >= 0 ? "#3F6E5E" : "#8B3A2F";
+      document.getElementById("bondSalePreview").innerHTML = `
+        <div style="color:#C9A227; font-family:'Fraunces',serif; font-size:13px; margin-bottom:6px;">Anteprima calcolo</div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Valore totale vendita</span><span>${fmt(c.valoreTotaleVendita)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Costo di acquisto</span><span>${fmt(c.costoAcquisto)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0; color:${gainColor};"><span>Capital gain lordo</span><span>${fmt(c.capitalGainLordo)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Tassazione (${c.taxRate}%)</span><span>-${fmt(c.tassazione)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Commissione</span><span>-${fmt(c.commissione)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1px solid #2E4159; margin-top:4px; font-weight:600; color:${gainColor};"><span>Capital gain netto</span><span>${fmt(c.capitalGainNetto)} ALL</span></div>
+        <div style="margin-top:8px; color:#8FA3BF; font-size:11px;">Banca riceverà: ${fmt(c.nominal)} ALL (capitale) + ${fmt(c.capitalGainNetto)} ALL (plusvalenza netta)</div>
+      `;
+    }
+    bondSaleSelectEl.addEventListener("change", fillFromBond);
+    document.getElementById("bondSaleForm").querySelectorAll("input, select").forEach(el=>{
+      el.addEventListener("input", updateBondSalePreview);
+      el.addEventListener("change", updateBondSalePreview);
+    });
+    fillFromBond();
+    updateBondSalePreview();
+    document.getElementById("bondSaleForm").addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const bond = data.portfolio.find(p=>p.id===f.get("bondId"));
+      if (!bond) return;
+      const saleDate = f.get("saleDate") || todayISO;
+      const c = computeBondSale();
+      const { nominal, capitalGainLordo, tassazione, commissione, capitalGainNetto } = c;
+      if (!confirm(`Confermi la vendita? Vedi l'anteprima sopra per i dettagli del calcolo.`)) return;
+      const saleId = uid();
+      data.portfolio.push({ id: uid(), type: bond.type, macro: bond.macro||null, amount: -nominal, currency: bond.currency, marketValue: null, date: saleDate, maturityDate: null, note: `Vendita/rimborso obbligazione` });
+      createLiquidityAdjustment("Banca", nominal, saleDate, `Rimborso capitale: ${bond.type}`, saleId);
+      data.income.push({ id: saleId, date: saleDate, amount: capitalGainLordo, category: "Capital gain obbligazioni", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Vendita ${bond.type}`, linkedBondId: bond.id });
+      if (tassazione > 0) {
+        const taxCat = ensureBondTaxCategory(bond.bondYears);
+        data.expenses.push({ id: uid(), date: saleDate, amount: tassazione, category: taxCat, macro: "Tassazione da Titoli - Standard", note: "Tassazione capital gain" });
+      }
+      if (commissione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: commissione, category: "Commissione vendita titoli", note: "Commissione vendita" });
+      createLiquidityAdjustment("Banca", capitalGainNetto, saleDate, `Plusvalenza netta vendita: ${bond.type}`, saleId+"-gain");
+      saveData(); renderPortfolio();
+    });
+  }
+
+  const fundSaleSelectEl = document.getElementById("fundSaleSelect");
+  if (fundSaleSelectEl) {
+    const fillFromFund = () => {
+      const fund = data.portfolio.find(p=>p.id===fundSaleSelectEl.value);
+      if (!fund) return;
+      document.getElementById("fundSaleQuotaCount").value = fund.fundQuotaCount || "";
+      document.getElementById("fundSalePurchasePrice").value = fund.fundPurchaseQuotaPrice || "";
+      updateFundSalePreview();
+    };
+    function computeFundSale() {
+      const f = new FormData(document.getElementById("fundSaleForm"));
+      const quotaCount = Number(f.get("quotaCount")) || 0;
+      const purchasePrice = Number(f.get("purchasePrice")) || 0;
+      const salePrice = Number(f.get("salePrice")) || 0;
+      const taxRate = Number(f.get("taxRate")) || 15;
+      const commType = f.get("commissionType") || "percent";
+      const commValue = Number(f.get("commissionValue")) || 0;
+      const valoreInvestito = quotaCount * purchasePrice;
+      const valoreVendita = quotaCount * salePrice;
+      const capitalGainLordo = valoreVendita - valoreInvestito;
+      const commissione = computeCommissionAmount(commType, commValue, valoreVendita);
+      const tassazione = capitalGainLordo > 0 ? capitalGainLordo * taxRate/100 : 0;
+      const capitalGainNetto = capitalGainLordo - tassazione - commissione;
+      return { quotaCount, purchasePrice, salePrice, taxRate, valoreInvestito, valoreVendita, capitalGainLordo, commissione, tassazione, capitalGainNetto };
+    }
+    function updateFundSalePreview() {
+      const c = computeFundSale();
+      const gc = c.capitalGainLordo >= 0 ? "#3F6E5E" : "#8B3A2F";
+      document.getElementById("fundSalePreview").innerHTML = `
+        <div style="color:#C9A227; font-family:'Fraunces',serif; font-size:13px; margin-bottom:6px;">Anteprima calcolo</div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Valore investito</span><span>${fmt(c.valoreInvestito)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Valore vendita</span><span>${fmt(c.valoreVendita)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0; color:${gc};"><span>Capital gain lordo</span><span>${fmt(c.capitalGainLordo)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Tassazione (${c.taxRate}%)</span><span>-${fmt(c.tassazione)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:3px 0;"><span style="color:#8FA3BF;">Commissione</span><span>-${fmt(c.commissione)} ALL</span></div>
+        <div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1px solid #2E4159; margin-top:4px; font-weight:600; color:${gc};"><span>Capital gain netto</span><span>${fmt(c.capitalGainNetto)} ALL</span></div>
+        <div style="margin-top:8px; color:#8FA3BF; font-size:11px;">Banca riceverà: ${fmt(c.valoreInvestito)} ALL (capitale) + ${fmt(c.capitalGainNetto)} ALL (plusvalenza netta)</div>
+      `;
+    }
+    fundSaleSelectEl.addEventListener("change", fillFromFund);
+    document.getElementById("fundSaleForm").querySelectorAll("input, select").forEach(el=>{
+      el.addEventListener("input", updateFundSalePreview);
+      el.addEventListener("change", updateFundSalePreview);
+    });
+    fillFromFund();
+    updateFundSalePreview();
+    document.getElementById("fundSaleForm").addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const fund = data.portfolio.find(p=>p.id===f.get("fundId"));
+      if (!fund) return;
+      const saleDate = f.get("saleDate") || todayISO;
+      const c = computeFundSale();
+      if (!confirm("Confermi la vendita? Vedi l'anteprima sopra per i dettagli del calcolo.")) return;
+      const saleId = uid();
+      data.portfolio.push({ id: uid(), type: fund.type, macro: fund.macro||null, amount: -c.valoreInvestito, currency: fund.currency, marketValue: null, date: saleDate, maturityDate: null, note: `Vendita quote: ${fund.fundName||fund.type}` });
+      createLiquidityAdjustment("Banca", c.valoreInvestito, saleDate, `Rimborso capitale: ${fund.fundName||fund.type}`, saleId);
+      data.income.push({ id: saleId, date: saleDate, amount: c.capitalGainLordo, category: "Capital gain fondi", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Vendita ${fund.fundName||fund.type}`, linkedBondId: fund.id });
+      if (c.tassazione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: c.tassazione, category: "Tassazione capital gain fondi", macro: "Tassazione da Titoli - Standard", note: "Tassazione capital gain fondo" });
+      if (c.commissione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: c.commissione, category: "Commissione vendita titoli", note: "Commissione vendita fondo" });
+      createLiquidityAdjustment("Banca", c.capitalGainNetto, saleDate, `Plusvalenza netta vendita: ${fund.fundName||fund.type}`, saleId+"-gain");
+      saveData(); renderPortfolio();
+    });
+  }
+
+  document.getElementById("liquidityTransferForm").addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const from = f.get("from");
+    const to = f.get("to");
+    const amount = Number(f.get("amount"));
+    const date = f.get("date") || todayISO;
+    const note = f.get("note") || "";
+    if (from === to) { alert("Scegli due voci diverse per il trasferimento."); return; }
+    if (!amount || amount <= 0) { alert("Inserisci un importo valido."); return; }
+    const transferId = uid();
+    data.portfolio.push({ id: uid(), type: from, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[from]) || null, amount: -amount, currency: "ALL", marketValue: null, date, maturityDate: null, note: `Trasferimento a ${to}${note?': '+note:''}`, transferGroup: transferId });
+    data.portfolio.push({ id: uid(), type: to, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[to]) || null, amount: amount, currency: "ALL", marketValue: null, date, maturityDate: null, note: `Trasferimento da ${from}${note?': '+note:''}`, transferGroup: transferId });
+    saveData(); renderPortfolio();
   });
 }
 
@@ -1371,6 +2209,7 @@ function categoryManageBlock(groupKey, title) {
 
 function recurringBlock(groupKey, title) {
   const rules = data.recurring[groupKey] || [];
+  const bondOptionsRec = groupKey==="income" ? data.portfolio.filter(p=>p.maturityDate).map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''} (scad. ${p.maturityDate})</option>`).join('') : '';
   const rows = rules.map(r => {
     if (editingRecurring && editingRecurring.group===groupKey && editingRecurring.id===r.id) {
       return `<form class="entry" data-recedit="${groupKey}|${r.id}" style="border:1px solid #C9A227; border-radius:6px; padding:10px; margin-bottom:8px;">
@@ -1378,22 +2217,25 @@ function recurringBlock(groupKey, title) {
           <div><label>Categoria</label>${categorySelect(groupKey, r.category)}</div>
           <div><label>Importo</label><input type="number" name="amount" value="${r.amount}" required></div>
         </div>
+        ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${data.portfolio.filter(p=>p.maturityDate).map(p=>`<option value="${p.id}" ${r.linkedBondId===p.id?'selected':''}>${p.type}${p.note?' · '+p.note:''} (scad. ${p.maturityDate})</option>`).join('')}</select></div>` : ''}
         <div class="row2">
           <div><label>Frequenza</label>${freqSelect(r.frequency)}</div>
-          <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="28" value="${r.dayOfMonth}"></div>
+          <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="${r.dayOfMonth}"></div>
         </div>
         <div class="row2">
           <div><label>Da (mese)</label><input type="month" name="startMonth" value="${r.startMonth||thisMonth}"></div>
-          <div><label>Nota</label><input type="text" name="note" value="${r.note||''}"></div>
+          <div><label>Metodo</label><select name="paymentType"><option value="Banca" ${(r.paymentType||'Banca')==='Banca'?'selected':''}>Banca</option><option value="Cash" ${r.paymentType==='Cash'?'selected':''}>Cash</option><option value="" ${r.paymentType===''?'selected':''}>— non tracciare —</option></select></div>
         </div>
+        <div><label>Nota</label><input type="text" name="note" value="${r.note||''}"></div>
         <div class="row2">
           <button class="primary" type="submit">Salva</button>
           <button class="secondary" type="button" data-recedit-cancel="1">Annulla</button>
         </div>
       </form>`;
     }
+    const bondNote = r.linkedBondId ? (()=>{ const b = data.portfolio.find(p=>p.id===r.linkedBondId); return b ? ` · scad. ${b.maturityDate}` : ''; })() : '';
     return `<div class="recurring-row">
-      <span class="rn">${r.category} · ${fmt(r.amount)} ALL · ${freqLabel(r.frequency)} · giorno ${r.dayOfMonth}${r.note?' · '+r.note:''}</span>
+      <span class="rn">${r.category} · ${fmt(r.amount)} ALL · ${freqLabel(r.frequency)} · giorno ${r.dayOfMonth} · ${r.paymentType||'Banca'}${bondNote}${r.note?' · '+r.note:''}</span>
       <button data-recedit-open="${groupKey}|${r.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;">✎</button>
       <button data-recdel="${groupKey}|${r.id}" style="background:none;border:none;color:#8B3A2F;cursor:pointer;">✕</button>
     </div>`;
@@ -1407,14 +2249,16 @@ function recurringBlock(groupKey, title) {
         <div><label>Categoria</label>${categorySelect(groupKey)}</div>
         <div><label>Importo</label><input type="number" name="amount" placeholder="0" required></div>
       </div>
+      ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptionsRec}</select></div>` : ''}
       <div class="row2">
         <div><label>Frequenza</label><select name="frequency">${freqOpts}</select></div>
-        <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="28" value="1"></div>
+        <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="1"></div>
       </div>
       <div class="row2">
         <div><label>Da (mese)</label><input type="month" name="startMonth" value="${thisMonth}"></div>
-        <div><label>Nota</label><input type="text" name="note"></div>
+        <div><label>Metodo</label><select name="paymentType"><option value="Banca">Banca</option><option value="Cash">Cash</option><option value="">— non tracciare —</option></select></div>
       </div>
+      <div><label>Nota</label><input type="text" name="note"></div>
       <button class="secondary" type="submit">Aggiungi ricorrenza</button>
     </form>
   </div>`;
@@ -1430,11 +2274,11 @@ function recurringBlockPortfolio(title) {
           <div><label>Importo</label><input type="number" name="amount" value="${r.amount}" required></div>
         </div>
         <div class="row2">
-          <div><label>Valuta</label><select name="currency"><option ${r.currency==='ALL'?'selected':''}>ALL</option><option ${r.currency==='EUR'?'selected':''}>EUR</option></select></div>
+          <div><label>Valuta</label><select name="currency"><option ${r.currency==='ALL'?'selected':''}>ALL</option><option ${r.currency==='EUR'?'selected':''}>EUR</option><option ${r.currency==='USD'?'selected':''}>USD</option></select></div>
           <div><label>Frequenza</label>${freqSelect(r.frequency)}</div>
         </div>
         <div class="row2">
-          <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="28" value="${r.dayOfMonth}"></div>
+          <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="${r.dayOfMonth}"></div>
           <div><label>Da (mese)</label><input type="month" name="startMonth" value="${r.startMonth||thisMonth}"></div>
         </div>
         <div><label>Nota</label><input type="text" name="note" value="${r.note||''}"></div>
@@ -1460,11 +2304,11 @@ function recurringBlockPortfolio(title) {
         <div><label>Importo</label><input type="number" name="amount" placeholder="0" required></div>
       </div>
       <div class="row2">
-        <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option></select></div>
+        <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
         <div><label>Frequenza</label><select name="frequency">${freqOpts}</select></div>
       </div>
       <div class="row2">
-        <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="28" value="1"></div>
+        <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="1"></div>
         <div><label>Da (mese)</label><input type="month" name="startMonth" value="${thisMonth}"></div>
       </div>
       <div><label>Nota</label><input type="text" name="note" placeholder="es. contributo mensile fondo pensione"></div>
@@ -1954,6 +2798,23 @@ function bindMacroAssign(group, refreshFn) {
   });
 }
 
+async function fetchBoaRate() {
+  const target = "https://www.bankofalbania.org/Markets/Official_exchange_rate/";
+  const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(target);
+  const res = await fetch(proxyUrl);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const html = await res.text();
+  const extract = (code) => {
+    const re = new RegExp(code + "[^0-9]{1,300}?(\\d{1,3}[.,]\\d{1,4})");
+    const m = html.match(re);
+    return m ? parseFloat(m[1].replace(",", ".")) : null;
+  };
+  const eur = extract("EUR");
+  const usd = extract("USD");
+  if (!eur && !usd) throw new Error("Dati non trovati nella pagina (formato cambiato?)");
+  return { eur, usd };
+}
+
 function renderSettings() {
   document.getElementById("headerTitle").textContent = "Assunzioni";
   const s = data.settings;
@@ -1971,6 +2832,9 @@ function renderSettings() {
       <h3>Parametri di proiezione FI</h3>
       <form class="entry" id="settingsForm">
         <div><label>Cambio EUR/ALL</label><input type="number" step="0.1" name="fx" value="${s.fx}"></div>
+        <div><label>Cambio USD/ALL</label><input type="number" step="0.1" name="fxUsd" value="${s.fxUsd||82}"></div>
+        <button class="secondary" type="button" id="fetchBoaBtn" style="width:auto; padding:8px 12px; font-size:12px;">🔄 Aggiorna cambio da Banka e Shqipërisë</button>
+        <div id="boaFetchStatus" class="subtle"></div>
         <div><label>Tasso di risparmio target (%)</label><input type="number" name="savingsRateTarget" value="${s.savingsRateTarget}"></div>
         <div><label>Crescita reddito ogni 2 anni (ALL)</label><input type="number" name="incomeGrowth2y" value="${s.incomeGrowth2y}"></div>
         <div><label>Rendimento reale centrale (%)</label><input type="number" name="centralRet" value="${s.centralRet}"></div>
@@ -2065,6 +2929,19 @@ function renderSettings() {
     saveData(); alert("Budget salvato.");
   });
 
+  document.getElementById("fetchBoaBtn").addEventListener("click", async ()=>{
+    const statusEl = document.getElementById("boaFetchStatus");
+    statusEl.textContent = "Recupero cambio dalla Banca d'Albania…";
+    try {
+      const { eur, usd } = await fetchBoaRate();
+      if (eur) document.querySelector('#settingsForm [name="fx"]').value = eur;
+      if (usd) document.querySelector('#settingsForm [name="fxUsd"]').value = usd;
+      statusEl.textContent = `Trovato: EUR ${eur ?? "?"} · USD ${usd ?? "?"} — controlla e premi "Salva assunzioni" per confermare.`;
+    } catch (err) {
+      statusEl.textContent = "Non sono riuscito a recuperare il cambio automaticamente (" + String(err.message||err).slice(0,100) + "). Inseriscilo manualmente.";
+    }
+  });
+
   document.getElementById("settingsForm").addEventListener("submit", ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
@@ -2072,6 +2949,7 @@ function renderSettings() {
     const lastFx = data.fxHistory.length ? data.fxHistory[data.fxHistory.length-1].rate : null;
     if (lastFx !== newFx) data.fxHistory.push({ date: todayISO, rate: newFx });
     data.settings.fx = newFx;
+    data.settings.fxUsd = Number(f.get("fxUsd")) || data.settings.fxUsd || 82;
     data.settings.savingsRateTarget = Number(f.get("savingsRateTarget"));
     data.settings.incomeGrowth2y = Number(f.get("incomeGrowth2y"));
     data.settings.centralRet = Number(f.get("centralRet"));
@@ -2095,7 +2973,7 @@ function renderSettings() {
       if (group === "portfolio") {
         rule = { id: uid(), type: catValue, amount: Number(f.get("amount")), currency: f.get("currency")||"ALL", frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, note: f.get("note")||"" };
       } else {
-        rule = { id: uid(), category: catValue, amount: Number(f.get("amount")), frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, note: f.get("note")||"" };
+        rule = { id: uid(), category: catValue, amount: Number(f.get("amount")), frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, paymentType: f.get("paymentType")||"", linkedBondId: f.get("linkedBondId")||null, note: f.get("note")||"" };
       }
       data.recurring[group].push(rule);
       saveData(); renderSettings();
@@ -2133,7 +3011,7 @@ function renderSettings() {
         rule.startMonth = f.get("startMonth")||thisMonth;
         rule.note = f.get("note")||"";
         if (group === "portfolio") { rule.type = catValue; rule.currency = f.get("currency")||"ALL"; }
-        else { rule.category = catValue; }
+        else { rule.category = catValue; rule.paymentType = f.get("paymentType")||""; rule.linkedBondId = f.get("linkedBondId")||null; }
       }
       editingRecurring = null;
       saveData(); renderSettings();
