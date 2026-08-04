@@ -108,7 +108,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.24</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.26</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
   </header>
@@ -134,7 +134,7 @@ const DEFAULT_CATEGORIES = {
   portfolio: ["Banca","Cash","Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4 },
+  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4, fireExpenseBaseMode: "budget", fireRatesText: "4,3.5,3,2.5,2" },
   income: [],
   expenses: [],
   portfolio: [],
@@ -272,6 +272,10 @@ function createLiquidityAdjustment(paymentType, signedAmountALL, date, note, lin
 }
 function removeLiquidityAdjustment(linkedTxnId) {
   data.portfolio = data.portfolio.filter(p => p.linkedTxnId !== linkedTxnId);
+}
+function resyncLiquidityAdjustment(txnId, paymentType, signedAmount, date, note) {
+  removeLiquidityAdjustment(txnId);
+  if (paymentType) createLiquidityAdjustment(paymentType, signedAmount, date, note, txnId);
 }
 
 function ensureBondDepositCategories() {
@@ -557,6 +561,8 @@ let macroDrilldownChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
 let editingPortfolioId = null;
+let editingIncomeId = null;
+let editingExpenseId = null;
 let fundImportPreview = null; // {type, fundName, rows: [{date, amount, unitPrice, units}]}
 let catManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroManagerOpen = { income:false, expenses:false, portfolio:false };
@@ -695,10 +701,15 @@ function renderDashboard() {
   const results = scenarios.map(sc => ({...sc, ...project(wealth0, projIncome, s.savingsRateTarget/100, projExpenseBase, s.expenseGrowth, s.incomeGrowth2y, sc.ret, s.horizon, s.withdrawalRate||4)}));
   const central = results[1];
 
-  const fireRates = [4, 3.5, 3, 2.5, 2];
+  const dayOfYearNow = Math.ceil((now - new Date(thisYear,0,1)) / 86400000) || 1;
+  const annualBudgetVal = annualBudgetForYear(thisYear);
+  const projectedAnnualExpense = expenseThisYear>0 ? (expenseThisYear/dayOfYearNow*365) : annualBudgetVal;
+  const fireBaseMode = s.fireExpenseBaseMode || "budget";
+  const fireExpenseBase = fireBaseMode === "projected" ? projectedAnnualExpense : annualBudgetVal;
+  const fireRates = (s.fireRatesText || "4,3.5,3,2.5,2").split(",").map(x=>parseFloat(x.trim())).filter(n=>!isNaN(n) && n>0);
   const fireNumbers = fireRates.map(rate => {
-    const target = projExpenseBase * 100/rate;
-    const proj = project(wealth0, projIncome, s.savingsRateTarget/100, projExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, s.horizon, rate);
+    const target = fireExpenseBase * 100/rate;
+    const proj = project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, s.horizon, rate);
     return { rate, target, years: proj.hitYear };
   });
 
@@ -790,10 +801,18 @@ function renderDashboard() {
     </div>
     <div class="card">
       <h3>Numero FIRE</h3>
-      <div class="subtle">Capitale necessario in base al tasso di prelievo scelto (regola del 4% e varianti più prudenti). Base spesa: ${fmt(projExpenseBase)} ALL/anno.</div>
+      <div class="subtle">Capitale necessario in base al tasso di prelievo scelto. Base spesa attuale: <b>${fmt(fireExpenseBase)} ALL/anno</b> (${fireBaseMode==='projected'?'proiezione dal ritmo di spesa attuale':'dal budget annuale impostato'}).</div>
+      <div class="row2" style="margin-bottom:10px;">
+        <button class="secondary" type="button" id="fireModeBudget" style="${fireBaseMode==='budget'?'border-color:#C9A227;color:#C9A227;':''}">Budget (${fmt(annualBudgetVal)} ALL)</button>
+        <button class="secondary" type="button" id="fireModeProjected" style="${fireBaseMode==='projected'?'border-color:#C9A227;color:#C9A227;':''}">Proiezione spesa attuale (${fmt(projectedAnnualExpense)} ALL)</button>
+      </div>
       <div class="chart-wrap"><canvas id="fireChart" height="200"></canvas></div>
       <div style="margin-top:10px;">
         ${fireNumbers.map(f=>`<div class="stat-row"><span class="label">${f.rate}% — ${fmt(f.target)} ALL</span><span class="val">${f.years ? f.years+' anni' : '>'+s.horizon+' anni'}</span></div>`).join('')}
+      </div>
+      <div class="row2" style="margin-top:10px;">
+        <div><label>Percentuali (separate da virgola)</label><input type="text" id="fireRatesInput" value="${s.fireRatesText || '4,3.5,3,2.5,2'}"></div>
+        <button class="secondary" type="button" id="fireRatesSave" style="align-self:flex-end;">Salva percentuali</button>
       </div>
     </div>
     ${alertHtml}
@@ -886,6 +905,16 @@ function renderDashboard() {
     }
   });
 
+  document.getElementById("fireModeBudget").addEventListener("click", ()=>{ s.fireExpenseBaseMode = "budget"; saveData(); renderDashboard(); });
+  document.getElementById("fireModeProjected").addEventListener("click", ()=>{ s.fireExpenseBaseMode = "projected"; saveData(); renderDashboard(); });
+  document.getElementById("fireRatesSave").addEventListener("click", ()=>{
+    const val = document.getElementById("fireRatesInput").value;
+    const parsed = val.split(",").map(x=>parseFloat(x.trim())).filter(n=>!isNaN(n) && n>0);
+    if (parsed.length===0) { alert("Inserisci almeno una percentuale valida."); return; }
+    s.fireRatesText = parsed.join(",");
+    saveData(); renderDashboard();
+  });
+
   const peaks = computeYearlyPeaks();
   const peaksCtx = document.getElementById("peaksChart");
   if (peaksChartInstance) peaksChartInstance.destroy();
@@ -911,6 +940,23 @@ function renderDashboard() {
 
 let incomeCategoryFilter = "all";
 let incomeMacroFilter = "all";
+
+function renderIncomeEditForm(e) {
+  return `<form class="entry" data-editincomeform="${e.id}" style="border:1px solid #C9A227; border-radius:6px; padding:12px; margin-bottom:8px;">
+    <div class="row2">
+      <div><label>Data</label><input type="date" name="date" value="${e.date}"></div>
+      <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" value="${e.amount}"></div>
+    </div>
+    <div><label>Categoria</label>${categorySelect("income", e.category)}</div>
+    <div><label>Macro-categoria</label>${macroSelect("income", e.macro)}</div>
+    <div><label>Ricevuto su</label><select name="paymentType"><option value="Banca" ${e.paymentType==='Banca'?'selected':''}>Banca</option><option value="Cash" ${e.paymentType==='Cash'?'selected':''}>Cash</option><option value="" ${!e.paymentType?'selected':''}>— non tracciare in Patrimonio —</option></select></div>
+    <div><label>Nota</label><input type="text" name="note" value="${e.note||''}"></div>
+    <div class="row2">
+      <button class="primary" type="submit">Salva</button>
+      <button class="secondary" type="button" data-editincome-cancel="1">Annulla</button>
+    </div>
+  </form>`;
+}
 
 function renderIncome() {
   document.getElementById("headerTitle").textContent = "Reddito";
@@ -965,11 +1011,12 @@ function renderIncome() {
         <div><label>Filtra per categoria</label><select id="incomeFilterSelect">${incomeFilterOptions}</select></div>
         <div><label>Filtra per macro-categoria</label><select id="incomeMacroFilterSelect">${incomeMacroFilterOptions}</select></div>
       </div>
-      ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=>`
+      ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=> editingIncomeId===e.id ? renderIncomeEditForm(e) : `
         <div class="list-item">
           <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}${e.taxApplied?` <span class=\"pill\">netto, lordo ${fmt(e.grossAmount)}</span>`:''}</span><span class="li-date">${e.date}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(e.amount)} ALL</span>
+            <button data-editincome="${e.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
             <button class="li-del" data-del-income="${e.id}">✕</button>
           </div>
         </div>`).join('')}
@@ -1015,6 +1062,30 @@ function renderIncome() {
     btn.addEventListener("click", ()=>{
       data.income = data.income.filter(e=>e.id!==btn.dataset.delIncome);
       removeLiquidityAdjustment(btn.dataset.delIncome);
+      saveData(); renderIncome();
+    });
+  });
+  document.querySelectorAll("[data-editincome]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingIncomeId = btn.dataset.editincome; renderIncome(); });
+  });
+  document.querySelectorAll("[data-editincome-cancel]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingIncomeId = null; renderIncome(); });
+  });
+  document.querySelectorAll("[data-editincomeform]").forEach(form=>{
+    form.addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const id = form.dataset.editincomeform;
+      const entry = data.income.find(e=>e.id===id);
+      if (!entry) return;
+      const f = new FormData(ev.target);
+      entry.date = f.get("date") || entry.date;
+      entry.amount = Number(f.get("amount"));
+      entry.category = form.querySelector(".cat-select").value;
+      entry.macro = form.querySelector(".macro-select").value || null;
+      entry.paymentType = f.get("paymentType") || null;
+      entry.note = f.get("note") || "";
+      resyncLiquidityAdjustment(id, entry.paymentType, entry.amount, entry.date, `Reddito: ${entry.category}`);
+      editingIncomeId = null;
       saveData(); renderIncome();
     });
   });
@@ -1192,6 +1263,23 @@ function drawMacroDrilldownChart(group) {
   });
 }
 
+function renderExpenseEditForm(e) {
+  return `<form class="entry" data-editexpenseform="${e.id}" style="border:1px solid #C9A227; border-radius:6px; padding:12px; margin-bottom:8px;">
+    <div class="row2">
+      <div><label>Data</label><input type="date" name="date" value="${e.date}"></div>
+      <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" value="${e.amount}"></div>
+    </div>
+    <div><label>Categoria</label>${categorySelect("expenses", e.category)}</div>
+    <div><label>Macro-categoria</label>${macroSelect("expenses", e.macro)}</div>
+    <div><label>Pagato con</label><select name="paymentType"><option value="Banca" ${e.paymentType==='Banca'?'selected':''}>Banca</option><option value="Cash" ${e.paymentType==='Cash'?'selected':''}>Cash</option><option value="" ${!e.paymentType?'selected':''}>— non tracciare in Patrimonio —</option></select></div>
+    <div><label>Nota</label><input type="text" name="note" value="${e.note||''}"></div>
+    <div class="row2">
+      <button class="primary" type="submit">Salva</button>
+      <button class="secondary" type="button" data-editexpense-cancel="1">Annulla</button>
+    </div>
+  </form>`;
+}
+
 function renderExpenses() {
   document.getElementById("headerTitle").textContent = "Spese";
   const total = yearTotal(data.expenses, thisYear);
@@ -1293,11 +1381,12 @@ function renderExpenses() {
         <div><label>Filtra per categoria</label><select id="expenseFilterSelect">${expenseFilterOptions}</select></div>
         <div><label>Filtra per macro-categoria</label><select id="expenseMacroFilterSelect">${expenseMacroFilterOptions}</select></div>
       </div>
-      ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=>`
+      ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=> editingExpenseId===e.id ? renderExpenseEditForm(e) : `
         <div class="list-item">
           <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}</span><span class="li-date">${e.date}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt exp">${fmt(e.amount)} ALL</span>
+            <button data-editexpense="${e.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
             <button class="li-del" data-del-expense="${e.id}">✕</button>
           </div>
         </div>`).join('')}
@@ -1415,6 +1504,30 @@ function renderExpenses() {
     btn.addEventListener("click", ()=>{
       data.expenses = data.expenses.filter(e=>e.id!==btn.dataset.delExpense);
       removeLiquidityAdjustment(btn.dataset.delExpense);
+      saveData(); renderExpenses();
+    });
+  });
+  document.querySelectorAll("[data-editexpense]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingExpenseId = btn.dataset.editexpense; renderExpenses(); });
+  });
+  document.querySelectorAll("[data-editexpense-cancel]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingExpenseId = null; renderExpenses(); });
+  });
+  document.querySelectorAll("[data-editexpenseform]").forEach(form=>{
+    form.addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const id = form.dataset.editexpenseform;
+      const entry = data.expenses.find(e=>e.id===id);
+      if (!entry) return;
+      const f = new FormData(ev.target);
+      entry.date = f.get("date") || entry.date;
+      entry.amount = Number(f.get("amount"));
+      entry.category = form.querySelector(".cat-select").value;
+      entry.macro = form.querySelector(".macro-select").value || null;
+      entry.paymentType = f.get("paymentType") || null;
+      entry.note = f.get("note") || "";
+      resyncLiquidityAdjustment(id, entry.paymentType, -entry.amount, entry.date, `Spesa: ${entry.category}`);
+      editingExpenseId = null;
       saveData(); renderExpenses();
     });
   });
@@ -1940,10 +2053,11 @@ function renderPortfolio() {
       </form>` : `
       <div class="subtle">Fondo: <b>${fundImportPreview.fundName}</b> (${fundImportPreview.type}) — ${fundImportPreview.rows.length} righe riconosciute${fundImportPreview.errors.length?`, ${fundImportPreview.errors.length} righe NON riconosciute (verranno ignorate)`:''}.</div>
       ${fundImportPreview.errors.length ? `<div class="alert-banner">⚠ Righe non riconosciute: ${fundImportPreview.errors.map(e=>'#'+e.line).join(', ')} — controlla il formato (Data, Importo, Prezzo, Quote).</div>` : ''}
+      <div class="subtle">${fundImportPreview.rows.filter(r=>r.matchId).length} righe aggiorneranno posizioni già esistenti (stesso fondo, stessa data), ${fundImportPreview.rows.filter(r=>!r.matchId).length} sono nuove.</div>
       <div style="max-height:260px; overflow-y:auto; margin:10px 0;">
         <table style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px;">
-          <tr style="color:#8FA3BF; text-align:left;"><th>Data</th><th>Importo</th><th>Prezzo</th><th>Quote</th></tr>
-          ${fundImportPreview.rows.map(r=>`<tr><td>${r.date}</td><td>${fmt(r.amount)}</td><td>${r.unitPrice}</td><td>${r.units}</td></tr>`).join('')}
+          <tr style="color:#8FA3BF; text-align:left;"><th>Data</th><th>Importo</th><th>Prezzo</th><th>Quote</th><th>Stato</th></tr>
+          ${fundImportPreview.rows.map(r=>`<tr><td>${r.date}</td><td>${fmt(r.amount)}</td><td>${r.unitPrice}</td><td>${r.units}</td><td style="color:${r.matchId?'#C9A227':'#3F6E5E'};">${r.matchId?'Aggiorna':'Nuovo'}</td></tr>`).join('')}
         </table>
       </div>
       <div class="row2">
@@ -2392,6 +2506,10 @@ function renderPortfolio() {
     const baselinePrice = f.get("baselinePrice");
     const { rows, errors } = parseFundHistoryText(f.get("historyText")||"");
     if (rows.length === 0) { alert("Nessuna riga riconosciuta. Controlla il formato (Data, Importo, Prezzo, Quote)."); return; }
+    rows.forEach(r => {
+      const existing = data.portfolio.find(p => p.fundName === fundName && p.date === r.date && p.fundQuotaCount !== undefined);
+      r.matchId = existing ? existing.id : null;
+    });
     fundImportPreview = { type, fundName, rows, errors, baselineDate: baselineDate||null, baselinePrice: baselinePrice?Number(baselinePrice):null };
     renderPortfolio();
   });
@@ -2401,7 +2519,24 @@ function renderPortfolio() {
   if (fundImportConfirmBtn) fundImportConfirmBtn.addEventListener("click", ()=>{
     const { type, fundName, rows, baselineDate, baselinePrice } = fundImportPreview;
     let firstId = null;
+    let updated = 0, added = 0;
     rows.forEach((r,idx) => {
+      if (r.matchId) {
+        const existing = data.portfolio.find(p=>p.id===r.matchId);
+        if (existing) {
+          existing.amount = r.amount;
+          existing.marketValue = r.amount;
+          existing.fundPurchaseQuotaPrice = r.unitPrice;
+          existing.fundQuotaCount = r.units;
+          existing.type = type;
+          if (!existing.priceHistory) existing.priceHistory = [];
+          const hIdx = existing.priceHistory.findIndex(h=>h.date===r.date);
+          if (hIdx>=0) existing.priceHistory[hIdx].price = r.unitPrice; else existing.priceHistory.push({date:r.date, price:r.unitPrice});
+          if (idx===0) firstId = existing.id;
+          updated++;
+          return;
+        }
+      }
       const id = uid();
       if (idx===0) firstId = id;
       data.portfolio.push({
@@ -2410,14 +2545,19 @@ function renderPortfolio() {
         fundQuotaCount: r.units, fundPurchaseQuotaPrice: r.unitPrice, fundCurrentQuotaPrice: r.unitPrice,
         securityCode: consumeNextSecurityCode(), priceHistory: [{date: r.date, price: r.unitPrice}]
       });
+      added++;
     });
     if (baselineDate && baselinePrice && firstId) {
       const target = data.portfolio.find(p=>p.id===firstId);
-      if (target) target.priceHistory.push({ date: baselineDate, price: baselinePrice });
+      if (target) {
+        if (!target.priceHistory) target.priceHistory = [];
+        const hIdx = target.priceHistory.findIndex(h=>h.date===baselineDate);
+        if (hIdx>=0) target.priceHistory[hIdx].price = baselinePrice; else target.priceHistory.push({ date: baselineDate, price: baselinePrice });
+      }
     }
     fundImportPreview = null;
     saveData();
-    alert(`Importate ${rows.length} righe per "${fundName}".`);
+    alert(`Importazione completata per "${fundName}": ${added} nuove righe, ${updated} righe già esistenti aggiornate.`);
     renderPortfolio();
   });
 
