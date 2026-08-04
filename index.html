@@ -108,7 +108,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.20</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.21</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
   </header>
@@ -556,6 +556,7 @@ let monthlyTotalsChartInstance = null;
 let macroDrilldownChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
+let editingPortfolioId = null;
 let catManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroAssignOpen = { income:false, expenses:false, portfolio:false };
@@ -1573,6 +1574,54 @@ function registerDepositMaturity(depId) {
   saveData(); renderPortfolio();
 }
 
+function renderPortfolioEditForm(p) {
+  const typeL = (p.type||"").toLowerCase();
+  const isBond = typeL.includes("obbligazione");
+  const isDeposit = typeL.includes("deposito");
+  const isFund = typeL.includes("fondo");
+  return `<form class="entry" data-editportform="${p.id}" style="border:1px solid #C9A227; border-radius:6px; padding:12px; margin-bottom:8px;">
+    <div><label>Tipo</label>${categorySelect("portfolio", p.type)}</div>
+    ${isFund ? `<div><label>Nome fondo</label><input type="text" name="fundName" value="${p.fundName||''}"></div>` : ''}
+    <div><label>Codice titolo</label><input type="text" name="securityCode" maxlength="8" value="${p.securityCode||''}"></div>
+    <div class="row2">
+      <div><label>Importo nominale</label><input type="number" name="amount" value="${p.amount}"></div>
+      <div><label>Valuta</label><select name="currency"><option ${p.currency==='ALL'?'selected':''}>ALL</option><option ${p.currency==='EUR'?'selected':''}>EUR</option><option ${p.currency==='USD'?'selected':''}>USD</option></select></div>
+    </div>
+    <div class="row2">
+      <div><label>Valore di mercato</label><input type="number" name="marketValue" value="${p.marketValue!=null?p.marketValue:''}"></div>
+      <div><label>Data</label><input type="date" name="date" value="${p.date||''}"></div>
+    </div>
+    <div><label>Data scadenza</label><input type="date" name="maturityDate" value="${p.maturityDate||''}"></div>
+    ${isBond ? `
+    <div class="row2">
+      <div><label>Cedola annua (%)</label><input type="number" step="0.01" name="couponRate" value="${p.couponRate!=null?p.couponRate:''}"></div>
+      <div><label>Tassazione (%)</label><input type="number" step="0.01" name="bondTaxRate" value="${p.bondTaxRate!=null?p.bondTaxRate:15}"></div>
+    </div>
+    <div class="row2">
+      <div><label>Prezzo collocamento</label><input type="number" step="0.01" name="purchasePrice" value="${p.purchasePrice!=null?p.purchasePrice:100}"></div>
+      <div><label>Prezzo rimborso</label><input type="number" step="0.01" name="redemptionPrice" value="${p.redemptionPrice!=null?p.redemptionPrice:100}"></div>
+    </div>
+    <div><label>Durata (anni)</label><input type="number" name="bondYears" value="${p.bondYears||''}"></div>` : ''}
+    ${isDeposit ? `
+    <div class="row2">
+      <div><label>Tasso annuo (%)</label><input type="number" step="0.01" name="depositRate" value="${p.depositRate!=null?p.depositRate:''}"></div>
+      <div><label>Tassazione (%)</label><input type="number" step="0.01" name="depositTaxRate" value="${p.depositTaxRate!=null?p.depositTaxRate:15}"></div>
+    </div>
+    <div><label>Durata (anni)</label><input type="number" name="depositYears" value="${p.depositYears||''}"></div>` : ''}
+    ${isFund ? `
+    <div class="row2">
+      <div><label>Numero di quote</label><input type="number" step="0.0001" name="fundQuotaCount" value="${p.fundQuotaCount||''}"></div>
+      <div><label>Prezzo acquisto/quota</label><input type="number" step="0.0001" name="fundPurchaseQuotaPrice" value="${p.fundPurchaseQuotaPrice||''}"></div>
+    </div>
+    <div><label>Prezzo attuale/quota</label><input type="number" step="0.0001" name="fundCurrentQuotaPrice" value="${p.fundCurrentQuotaPrice||''}"></div>` : ''}
+    <div><label>Nota</label><input type="text" name="note" value="${p.note||''}"></div>
+    <div class="row2">
+      <button class="primary" type="submit">Salva</button>
+      <button class="secondary" type="button" data-editport-cancel="1">Annulla</button>
+    </div>
+  </form>`;
+}
+
 function renderPortfolio() {
   document.getElementById("headerTitle").textContent = "Patrimonio";
   const totalALL = portfolioTotalALL();
@@ -1785,6 +1834,7 @@ function renderPortfolio() {
         <div><label>Filtra per macro-categoria</label><select id="portMacroFilterSelect">${macroFilterOptions}</select></div>
       </div>
       ${filteredPositions.length===0 ? '<div class="empty">Nessuna posizione con questo filtro.</div>' : filteredPositions.map(p=>{
+        if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
         let maturityTag = "";
         if (p.maturityDate) {
@@ -1820,6 +1870,7 @@ function renderPortfolio() {
             <div class="li-main"><span class="li-cat">${p.fundName || p.type}${p.securityCode?' <span class=\"pill\">'+p.securityCode+'</span>':''}${p.macro?' <span class=\"pill\">'+p.macro+'</span>':''}${p.note?' · '+p.note:''}${maturityTag}</span><span class="li-date">${p.date||''} · ${p.currency}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
             <div style="display:flex;align-items:center;">
               <span class="li-amt">${fmt(mv)} ${p.currency}</span>
+              <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
               <button class="li-del" data-del-port="${p.id}">✕</button>
             </div>
           </div>
@@ -1968,6 +2019,37 @@ function renderPortfolio() {
       createLiquidityAdjustment("Banca", -placementCommissionAmt, date, `Commissione collocamento: ${type} ${posObj.securityCode||''}`.trim(), commId);
     }
     saveData(); renderPortfolio();
+  });
+  document.querySelectorAll("[data-editport]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingPortfolioId = btn.dataset.editport; renderPortfolio(); });
+  });
+  document.querySelectorAll("[data-editport-cancel]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingPortfolioId = null; renderPortfolio(); });
+  });
+  document.querySelectorAll("[data-editportform]").forEach(form=>{
+    form.addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const posId = form.dataset.editportform;
+      const pos = data.portfolio.find(p=>p.id===posId);
+      if (!pos) return;
+      const f = new FormData(ev.target);
+      const type = ev.target.querySelector(".cat-select").value;
+      pos.type = type;
+      pos.securityCode = f.get("securityCode") || pos.securityCode || null;
+      pos.amount = Number(f.get("amount"));
+      pos.currency = f.get("currency");
+      const mv = f.get("marketValue");
+      pos.marketValue = mv ? Number(mv) : null;
+      pos.date = f.get("date") || pos.date;
+      pos.maturityDate = f.get("maturityDate") || null;
+      pos.note = f.get("note") || "";
+      if (f.has("fundName")) pos.fundName = f.get("fundName") || "";
+      if (f.has("couponRate")) { pos.couponRate = f.get("couponRate")?Number(f.get("couponRate")):null; pos.bondTaxRate = Number(f.get("bondTaxRate"))||15; pos.purchasePrice = Number(f.get("purchasePrice"))||100; pos.redemptionPrice = Number(f.get("redemptionPrice"))||100; pos.bondYears = f.get("bondYears")||null; }
+      if (f.has("depositRate")) { pos.depositRate = f.get("depositRate")?Number(f.get("depositRate")):null; pos.depositTaxRate = Number(f.get("depositTaxRate"))||15; pos.depositYears = f.get("depositYears")||null; }
+      if (f.has("fundQuotaCount")) { pos.fundQuotaCount = Number(f.get("fundQuotaCount"))||0; pos.fundPurchaseQuotaPrice = Number(f.get("fundPurchaseQuotaPrice"))||0; pos.fundCurrentQuotaPrice = Number(f.get("fundCurrentQuotaPrice"))||pos.fundPurchaseQuotaPrice; }
+      editingPortfolioId = null;
+      saveData(); renderPortfolio();
+    });
   });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort); saveData(); renderPortfolio(); });
