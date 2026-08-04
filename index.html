@@ -11,6 +11,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2248%22 fill=%22%2312213A%22 stroke=%22%23C9A227%22 stroke-width=%224%22/><text x=%2250%22 y=%2264%22 font-size=%2244%22 text-anchor=%22middle%22 fill=%22%23C9A227%22 font-family=%22serif%22>L</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
@@ -107,7 +108,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.17</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.20</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
   </header>
@@ -133,7 +134,7 @@ const DEFAULT_CATEGORIES = {
   portfolio: ["Banca","Cash","Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1 },
+  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4 },
   income: [],
   expenses: [],
   portfolio: [],
@@ -201,6 +202,11 @@ let data = loadData();
 const fmt = n => Math.round(n).toLocaleString("it-IT");
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 function localDateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+function canGenerateOnDate(dateStr) {
+  if (dateStr < localDateStr(new Date())) return true;
+  if (dateStr > localDateStr(new Date())) return false;
+  return new Date().getHours() >= 16;
+}
 function localMonthStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
 const thisYear = thisYearNum;
 const now = new Date();
@@ -340,10 +346,7 @@ function autoGenerateSecurityIncome() {
     const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
     const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
     const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
-    if (new Date(dateStr) > now) return;
-
-    const nominal = p.amount;
-    const rate = isBondCoupon ? (Number(p.couponRate)||0) : (Number(p.depositRate)||0);
+    if (!canGenerateOnDate(dateStr)) return;
     const paymentsPerYear = 12 / freqObj.months;
     const grossAmt = nominal * rate/100 / paymentsPerYear;
     const taxRate = isBondCoupon ? (Number(p.bondTaxRate)||15) : (Number(p.depositTaxRate)||15);
@@ -373,7 +376,7 @@ function autoChargeCustodyFees() {
     if (p.maturityDate && new Date(p.maturityDate) < now) return;
     const start = new Date(p.date);
     const anniversaryThisYear = new Date(now.getFullYear(), start.getMonth(), start.getDate());
-    if (anniversaryThisYear > now) return;
+    if (!canGenerateOnDate(localDateStr(anniversaryThisYear))) return;
     const already = data.expenses.some(e => e.linkedBondId === p.id && e.category === "Commissione titoli custodia" && e.date.slice(0,4) === String(now.getFullYear()));
     if (already) return;
     const feeAmt = p.amount * rate / 100;
@@ -392,7 +395,7 @@ function autoMatureBondsAndDeposits() {
   let changed = false;
   data.portfolio.forEach(p => {
     if (!p.amount || p.amount <= 0 || !p.type || !p.maturityDate) return;
-    if (new Date(p.maturityDate) > now) return;
+    if (!canGenerateOnDate(p.maturityDate)) return;
     const typeLower = p.type.toLowerCase();
     const code = p.securityCode || "";
 
@@ -498,7 +501,7 @@ function generateRecurring() {
         const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
         const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
         const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
-        if (new Date(dateStr) <= now) {
+        if (canGenerateOnDate(dateStr)) {
           const mappedMacro = (data.categoryMacroMap[group] && data.categoryMacroMap[group][rule.category]) || null;
           const genId = uid();
           const paymentType = rule.paymentType !== undefined ? rule.paymentType : "Banca";
@@ -519,7 +522,7 @@ function generateRecurring() {
       const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
       const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
       const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
-      if (new Date(dateStr) <= now) {
+      if (canGenerateOnDate(dateStr)) {
         const mappedMacro = (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[rule.type]) || null;
         data.portfolio.push({ id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id });
         changed = true;
@@ -530,14 +533,15 @@ function generateRecurring() {
 }
 
 // ---------- FI projection ----------
-function project(wealth0, income0, savingsRate, expense0, expenseGrowth, incomeGrowth2y, ret, horizon) {
+function project(wealth0, income0, savingsRate, expense0, expenseGrowth, incomeGrowth2y, ret, horizon, withdrawalRate) {
+  const multiplier = 100 / (withdrawalRate || 4);
   const rows = []; let wealth = wealth0; let income = income0; let hitYear = null;
   for (let y=1; y<=horizon; y++) {
     if (y>1 && (y-1)%2===0) income += incomeGrowth2y;
     const expense = expense0 + expenseGrowth*(y-1);
     const contribution = income * savingsRate;
     wealth = wealth*(1+ret) + contribution;
-    const target = expense*25;
+    const target = expense*multiplier;
     if (!hitYear && wealth >= target) hitYear = y;
     rows.push({year:y, wealth, expense, target});
   }
@@ -545,6 +549,7 @@ function project(wealth0, income0, savingsRate, expense0, expenseGrowth, incomeG
 }
 
 let chartInstance = null;
+let fireChartInstance = null;
 let categoryChartInstance = null;
 let macroCompareChartInstance = null;
 let monthlyTotalsChartInstance = null;
@@ -685,8 +690,15 @@ function renderDashboard() {
     {key:"central", ret:s.centralRet/100, color:"#C9A227", label:"Central"},
     {key:"bull", ret:(s.centralRet+1)/100, color:"#3F6E5E", label:"Bull"},
   ];
-  const results = scenarios.map(sc => ({...sc, ...project(wealth0, projIncome, s.savingsRateTarget/100, projExpenseBase, s.expenseGrowth, s.incomeGrowth2y, sc.ret, s.horizon)}));
+  const results = scenarios.map(sc => ({...sc, ...project(wealth0, projIncome, s.savingsRateTarget/100, projExpenseBase, s.expenseGrowth, s.incomeGrowth2y, sc.ret, s.horizon, s.withdrawalRate||4)}));
   const central = results[1];
+
+  const fireRates = [4, 3.5, 3, 2.5, 2];
+  const fireNumbers = fireRates.map(rate => {
+    const target = projExpenseBase * 100/rate;
+    const proj = project(wealth0, projIncome, s.savingsRateTarget/100, projExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, s.horizon, rate);
+    return { rate, target, years: proj.hitYear };
+  });
 
   const currentAbsoluteTargetYear = thisYear + (central.hitYear || s.horizon);
   if (!s.planBaselineYear) {
@@ -716,7 +728,7 @@ function renderDashboard() {
   const freeFromIncome = incomeMonthlyRef!==null ? incomeMonthlyRef - recurringTotalMonthly : null;
   const freeFromTarget = monthlyBudget - recurringExpMonthly;
 
-  const fiTarget = annualBudget * 25;
+  const fiTarget = annualBudget * (100/(s.withdrawalRate||4));
   const fiProgressPct = fiTarget>0 ? Math.min(100, wealth0/fiTarget*100) : 0;
 
   const streak = budgetStreak();
@@ -773,6 +785,14 @@ function renderDashboard() {
       <div class="subtle">Riferimento fissato il ${s.planBaselineSetDate}: target FI nell'anno ${s.planBaselineYear}</div>
       <div class="stat-row"><span class="label">Target FI oggi (con i dati attuali)</span><span class="val">${currentAbsoluteTargetYear}</span></div>
       <div class="stat-row"><span class="label">Scostamento</span><span class="val ${diffYears>0?'up':diffYears<0?'down':''}">${diffYears===0?'in linea col piano':diffYears>0?`in anticipo di ${diffYears} anni`:`in ritardo di ${Math.abs(diffYears)} anni`}</span></div>
+    </div>
+    <div class="card">
+      <h3>Numero FIRE</h3>
+      <div class="subtle">Capitale necessario in base al tasso di prelievo scelto (regola del 4% e varianti più prudenti). Base spesa: ${fmt(projExpenseBase)} ALL/anno.</div>
+      <div class="chart-wrap"><canvas id="fireChart" height="200"></canvas></div>
+      <div style="margin-top:10px;">
+        ${fireNumbers.map(f=>`<div class="stat-row"><span class="label">${f.rate}% — ${fmt(f.target)} ALL</span><span class="val">${f.years ? f.years+' anni' : '>'+s.horizon+' anni'}</span></div>`).join('')}
+      </div>
     </div>
     ${alertHtml}
     <div class="card">
@@ -839,6 +859,27 @@ function renderDashboard() {
       scales: {
         x: { ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
         y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(0)+'M' }, grid:{ color:'#1E2E47' } }
+      }
+    }
+  });
+
+  const fireCtx = document.getElementById("fireChart");
+  if (fireChartInstance) fireChartInstance.destroy();
+  fireChartInstance = new Chart(fireCtx, {
+    data: {
+      labels: fireNumbers.map(f=>f.rate+'%'),
+      datasets: [
+        { type:'bar', label:'Numero FIRE (ALL)', data: fireNumbers.map(f=>f.target), backgroundColor:'#C9A227', yAxisID:'y' },
+        { type:'line', label:'Anni stimati', data: fireNumbers.map(f=>f.years||s.horizon), borderColor:'#3F6E5E', backgroundColor:'transparent', pointRadius:4, borderWidth:2, yAxisID:'y1' }
+      ]
+    },
+    options: {
+      responsive:true,
+      plugins: { legend: { labels:{ color:'#8FA3BF', font:{size:10} } } },
+      scales: {
+        x: { ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+        y: { position:'left', ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M' }, grid:{ color:'#1E2E47' } },
+        y1: { position:'right', ticks:{ color:'#3F6E5E', font:{size:10} }, grid:{ display:false } }
       }
     }
   });
@@ -1462,6 +1503,7 @@ function computeWeightedDuration() {
   let weightSum = 0, weightedYears = 0;
   items.forEach(p => {
     const mv = toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency);
+    const years = Math.max(0,(new Date(p.maturityDate) - now) / (365.25*86400000));
     weightSum += mv; weightedYears += mv*years;
   });
   return weightSum > 0 ? weightedYears/weightSum : null;
@@ -1537,7 +1579,7 @@ function renderPortfolio() {
   const duration = computeWeightedDuration();
   const bondPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("obbligazione") && p.amount > 0);
   const bondSaleOptions = bondPositions.map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''} — ${fmt(p.amount)} ${p.currency}</option>`).join('');
-  const fundPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("fondo") && !p.type.toLowerCase().includes("pensione") && p.amount > 0);
+  const fundPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("fondo") && p.amount > 0);
   const fundSaleOptions = fundPositions.map(p=>`<option value="${p.id}">${p.fundName||p.type}${p.note?' · '+p.note:''} — ${p.fundQuotaCount||0} quote</option>`).join('');
   const eurTotal = data.portfolio.reduce((s,p)=>{
     const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount;
@@ -1754,12 +1796,19 @@ function renderPortfolio() {
         const autoNote = (p.bondMode==="cedola"||p.depositMode==="cedola") ? '<div class="subtle" style="margin-top:4px;">Cedola/interesse generati automaticamente in base alla frequenza impostata.</div>'
           : (p.depositMode==="finale"||p.bondMode==="finale") ? '<div class="subtle" style="margin-top:4px;">Liquidazione automatica alla scadenza.</div>' : '';
         let rendHtml = "";
+        let raifUpdateHtml = "";
         const typeL = (p.type||"").toLowerCase();
-        if (typeL.includes("fondo") && !typeL.includes("pensione") && p.amount>0) {
+        if (typeL.includes("fondo") && p.amount>0) {
           const rendValore = mv - p.amount;
           const rendPct = (rendValore/p.amount*100);
           const rc = rendValore>=0 ? "#3F6E5E" : "#8B3A2F";
           rendHtml = `<div class="subtle" style="margin-top:4px; color:${rc};">Rendimento: ${rendPct>=0?'+':''}${rendPct.toFixed(2)}% (${rendValore>=0?'+':''}${fmt(rendValore)} ALL) — ${p.fundQuotaCount||0} quote a ${fmt(p.fundCurrentQuotaPrice||p.fundPurchaseQuotaPrice||0)}/quota</div>`;
+          const preselect = RAIFFEISEN_FUNDS.find(f => (p.fundName||"").toLowerCase().includes(f.replace("Raiffeisen ","").toLowerCase())) || RAIFFEISEN_FUNDS[0];
+          raifUpdateHtml = `<div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+            <select class="raif-fund-select" data-fundpos="${p.id}" style="width:auto; font-size:11px; padding:5px;">${RAIFFEISEN_FUNDS.map(f=>`<option ${f===preselect?'selected':''}>${f}</option>`).join('')}</select>
+            <button class="secondary" type="button" data-updatefundprice="${p.id}" style="width:auto; padding:5px 10px; font-size:11px;">🔄 Aggiorna prezzo (Raiffeisen)</button>
+          </div>
+          <div class="subtle" data-statusfor="${p.id}" style="margin-top:4px;"></div>`;
         } else if (typeL.includes("obbligazione") && p.amount>0) {
           const rendValore = coupons;
           const rendPct = (rendValore/p.amount*100);
@@ -1775,6 +1824,7 @@ function renderPortfolio() {
             </div>
           </div>
           ${rendHtml}
+          ${raifUpdateHtml}
           ${autoNote}
         </div>`;
       }).join('')}
@@ -1790,7 +1840,7 @@ function renderPortfolio() {
     const bondFields = document.getElementById("bondFields");
     const depositFields = document.getElementById("depositFields");
     const fundFields = document.getElementById("fundFields");
-    const isFund = val.includes("fondo") && !val.includes("pensione");
+    const isFund = val.includes("fondo");
     const isSecurity = val.includes("obbligazione") || val.includes("deposito") || isFund;
     bondFields.style.display = val.includes("obbligazione") ? "block" : "none";
     depositFields.style.display = val.includes("deposito") ? "block" : "none";
@@ -1869,7 +1919,7 @@ function renderPortfolio() {
     const typeLower = type.toLowerCase();
     const isBond = typeLower.includes("obbligazione");
     const isDeposit = typeLower.includes("deposito");
-    const isFund = typeLower.includes("fondo") && !typeLower.includes("pensione");
+    const isFund = typeLower.includes("fondo");
     const date = f.get("date") || todayISO;
     const fundQuotaCount = isFund ? (Number(f.get("fundQuotaCount"))||0) : 0;
     const fundPurchasePrice = isFund ? (Number(f.get("fundPurchaseQuotaPrice"))||0) : 0;
@@ -1921,6 +1971,27 @@ function renderPortfolio() {
   });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort); saveData(); renderPortfolio(); });
+  });
+  document.querySelectorAll("[data-updatefundprice]").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const posId = btn.dataset.updatefundprice;
+      const pos = data.portfolio.find(p=>p.id===posId);
+      const select = document.querySelector(`.raif-fund-select[data-fundpos="${posId}"]`);
+      const statusEl = document.querySelector(`[data-statusfor="${posId}"]`);
+      if (!pos || !select) return;
+      statusEl.textContent = "Recupero prezzo da Raiffeisen Invest…";
+      try {
+        const { price, currency } = await fetchRaiffeisenFundPrice(select.value);
+        pos.fundCurrentQuotaPrice = price;
+        pos.marketValue = (pos.fundQuotaCount||0) * price;
+        if (currency && currency !== pos.currency) statusEl.textContent = `Attenzione: il fondo quota in ${currency}, la tua posizione è in ${pos.currency} — controlla manualmente.`;
+        saveData();
+        statusEl.textContent = `Aggiornato: ${fmt(price)} ${currency}/quota (${select.value}).`;
+        renderPortfolio();
+      } catch (err) {
+        statusEl.textContent = "Errore: " + String(err.message||err).slice(0,150);
+      }
+    });
   });
 
   const bondSaleSelectEl = document.getElementById("bondSaleSelect");
@@ -2798,6 +2869,22 @@ function bindMacroAssign(group, refreshFn) {
   });
 }
 
+const RAIFFEISEN_FUNDS = ["Raiffeisen Prestigj","Raiffeisen Vizion","Raiffeisen Invest Euro","Raiffeisen Miks","Raiffeisen Pension","Raiffeisen Solid"];
+async function fetchRaiffeisenFundPrice(fundName) {
+  const target = "https://www.raiffeisen-invest.al/sq/performanca-e-fondeve.html";
+  const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(target);
+  const res = await fetch(proxyUrl);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const html = await res.text();
+  const nameEscaped = fundName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(nameEscaped + "[\\s\\S]{1,400}?([\\d,]+\\.\\d{2,4})\\s*(ALL|EUR)", "i");
+  const m = html.match(re);
+  if (!m) throw new Error(`Non ho trovato "${fundName}" nella pagina (nome diverso o formato cambiato?)`);
+  const price = parseFloat(m[1].replace(/,/g, ""));
+  const currency = m[2].toUpperCase();
+  return { price, currency };
+}
+
 async function fetchBoaRate() {
   const target = "https://www.bankofalbania.org/Markets/Official_exchange_rate/";
   const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(target);
@@ -2813,6 +2900,76 @@ async function fetchBoaRate() {
   const usd = extract("USD");
   if (!eur && !usd) throw new Error("Dati non trovati nella pagina (formato cambiato?)");
   return { eur, usd };
+}
+
+function fxDbGet() {
+  if (!data.fxDatabase) data.fxDatabase = {};
+  return data.fxDatabase;
+}
+function fxDbSetRate(dateStr, eur, usd) {
+  const db = fxDbGet();
+  db[dateStr] = { eur: eur||null, usd: usd||null };
+}
+function fxDbForwardFill() {
+  const db = fxDbGet();
+  const dates = Object.keys(db).sort();
+  if (dates.length < 2) return;
+  let last = null;
+  const start = new Date(dates[0]);
+  const end = new Date(dates[dates.length-1]);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate()+1)) {
+    const ds = localDateStr(d);
+    if (db[ds]) { last = db[ds]; }
+    else if (last) { db[ds] = { eur: last.eur, usd: last.usd, filled: true }; }
+  }
+}
+function getFxRateForDate(dateStr, currency) {
+  const db = fxDbGet();
+  if (db[dateStr]) {
+    const v = currency === "USD" ? db[dateStr].usd : db[dateStr].eur;
+    if (v) return v;
+  }
+  const dates = Object.keys(db).filter(d => d <= dateStr).sort();
+  if (dates.length) {
+    const v = currency === "USD" ? db[dates[dates.length-1]].usd : db[dates[dates.length-1]].eur;
+    if (v) return v;
+  }
+  return currency === "USD" ? data.settings.fxUsd : data.settings.fx;
+}
+
+async function importFxHistoryXLSX(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array", cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+  let headerRowIdx = -1, dateCol = -1, eurCol = -1, usdCol = -1;
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const row = rows[i].map(c => String(c).toUpperCase());
+    const dc = row.findIndex(c => c.includes("DAT") || c.includes("DATE"));
+    const ec = row.findIndex(c => c === "EUR" || c.includes("EUR"));
+    const uc = row.findIndex(c => c === "USD" || c.includes("USD"));
+    if (dc >= 0 && (ec >= 0 || uc >= 0)) { headerRowIdx = i; dateCol = dc; eurCol = ec; usdCol = uc; break; }
+  }
+  if (headerRowIdx === -1) throw new Error("Non ho trovato intestazioni riconoscibili (Data/EUR/USD) nel file.");
+  let count = 0;
+  for (let i = headerRowIdx+1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || !row[dateCol]) continue;
+    let dateStr = null;
+    const raw = row[dateCol];
+    const m = String(raw).match(/(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})/);
+    if (m) dateStr = `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+    else { const d = new Date(raw); if (!isNaN(d)) dateStr = localDateStr(d); }
+    if (!dateStr) continue;
+    const eur = eurCol>=0 ? parseFloat(String(row[eurCol]).replace(",",".")) : null;
+    const usd = usdCol>=0 ? parseFloat(String(row[usdCol]).replace(",",".")) : null;
+    if (!eur && !usd) continue;
+    fxDbSetRate(dateStr, eur||null, usd||null);
+    count++;
+  }
+  fxDbForwardFill();
+  saveData();
+  return count;
 }
 
 function renderSettings() {
@@ -2838,15 +2995,27 @@ function renderSettings() {
         <div><label>Tasso di risparmio target (%)</label><input type="number" name="savingsRateTarget" value="${s.savingsRateTarget}"></div>
         <div><label>Crescita reddito ogni 2 anni (ALL)</label><input type="number" name="incomeGrowth2y" value="${s.incomeGrowth2y}"></div>
         <div><label>Rendimento reale centrale (%)</label><input type="number" name="centralRet" value="${s.centralRet}"></div>
+        <div><label>Tasso di prelievo (regola del %) — usato per il target FI principale</label><input type="number" step="0.1" name="withdrawalRate" value="${s.withdrawalRate||4}"></div>
         <div><label>Orizzonte proiezione (anni)</label><input type="number" name="horizon" value="${s.horizon}"></div>
         <button class="primary" type="submit">Salva assunzioni</button>
       </form>
     </div>
     ${data.fxHistory.length>0 ? `<div class="card">
-      <h3>Storico cambio EUR/ALL</h3>
+      <h3>Storico cambio EUR/ALL (modifiche manuali)</h3>
       <div class="subtle">Si registra automaticamente ogni volta che modifichi il cambio nelle Assunzioni.</div>
       ${[...data.fxHistory].reverse().slice(0,12).map(h=>`<div class="stat-row"><span class="label">${h.date}</span><span class="val">${h.rate}</span></div>`).join('')}
     </div>` : ''}
+    <div class="card">
+      <h3>Database storico cambio (per data)</h3>
+      <div class="subtle">Scarica il file Excel annuale della Banca d'Albania da <span style="color:#C9A227;">bankofalbania.org/Tregjet/Kursi_zyrtar_i_kembimit/Arkiva_e_kursit_te_kembimit/</span> e caricalo qui: costruisce un database giorno per giorno, riempiendo automaticamente i giorni senza pubblicazione (festivi/weekend) con l'ultimo cambio disponibile.</div>
+      <input type="file" id="fxHistoryFileInput" accept=".xlsx,.xls">
+      <div id="fxHistoryImportStatus" class="subtle" style="margin-top:8px;"></div>
+      ${Object.keys(data.fxDatabase||{}).length>0 ? (()=>{
+        const dates = Object.keys(data.fxDatabase).sort();
+        return `<div class="stat-row"><span class="label">Giorni nel database</span><span class="val">${dates.length}</span></div>
+        <div class="stat-row"><span class="label">Copertura</span><span class="val">${dates[0]} → ${dates[dates.length-1]}</span></div>`;
+      })() : ''}
+    </div>
     <div class="card">
       <h3>Gestisci categorie</h3>
       <div class="subtle">Modifica nome e budget annuo di ciascuna voce, elimina quelle che non ti servono più, o aggiungine di nuove — indipendentemente per Reddito, Spese e Patrimonio. Ricorda di premere "Salva modifiche" dopo aver cambiato un nome.</div>
@@ -2929,6 +3098,21 @@ function renderSettings() {
     saveData(); alert("Budget salvato.");
   });
 
+  const fxHistoryFileInput = document.getElementById("fxHistoryFileInput");
+  if (fxHistoryFileInput) fxHistoryFileInput.addEventListener("change", async ev=>{
+    const file = ev.target.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById("fxHistoryImportStatus");
+    statusEl.textContent = "Lettura del file in corso…";
+    try {
+      const count = await importFxHistoryXLSX(file);
+      statusEl.textContent = `Importate ${count} date. Database aggiornato (giorni mancanti riempiti automaticamente).`;
+      renderSettings();
+    } catch (err) {
+      statusEl.textContent = "Errore nella lettura del file: " + String(err.message||err).slice(0,150);
+    }
+  });
+
   document.getElementById("fetchBoaBtn").addEventListener("click", async ()=>{
     const statusEl = document.getElementById("boaFetchStatus");
     statusEl.textContent = "Recupero cambio dalla Banca d'Albania…";
@@ -2936,7 +3120,10 @@ function renderSettings() {
       const { eur, usd } = await fetchBoaRate();
       if (eur) document.querySelector('#settingsForm [name="fx"]').value = eur;
       if (usd) document.querySelector('#settingsForm [name="fxUsd"]').value = usd;
-      statusEl.textContent = `Trovato: EUR ${eur ?? "?"} · USD ${usd ?? "?"} — controlla e premi "Salva assunzioni" per confermare.`;
+      fxDbSetRate(todayISO, eur||null, usd||null);
+      fxDbForwardFill();
+      saveData();
+      statusEl.textContent = `Trovato: EUR ${eur ?? "?"} · USD ${usd ?? "?"} — controlla e premi "Salva assunzioni" per confermare. Salvato anche nello storico del ${todayISO}.`;
     } catch (err) {
       statusEl.textContent = "Non sono riuscito a recuperare il cambio automaticamente (" + String(err.message||err).slice(0,100) + "). Inseriscilo manualmente.";
     }
@@ -2953,6 +3140,7 @@ function renderSettings() {
     data.settings.savingsRateTarget = Number(f.get("savingsRateTarget"));
     data.settings.incomeGrowth2y = Number(f.get("incomeGrowth2y"));
     data.settings.centralRet = Number(f.get("centralRet"));
+    data.settings.withdrawalRate = Number(f.get("withdrawalRate")) || 4;
     data.settings.horizon = Number(f.get("horizon"));
     saveData();
     alert("Assunzioni salvate.");
