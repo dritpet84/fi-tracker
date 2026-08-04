@@ -108,7 +108,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.21</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.24</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
   </header>
@@ -557,6 +557,7 @@ let macroDrilldownChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
 let editingPortfolioId = null;
+let fundImportPreview = null; // {type, fundName, rows: [{date, amount, unitPrice, units}]}
 let catManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroManagerOpen = { income:false, expenses:false, portfolio:false };
 let macroAssignOpen = { income:false, expenses:false, portfolio:false };
@@ -926,7 +927,7 @@ function renderIncome() {
       <form class="entry" id="incomeForm">
         <div class="row2">
           <div><label>Data</label><input type="date" name="date" value="${todayISO}" required></div>
-          <div><label>Importo (ALL)</label><input type="number" name="amount" placeholder="0" required></div>
+          <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
         </div>
         <div><label>Categoria</label>${categorySelect("income")}</div>
         <button class="secondary" type="button" id="toggleCatManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.income ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
@@ -1239,7 +1240,7 @@ function renderExpenses() {
         </div>
         <div class="row2">
           <div><label>Data</label><input type="date" name="date" value="${todayISO}" required></div>
-          <div><label>Importo (ALL)</label><input type="number" name="amount" placeholder="0" required></div>
+          <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
         </div>
         <div><label>Categoria</label>${categorySelect("expenses")}</div>
         <button class="secondary" type="button" id="toggleCatManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.expenses ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
@@ -1584,42 +1585,137 @@ function renderPortfolioEditForm(p) {
     ${isFund ? `<div><label>Nome fondo</label><input type="text" name="fundName" value="${p.fundName||''}"></div>` : ''}
     <div><label>Codice titolo</label><input type="text" name="securityCode" maxlength="8" value="${p.securityCode||''}"></div>
     <div class="row2">
-      <div><label>Importo nominale</label><input type="number" name="amount" value="${p.amount}"></div>
+      <div><label>Importo nominale</label><input type="number" step="0.0001" name="amount" value="${p.amount}"></div>
       <div><label>Valuta</label><select name="currency"><option ${p.currency==='ALL'?'selected':''}>ALL</option><option ${p.currency==='EUR'?'selected':''}>EUR</option><option ${p.currency==='USD'?'selected':''}>USD</option></select></div>
     </div>
     <div class="row2">
-      <div><label>Valore di mercato</label><input type="number" name="marketValue" value="${p.marketValue!=null?p.marketValue:''}"></div>
+      ${!isFund ? `<div><label>Valore di mercato</label><input type="number" step="0.0001" name="marketValue" value="${p.marketValue!=null?p.marketValue:''}"></div>` : ''}
       <div><label>Data</label><input type="date" name="date" value="${p.date||''}"></div>
     </div>
-    <div><label>Data scadenza</label><input type="date" name="maturityDate" value="${p.maturityDate||''}"></div>
+    ${!isFund ? `<div><label>Data scadenza</label><input type="date" name="maturityDate" value="${p.maturityDate||''}"></div>` : ''}
     ${isBond ? `
     <div class="row2">
-      <div><label>Cedola annua (%)</label><input type="number" step="0.01" name="couponRate" value="${p.couponRate!=null?p.couponRate:''}"></div>
-      <div><label>Tassazione (%)</label><input type="number" step="0.01" name="bondTaxRate" value="${p.bondTaxRate!=null?p.bondTaxRate:15}"></div>
+      <div><label>Cedola annua (%)</label><input type="number" step="0.0001" name="couponRate" value="${p.couponRate!=null?p.couponRate:''}"></div>
+      <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="bondTaxRate" value="${p.bondTaxRate!=null?p.bondTaxRate:15}"></div>
     </div>
     <div class="row2">
-      <div><label>Prezzo collocamento</label><input type="number" step="0.01" name="purchasePrice" value="${p.purchasePrice!=null?p.purchasePrice:100}"></div>
-      <div><label>Prezzo rimborso</label><input type="number" step="0.01" name="redemptionPrice" value="${p.redemptionPrice!=null?p.redemptionPrice:100}"></div>
+      <div><label>Prezzo collocamento</label><input type="number" step="0.0001" name="purchasePrice" value="${p.purchasePrice!=null?p.purchasePrice:100}"></div>
+      <div><label>Prezzo rimborso</label><input type="number" step="0.0001" name="redemptionPrice" value="${p.redemptionPrice!=null?p.redemptionPrice:100}"></div>
     </div>
     <div><label>Durata (anni)</label><input type="number" name="bondYears" value="${p.bondYears||''}"></div>` : ''}
     ${isDeposit ? `
     <div class="row2">
-      <div><label>Tasso annuo (%)</label><input type="number" step="0.01" name="depositRate" value="${p.depositRate!=null?p.depositRate:''}"></div>
-      <div><label>Tassazione (%)</label><input type="number" step="0.01" name="depositTaxRate" value="${p.depositTaxRate!=null?p.depositTaxRate:15}"></div>
+      <div><label>Tasso annuo (%)</label><input type="number" step="0.0001" name="depositRate" value="${p.depositRate!=null?p.depositRate:''}"></div>
+      <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="depositTaxRate" value="${p.depositTaxRate!=null?p.depositTaxRate:15}"></div>
     </div>
     <div><label>Durata (anni)</label><input type="number" name="depositYears" value="${p.depositYears||''}"></div>` : ''}
     ${isFund ? `
     <div class="row2">
       <div><label>Numero di quote</label><input type="number" step="0.0001" name="fundQuotaCount" value="${p.fundQuotaCount||''}"></div>
       <div><label>Prezzo acquisto/quota</label><input type="number" step="0.0001" name="fundPurchaseQuotaPrice" value="${p.fundPurchaseQuotaPrice||''}"></div>
-    </div>
-    <div><label>Prezzo attuale/quota</label><input type="number" step="0.0001" name="fundCurrentQuotaPrice" value="${p.fundCurrentQuotaPrice||''}"></div>` : ''}
+    </div>` : ''}
     <div><label>Nota</label><input type="text" name="note" value="${p.note||''}"></div>
     <div class="row2">
       <button class="primary" type="submit">Salva</button>
       <button class="secondary" type="button" data-editport-cancel="1">Annulla</button>
     </div>
   </form>`;
+}
+
+async function parseFundHistoryFile(file) {
+  const isCSV = file.name.toLowerCase().endsWith(".csv");
+  let rows2D;
+  if (isCSV) {
+    const text = await file.text();
+    rows2D = text.split(/\r?\n/).filter(l=>l.trim()).map(l=>l.split(/\t|,/));
+  } else {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array", cellDates: true });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    rows2D = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+  }
+  let headerIdx = -1, dateCol = -1, amtCol = -1, priceCol = -1, unitsCol = -1;
+  for (let i = 0; i < Math.min(rows2D.length, 10); i++) {
+    const row = rows2D[i].map(c => String(c).toUpperCase());
+    const dc = row.findIndex(c => c.includes("DAT"));
+    const ac = row.findIndex(c => c.includes("AMOUNT") || c.includes("IMPORT"));
+    const pc = row.findIndex(c => c.includes("PRICE") || c.includes("PREZZO"));
+    const uc = row.findIndex(c => c.includes("UNIT") || c.includes("QUOT"));
+    if (dc >= 0 && ac >= 0 && pc >= 0) { headerIdx = i; dateCol = dc; amtCol = ac; priceCol = pc; unitsCol = (uc >= 0 && uc !== pc) ? uc : pc + 1; break; }
+  }
+  if (headerIdx === -1) throw new Error("Intestazioni non riconosciute (servono colonne Data/Amount/Unit Price/Units).");
+  const rows = [], errors = [];
+  for (let i = headerIdx + 1; i < rows2D.length; i++) {
+    const r = rows2D[i];
+    if (!r || r[dateCol] === undefined || r[dateCol] === "") continue;
+    let dateStr = null;
+    const raw = r[dateCol];
+    const m = String(raw).match(/(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})/);
+    if (m) dateStr = `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+    else { const d = new Date(raw); if (!isNaN(d)) dateStr = localDateStr(d); }
+    const amount = parseFloat(String(r[amtCol]).replace(/,/g,""));
+    const unitPrice = parseFloat(String(r[priceCol]).replace(/,/g,""));
+    const units = parseFloat(String(r[unitsCol]).replace(/,/g,""));
+    if (!dateStr || isNaN(amount) || isNaN(unitPrice) || isNaN(units)) { errors.push({ line: i+1, text: JSON.stringify(r) }); continue; }
+    rows.push({ date: dateStr, amount, unitPrice, units });
+  }
+  return { rows, errors };
+}
+
+function parseFundHistoryText(text) {
+  const lines = text.split(/\n/).map(l=>l.trim()).filter(l=>l);
+  const rows = [];
+  const errors = [];
+  const re = /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})[^\d\-]*(-?[\d,]+\.?\d*)[^\d\-]+(-?[\d,]+\.?\d*)[^\d\-]+(-?[\d,]+\.?\d*)/;
+  lines.forEach((line,idx) => {
+    if (/^date/i.test(line)) return; // skip header row
+    const m = line.match(re);
+    if (!m) { errors.push({line: idx+1, text: line}); return; }
+    const [, d, mo, y, amtStr, priceStr, unitsStr] = m;
+    rows.push({
+      date: `${y}-${mo.padStart(2,"0")}-${d.padStart(2,"0")}`,
+      amount: parseFloat(amtStr.replace(/,/g,"")),
+      unitPrice: parseFloat(priceStr.replace(/,/g,"")),
+      units: parseFloat(unitsStr.replace(/,/g,""))
+    });
+  });
+  return { rows, errors };
+}
+
+function computeFundsSummary() {
+  const funds = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("fondo") && p.amount>0 && p.fundQuotaCount);
+  const grouped = {};
+  funds.forEach(p => {
+    const key = p.fundName || p.type;
+    if (!grouped[key]) grouped[key] = { name:key, totalQuote:0, totalInvested:0, currentPrice:0, currency:p.currency, priceHistory:[], earliestDate:p.date };
+    grouped[key].totalQuote += Number(p.fundQuotaCount)||0;
+    grouped[key].totalInvested += Number(p.amount)||0;
+    const cp = Number(p.fundCurrentQuotaPrice)||Number(p.fundPurchaseQuotaPrice)||0;
+    if (cp > grouped[key].currentPrice || grouped[key].currentPrice===0) grouped[key].currentPrice = cp;
+    if (p.priceHistory) grouped[key].priceHistory.push(...p.priceHistory);
+    if (p.date && p.date < grouped[key].earliestDate) grouped[key].earliestDate = p.date;
+  });
+  const yearStart = `${thisYear}-01-01`;
+  return Object.values(grouped).map(g => {
+    const avgPrice = g.totalQuote>0 ? g.totalInvested/g.totalQuote : 0;
+    const currentValue = g.totalQuote * g.currentPrice;
+    const rendValore = currentValue - g.totalInvested;
+    const rendPct = g.totalInvested>0 ? rendValore/g.totalInvested*100 : 0;
+    g.priceHistory.sort((a,b)=>a.date.localeCompare(b.date));
+    let baselinePrice = null;
+    const historyThisYear = g.priceHistory.filter(h=>h.date>=yearStart);
+    const historyBefore = g.priceHistory.filter(h=>h.date<yearStart).sort((a,b)=>b.date.localeCompare(a.date));
+    if (historyBefore.length>0) baselinePrice = historyBefore[0].price;
+    else if (historyThisYear.length>0) baselinePrice = historyThisYear[0].price;
+    else if (g.earliestDate >= yearStart) baselinePrice = avgPrice;
+    let ytdPct = null, projectedPct = null;
+    if (baselinePrice) {
+      ytdPct = ((g.currentPrice - baselinePrice) / baselinePrice) * 100;
+      const dayOfYear = Math.ceil((now - new Date(thisYear,0,1)) / 86400000) || 1;
+      projectedPct = ytdPct * (365/dayOfYear);
+    }
+    return { name:g.name, totalQuote:g.totalQuote, currentPrice:g.currentPrice, currentValue, avgPrice, rendPct, rendValore, ytdPct, projectedPct, currency:g.currency };
+  });
 }
 
 function renderPortfolio() {
@@ -1630,6 +1726,7 @@ function renderPortfolio() {
   const bondSaleOptions = bondPositions.map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''} — ${fmt(p.amount)} ${p.currency}</option>`).join('');
   const fundPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("fondo") && p.amount > 0);
   const fundSaleOptions = fundPositions.map(p=>`<option value="${p.id}">${p.fundName||p.type}${p.note?' · '+p.note:''} — ${p.fundQuotaCount||0} quote</option>`).join('');
+  const fundsSummary = computeFundsSummary();
   const eurTotal = data.portfolio.reduce((s,p)=>{
     const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount;
     return s + (p.currency==="EUR" ? toALL(mv,"EUR") : 0);
@@ -1663,14 +1760,14 @@ function renderPortfolio() {
         <button class="secondary" type="button" id="toggleMacroManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.portfolio ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <button class="secondary" type="button" id="toggleMacroAssign-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.portfolio ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         <div class="row2">
-          <div><label>Importo nominale</label><input type="number" name="amount" placeholder="0" required></div>
+          <div><label>Importo nominale</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
         </div>
         <div class="row2">
-          <div><label>Valore di mercato (opz.)</label><input type="number" name="marketValue" placeholder="= nominale se vuoto"></div>
+          <div id="marketValueField"><label>Valore di mercato (opz.)</label><input type="number" step="0.0001" name="marketValue" placeholder="= nominale se vuoto"></div>
           <div><label>Data di partenza</label><input type="date" name="date" value="${todayISO}"></div>
         </div>
-        <div><label>Data scadenza (opz., per bond/deposito)</label><input type="date" name="maturityDate"></div>
+        <div id="maturityDateField"><label>Data scadenza (opz., per bond/deposito)</label><input type="date" name="maturityDate"></div>
 
         <div id="titleCodeField" style="display:none;">
           <label>Codice titolo</label><input type="text" name="securityCode" id="securityCodeInput" maxlength="8" value="${peekNextSecurityCode()}">
@@ -1683,37 +1780,37 @@ function renderPortfolio() {
             <div><label>Durata (anni, per la tassa)</label><input type="number" name="bondYears" placeholder="es. 7"></div>
           </div>
           <div class="row2" id="bondCouponRow">
-            <div><label>Cedola annua (%)</label><input type="number" step="0.01" name="couponRate" placeholder="es. 4.5"></div>
+            <div><label>Cedola annua (%)</label><input type="number" step="0.0001" name="couponRate" placeholder="es. 4.5"></div>
             <div><label>Frequenza cedola</label><select name="couponFrequency"><option value="monthly">Mensile</option><option value="quarterly">Trimestrale</option><option value="semiannual">Semestrale</option><option value="annual" selected>Annuale</option><option value="biennial">Biennale</option></select></div>
           </div>
           <div class="row2">
-            <div><label>Tassazione cedola/rendimento (%)</label><input type="number" step="0.01" name="bondTaxRate" value="15"></div>
+            <div><label>Tassazione cedola/rendimento (%)</label><input type="number" step="0.0001" name="bondTaxRate" value="15"></div>
             <div></div>
           </div>
           <div class="row2" id="bondPriceRow" style="display:none;">
-            <div><label>Prezzo di collocamento</label><input type="number" step="0.01" name="purchasePrice" placeholder="es. 97"></div>
-            <div><label>Prezzo di rimborso</label><input type="number" step="0.01" name="redemptionPrice" value="100"></div>
+            <div><label>Prezzo di collocamento</label><input type="number" step="0.0001" name="purchasePrice" placeholder="es. 97"></div>
+            <div><label>Prezzo di rimborso</label><input type="number" step="0.0001" name="redemptionPrice" value="100"></div>
           </div>
           <div class="row2">
-            <div><label>Commissione collocamento</label><input type="number" step="0.01" name="placementCommissionValue" placeholder="0"></div>
+            <div><label>Commissione collocamento</label><input type="number" step="0.0001" name="placementCommissionValue" placeholder="0"></div>
             <div><label>Tipo</label><select name="placementCommissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
           </div>
           <div class="row2">
-            <div><label>Commissione disbursement cedola</label><input type="number" step="0.01" name="couponCommissionValue" placeholder="0"></div>
+            <div><label>Commissione disbursement cedola</label><input type="number" step="0.0001" name="couponCommissionValue" placeholder="0"></div>
             <div><label>Tipo</label><select name="couponCommissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
           </div>
-          <div><label>Commissione titoli annua (%) — 0 in Albania, >0 es. Italia</label><input type="number" step="0.01" name="custodyFeeRate" value="0"></div>
+          <div><label>Commissione titoli annua (%) — 0 in Albania, >0 es. Italia</label><input type="number" step="0.0001" name="custodyFeeRate" value="0"></div>
         </div>
 
         <div id="depositFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
           <label style="color:#C9A227;">Dettagli deposito</label>
           <div class="row2">
             <div><label>Modalità</label><select name="depositMode"><option value="cedola">Con cedola periodica</option><option value="finale">Pagamento finale a scadenza</option></select></div>
-            <div><label>Tasso annuo (%)</label><input type="number" step="0.01" name="depositRate" placeholder="es. 3.2"></div>
+            <div><label>Tasso annuo (%)</label><input type="number" step="0.0001" name="depositRate" placeholder="es. 3.2"></div>
           </div>
           <div class="row2">
             <div><label>Frequenza cedola (se con cedola)</label><select name="couponFrequency"><option value="monthly">Mensile</option><option value="quarterly">Trimestrale</option><option value="semiannual">Semestrale</option><option value="annual" selected>Annuale</option></select></div>
-            <div><label>Tassazione (%)</label><input type="number" step="0.01" name="depositTaxRate" value="15"></div>
+            <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="depositTaxRate" value="15"></div>
           </div>
           <div><label>Durata (anni)</label><input type="number" name="depositYears" placeholder="es. 3"></div>
         </div>
@@ -1726,7 +1823,6 @@ function renderPortfolio() {
             <div><label>Numero di quote</label><input type="number" step="0.0001" name="fundQuotaCount" id="fundQuotaCount" placeholder="es. 10"></div>
           </div>
           <div><label>Valore totale investito (auto)</label><input type="number" id="fundInvestedPreview" readonly style="opacity:0.7;"></div>
-          <div><label>Prezzo attuale per quota (opz., per il rendimento)</label><input type="number" step="0.0001" name="fundCurrentQuotaPrice" placeholder="lascia vuoto se = prezzo acquisto"></div>
         </div>
 
         <div><label>Nota (es. banca)</label><input type="text" name="note" placeholder=""></div>
@@ -1755,15 +1851,15 @@ function renderPortfolio() {
         <div><label>Obbligazione</label><select id="bondSaleSelect" name="bondId">${bondSaleOptions}</select></div>
         <div class="row2">
           <div><label>Capitale investito (nominale)</label><input type="number" id="bondSaleNominal" name="nominal" required></div>
-          <div><label>Prezzo di collocamento</label><input type="number" step="0.01" id="bondSalePurchasePrice" name="purchasePrice" value="100"></div>
+          <div><label>Prezzo di collocamento</label><input type="number" step="0.0001" id="bondSalePurchasePrice" name="purchasePrice" value="100"></div>
         </div>
         <div class="row2">
           <div><label>Data di vendita</label><input type="date" name="saleDate" value="${todayISO}"></div>
-          <div><label>Prezzo di vendita</label><input type="number" step="0.01" name="salePrice" value="100" required></div>
+          <div><label>Prezzo di vendita</label><input type="number" step="0.0001" name="salePrice" value="100" required></div>
         </div>
         <div class="row2">
-          <div><label>Aliquota tassazione capital gain (%)</label><input type="number" step="0.01" id="bondSaleTaxRate" name="taxRate" value="15"></div>
-          <div><label>Commissione operazione</label><input type="number" step="0.01" name="commissionValue" value="0"></div>
+          <div><label>Aliquota tassazione capital gain (%)</label><input type="number" step="0.0001" id="bondSaleTaxRate" name="taxRate" value="15"></div>
+          <div><label>Commissione operazione</label><input type="number" step="0.0001" name="commissionValue" value="0"></div>
         </div>
         <div><label>Tipo commissione</label><select name="commissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
         <div id="bondSalePreview" style="background:#0F1B2B; border:1px solid #2E4159; border-radius:6px; padding:12px; margin-top:6px; font-family:'IBM Plex Mono',monospace; font-size:12.5px;"></div>
@@ -1784,8 +1880,8 @@ function renderPortfolio() {
           <div><label>Prezzo di vendita per quota</label><input type="number" step="0.0001" name="salePrice" required></div>
         </div>
         <div class="row2">
-          <div><label>Aliquota tassazione capital gain (%)</label><input type="number" step="0.01" name="taxRate" value="15"></div>
-          <div><label>Commissione operazione</label><input type="number" step="0.01" name="commissionValue" value="0"></div>
+          <div><label>Aliquota tassazione capital gain (%)</label><input type="number" step="0.0001" name="taxRate" value="15"></div>
+          <div><label>Commissione operazione</label><input type="number" step="0.0001" name="commissionValue" value="0"></div>
         </div>
         <div><label>Tipo commissione</label><select name="commissionType"><option value="percent">%</option><option value="fixed">Fissa (ALL)</option></select></div>
         <div id="fundSalePreview" style="background:#0F1B2B; border:1px solid #2E4159; border-radius:6px; padding:12px; margin-top:6px; font-family:'IBM Plex Mono',monospace; font-size:12.5px;"></div>
@@ -1801,12 +1897,60 @@ function renderPortfolio() {
           <div><label>A</label><select name="to"><option value="Cash">Cash</option><option value="Banca">Banca</option></select></div>
         </div>
         <div class="row2">
-          <div><label>Importo (ALL)</label><input type="number" name="amount" placeholder="0" required></div>
+          <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
         </div>
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="secondary" type="submit">Trasferisci</button>
       </form>
+    </div>
+    ${fundsSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo fondi</h3>
+      <div class="subtle">Rendimento YTD calcolato dal primo aggiornamento prezzo registrato quest'anno (o dal prezzo di acquisto se la posizione è aperta quest'anno). "Proiettato" estrapola il ritmo attuale a fine anno — è una stima, non una previsione.</div>
+      ${fundsSummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.name}</div>
+          <div class="stat-row"><span class="label">Quote totali</span><span class="val">${g.totalQuote.toFixed(4)}</span></div>
+          <div class="stat-row"><span class="label">Prezzo di mercato attuale</span><span class="val">${fmt(g.currentPrice)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Valore attuale</span><span class="val">${fmt(g.currentValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Prezzo medio di acquisto</span><span class="val">${fmt(g.avgPrice)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Rendimento totale</span><span class="val ${g.rendPct>=0?'up':'down'}">${g.rendPct>=0?'+':''}${g.rendPct.toFixed(2)}% (${g.rendValore>=0?'+':''}${fmt(g.rendValore)} ${g.currency})</span></div>
+          <div class="stat-row"><span class="label">Rendimento YTD</span><span class="val ${g.ytdPct===null?'':(g.ytdPct>=0?'up':'down')}">${g.ytdPct===null?'N/D — aggiorna il prezzo per iniziare a tracciarlo':(g.ytdPct>=0?'+':'')+g.ytdPct.toFixed(2)+'%'}</span></div>
+          <div class="stat-row"><span class="label">Proiettato a fine anno</span><span class="val ${g.projectedPct===null?'':(g.projectedPct>=0?'up':'down')}">${g.projectedPct===null?'N/D':(g.projectedPct>=0?'+':'')+g.projectedPct.toFixed(2)+'%'}</span></div>
+        </div>
+      `).join('')}
+    </div>` : ''}
+    <div class="card">
+      <h3>Importa storico fondo</h3>
+      <div class="subtle">Incolla lo storico degli acquisti di un fondo (una riga per movimento: Data, Importo, Prezzo per quota, Quote acquistate). Funziona per qualsiasi fondo, inclusa la Pensione. Prima di salvare vedrai un'anteprima da controllare.</div>
+      ${!fundImportPreview ? `
+      <form class="entry" id="fundImportForm">
+        <div><label>Categoria/tipo</label>${categorySelect("portfolio")}</div>
+        <div><label>Nome fondo</label><input type="text" name="fundName" placeholder="es. Raiffeisen Pension"></div>
+        <div class="row2">
+          <div><label>Prezzo inizio anno (opzionale, per YTD) — data</label><input type="date" name="baselineDate"></div>
+          <div><label>Prezzo inizio anno</label><input type="number" step="0.0001" name="baselinePrice" placeholder="es. 2346.2956"></div>
+        </div>
+        <div><label>Dati storico (una riga per movimento)</label><textarea name="historyText" id="fundHistoryTextarea" rows="6" style="width:100%; background:#0F1B2B; border:1px solid #2E4159; color:#EDE6D6; padding:10px; font-family:'IBM Plex Mono',monospace; font-size:12px; border-radius:5px;" placeholder="31/12/2024	602.19	2244.0837	268.3459
+07/01/2025	40000	2246.0557	17.8090"></textarea></div>
+        <div class="subtle" style="margin:2px 0;">— oppure, invece di incollare —</div>
+        <div><label>Carica file (Excel .xlsx/.xls o CSV)</label><input type="file" id="fundHistoryFileInput" accept=".xlsx,.xls,.csv"></div>
+        <div id="fundHistoryFileStatus" class="subtle"></div>
+        <button class="secondary" type="submit">Genera anteprima</button>
+      </form>` : `
+      <div class="subtle">Fondo: <b>${fundImportPreview.fundName}</b> (${fundImportPreview.type}) — ${fundImportPreview.rows.length} righe riconosciute${fundImportPreview.errors.length?`, ${fundImportPreview.errors.length} righe NON riconosciute (verranno ignorate)`:''}.</div>
+      ${fundImportPreview.errors.length ? `<div class="alert-banner">⚠ Righe non riconosciute: ${fundImportPreview.errors.map(e=>'#'+e.line).join(', ')} — controlla il formato (Data, Importo, Prezzo, Quote).</div>` : ''}
+      <div style="max-height:260px; overflow-y:auto; margin:10px 0;">
+        <table style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px;">
+          <tr style="color:#8FA3BF; text-align:left;"><th>Data</th><th>Importo</th><th>Prezzo</th><th>Quote</th></tr>
+          ${fundImportPreview.rows.map(r=>`<tr><td>${r.date}</td><td>${fmt(r.amount)}</td><td>${r.unitPrice}</td><td>${r.units}</td></tr>`).join('')}
+        </table>
+      </div>
+      <div class="row2">
+        <button class="primary" type="button" id="fundImportConfirm">Conferma importazione (${fundImportPreview.rows.length} righe)</button>
+        <button class="secondary" type="button" id="fundImportCancel">Annulla</button>
+      </div>
+      `}
     </div>
     <div class="card">
       <h3>Allocazione</h3>
@@ -1897,6 +2041,8 @@ function renderPortfolio() {
     depositFields.style.display = val.includes("deposito") ? "block" : "none";
     fundFields.style.display = isFund ? "block" : "none";
     document.getElementById("titleCodeField").style.display = isSecurity ? "block" : "none";
+    document.getElementById("marketValueField").style.display = isFund ? "none" : "block";
+    document.getElementById("maturityDateField").style.display = isFund ? "none" : "block";
   }
   function updateFundInvestedPreview() {
     const price = Number(document.getElementById("fundPurchaseQuotaPrice").value) || 0;
@@ -2038,15 +2184,14 @@ function renderPortfolio() {
       pos.securityCode = f.get("securityCode") || pos.securityCode || null;
       pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
-      const mv = f.get("marketValue");
-      pos.marketValue = mv ? Number(mv) : null;
+      if (f.has("marketValue")) { const mv = f.get("marketValue"); pos.marketValue = mv ? Number(mv) : null; }
       pos.date = f.get("date") || pos.date;
-      pos.maturityDate = f.get("maturityDate") || null;
+      if (f.has("maturityDate")) pos.maturityDate = f.get("maturityDate") || null;
       pos.note = f.get("note") || "";
       if (f.has("fundName")) pos.fundName = f.get("fundName") || "";
       if (f.has("couponRate")) { pos.couponRate = f.get("couponRate")?Number(f.get("couponRate")):null; pos.bondTaxRate = Number(f.get("bondTaxRate"))||15; pos.purchasePrice = Number(f.get("purchasePrice"))||100; pos.redemptionPrice = Number(f.get("redemptionPrice"))||100; pos.bondYears = f.get("bondYears")||null; }
       if (f.has("depositRate")) { pos.depositRate = f.get("depositRate")?Number(f.get("depositRate")):null; pos.depositTaxRate = Number(f.get("depositTaxRate"))||15; pos.depositYears = f.get("depositYears")||null; }
-      if (f.has("fundQuotaCount")) { pos.fundQuotaCount = Number(f.get("fundQuotaCount"))||0; pos.fundPurchaseQuotaPrice = Number(f.get("fundPurchaseQuotaPrice"))||0; pos.fundCurrentQuotaPrice = Number(f.get("fundCurrentQuotaPrice"))||pos.fundPurchaseQuotaPrice; }
+      if (f.has("fundQuotaCount")) { pos.fundQuotaCount = Number(f.get("fundQuotaCount"))||0; pos.fundPurchaseQuotaPrice = Number(f.get("fundPurchaseQuotaPrice"))||0; if (!pos.fundCurrentQuotaPrice) pos.fundCurrentQuotaPrice = pos.fundPurchaseQuotaPrice; if (!pos.marketValue) pos.marketValue = pos.fundQuotaCount*pos.fundCurrentQuotaPrice; }
       editingPortfolioId = null;
       saveData(); renderPortfolio();
     });
@@ -2066,6 +2211,11 @@ function renderPortfolio() {
         const { price, currency } = await fetchRaiffeisenFundPrice(select.value);
         pos.fundCurrentQuotaPrice = price;
         pos.marketValue = (pos.fundQuotaCount||0) * price;
+        if (!pos.priceHistory) pos.priceHistory = [];
+        const existingIdx = pos.priceHistory.findIndex(h=>h.date===todayISO);
+        if (existingIdx>=0) pos.priceHistory[existingIdx].price = price;
+        else pos.priceHistory.push({ date: todayISO, price });
+        pos.priceHistory.sort((a,b)=>a.date.localeCompare(b.date));
         if (currency && currency !== pos.currency) statusEl.textContent = `Attenzione: il fondo quota in ${currency}, la tua posizione è in ${pos.currency} — controlla manualmente.`;
         saveData();
         statusEl.textContent = `Aggiornato: ${fmt(price)} ${currency}/quota (${select.value}).`;
@@ -2211,6 +2361,65 @@ function renderPortfolio() {
       saveData(); renderPortfolio();
     });
   }
+
+  const fundHistoryFileInputEl = document.getElementById("fundHistoryFileInput");
+  if (fundHistoryFileInputEl) fundHistoryFileInputEl.addEventListener("change", async ev=>{
+    const file = ev.target.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById("fundHistoryFileStatus");
+    statusEl.textContent = "Lettura del file in corso…";
+    try {
+      const { rows, errors } = await parseFundHistoryFile(file);
+      if (rows.length === 0) { statusEl.textContent = "Nessuna riga riconosciuta nel file."; return; }
+      const lines = rows.map(r => {
+        const [y,m,d] = r.date.split("-");
+        return `${d}/${m}/${y}\t${r.amount}\t${r.unitPrice}\t${r.units}`;
+      });
+      document.getElementById("fundHistoryTextarea").value = lines.join("\n");
+      statusEl.textContent = `${rows.length} righe lette dal file${errors.length?` (${errors.length} righe ignorate, formato non riconosciuto)`:''}. Controlla il testo sopra, poi premi "Genera anteprima".`;
+    } catch (err) {
+      statusEl.textContent = "Errore nella lettura del file: " + String(err.message||err).slice(0,150);
+    }
+  });
+
+  const fundImportFormEl = document.getElementById("fundImportForm");
+  if (fundImportFormEl) fundImportFormEl.addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const type = ev.target.querySelector(".cat-select").value;
+    const fundName = (f.get("fundName")||"").trim();
+    const baselineDate = f.get("baselineDate");
+    const baselinePrice = f.get("baselinePrice");
+    const { rows, errors } = parseFundHistoryText(f.get("historyText")||"");
+    if (rows.length === 0) { alert("Nessuna riga riconosciuta. Controlla il formato (Data, Importo, Prezzo, Quote)."); return; }
+    fundImportPreview = { type, fundName, rows, errors, baselineDate: baselineDate||null, baselinePrice: baselinePrice?Number(baselinePrice):null };
+    renderPortfolio();
+  });
+  const fundImportCancelBtn = document.getElementById("fundImportCancel");
+  if (fundImportCancelBtn) fundImportCancelBtn.addEventListener("click", ()=>{ fundImportPreview = null; renderPortfolio(); });
+  const fundImportConfirmBtn = document.getElementById("fundImportConfirm");
+  if (fundImportConfirmBtn) fundImportConfirmBtn.addEventListener("click", ()=>{
+    const { type, fundName, rows, baselineDate, baselinePrice } = fundImportPreview;
+    let firstId = null;
+    rows.forEach((r,idx) => {
+      const id = uid();
+      if (idx===0) firstId = id;
+      data.portfolio.push({
+        id, type, fundName, amount: r.amount, currency: "ALL", marketValue: r.amount,
+        date: r.date, maturityDate: null, note: "Importato da storico",
+        fundQuotaCount: r.units, fundPurchaseQuotaPrice: r.unitPrice, fundCurrentQuotaPrice: r.unitPrice,
+        securityCode: consumeNextSecurityCode(), priceHistory: [{date: r.date, price: r.unitPrice}]
+      });
+    });
+    if (baselineDate && baselinePrice && firstId) {
+      const target = data.portfolio.find(p=>p.id===firstId);
+      if (target) target.priceHistory.push({ date: baselineDate, price: baselinePrice });
+    }
+    fundImportPreview = null;
+    saveData();
+    alert(`Importate ${rows.length} righe per "${fundName}".`);
+    renderPortfolio();
+  });
 
   document.getElementById("liquidityTransferForm").addEventListener("submit", ev=>{
     ev.preventDefault();
@@ -2368,7 +2577,7 @@ function recurringBlock(groupKey, title) {
       return `<form class="entry" data-recedit="${groupKey}|${r.id}" style="border:1px solid #C9A227; border-radius:6px; padding:10px; margin-bottom:8px;">
         <div class="row2">
           <div><label>Categoria</label>${categorySelect(groupKey, r.category)}</div>
-          <div><label>Importo</label><input type="number" name="amount" value="${r.amount}" required></div>
+          <div><label>Importo</label><input type="number" step="0.0001" name="amount" value="${r.amount}" required></div>
         </div>
         ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${data.portfolio.filter(p=>p.maturityDate).map(p=>`<option value="${p.id}" ${r.linkedBondId===p.id?'selected':''}>${p.type}${p.note?' · '+p.note:''} (scad. ${p.maturityDate})</option>`).join('')}</select></div>` : ''}
         <div class="row2">
@@ -2400,7 +2609,7 @@ function recurringBlock(groupKey, title) {
     <form class="entry" data-recform="${groupKey}" style="margin-top:8px;">
       <div class="row2">
         <div><label>Categoria</label>${categorySelect(groupKey)}</div>
-        <div><label>Importo</label><input type="number" name="amount" placeholder="0" required></div>
+        <div><label>Importo</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
       </div>
       ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptionsRec}</select></div>` : ''}
       <div class="row2">
@@ -2424,7 +2633,7 @@ function recurringBlockPortfolio(title) {
       return `<form class="entry" data-recedit="portfolio|${r.id}" style="border:1px solid #C9A227; border-radius:6px; padding:10px; margin-bottom:8px;">
         <div class="row2">
           <div><label>Tipo</label>${categorySelect("portfolio", r.type)}</div>
-          <div><label>Importo</label><input type="number" name="amount" value="${r.amount}" required></div>
+          <div><label>Importo</label><input type="number" step="0.0001" name="amount" value="${r.amount}" required></div>
         </div>
         <div class="row2">
           <div><label>Valuta</label><select name="currency"><option ${r.currency==='ALL'?'selected':''}>ALL</option><option ${r.currency==='EUR'?'selected':''}>EUR</option><option ${r.currency==='USD'?'selected':''}>USD</option></select></div>
@@ -2454,7 +2663,7 @@ function recurringBlockPortfolio(title) {
     <form class="entry" data-recform="portfolio" style="margin-top:8px;">
       <div class="row2">
         <div><label>Tipo</label>${categorySelect("portfolio")}</div>
-        <div><label>Importo</label><input type="number" name="amount" placeholder="0" required></div>
+        <div><label>Importo</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
       </div>
       <div class="row2">
         <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
