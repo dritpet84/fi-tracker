@@ -108,7 +108,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.43</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.47</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
     <select id="displayCurrencySelect" style="position:absolute; top:0; right:0; width:auto; padding:5px 8px; font-size:11px; background:#16233B; border:1px solid #2E4159; color:#EDE6D6; border-radius:5px;">
@@ -256,7 +256,7 @@ function isDebtType(type, macro) {
   return m.includes("debit") || t.includes("debit") || t.includes("prestito");
 }
 function isExcludedFromNetWorth(p) {
-  return isDebtType(p.type, p.macro);
+  return false;
 }
 function isExcludedFromAllocationChart(p) {
   return isCreditCardType(p.type) || isDebtType(p.type, p.macro);
@@ -900,7 +900,8 @@ function renderDashboard() {
 
   const dayOfYearNow = Math.ceil((now - new Date(thisYear,0,1)) / 86400000) || 1;
   const annualBudgetVal = annualBudgetForYear(thisYear);
-  const projectedAnnualExpense = expenseThisYear>0 ? (expenseThisYear/dayOfYearNow*365) : annualBudgetVal;
+  const monthsWithExpenseData = new Set(data.expenses.filter(e=>e.date && e.date.slice(0,4)===String(thisYear)).map(e=>e.date.slice(0,7))).size;
+  const projectedAnnualExpense = (expenseThisYear>0 && monthsWithExpenseData>0) ? (expenseThisYear/monthsWithExpenseData*12) : annualBudgetVal;
   const fireBaseMode = s.fireExpenseBaseMode || "budget";
   const fireExpenseBase = fireBaseMode === "projected" ? projectedAnnualExpense : annualBudgetVal;
 
@@ -913,9 +914,10 @@ function renderDashboard() {
   const central = results[1];
 
   const fireRates = (s.fireRatesText || "4,3,2").split(",").map(x=>parseFloat(x.trim())).filter(n=>!isNaN(n) && n>0);
+  const fireHorizonExt = Math.max(s.horizon, 100);
   const fireNumbers = fireRates.map(rate => {
     const target = fireExpenseBase * 100/rate;
-    const proj = project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, s.horizon, rate);
+    const proj = project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, fireHorizonExt, rate);
     return { rate, target, years: proj.hitYearFrac };
   });
 
@@ -1014,7 +1016,7 @@ function renderDashboard() {
       </div>
       <div class="chart-wrap"><canvas id="fireChart" height="200"></canvas></div>
       <div style="margin-top:10px;">
-        ${fireNumbers.map(f=>`<div class="stat-row"><span class="label">${f.rate}% — ${fmtDisplay(f.target)}</span><span class="val">${f.years!=null ? f.years.toFixed(1)+' anni' : '>'+s.horizon+' anni'}</span></div>`).join('')}
+        ${fireNumbers.map(f=>`<div class="stat-row"><span class="label">${f.rate}% — ${fmtDisplay(f.target)}</span><span class="val">${f.years!=null ? f.years.toFixed(1)+' anni' : 'mai (con ritmo attuale)'}</span></div>`).join('')}
       </div>
       <div class="row2" style="margin-top:10px;">
         <div><label>Percentuali (separate da virgola)</label><input type="text" id="fireRatesInput" value="${s.fireRatesText || '4,3,2'}"></div>
@@ -2438,7 +2440,7 @@ function renderPortfolio() {
     </div>
     <div class="card">
       <h3>Allocazione</h3>
-      <div class="subtle" style="margin-bottom:8px;">Il grafico mostra solo gli asset positivi (fondi, obbligazioni, depositi, liquidità) — carte di credito e debiti non compaiono come fetta. Il totale del patrimonio, invece, tiene conto del saldo utilizzato sulla carta di credito (lo riduce), mentre i debiti restano fuori dal totale come voce puramente informativa.</div>
+      <div class="subtle" style="margin-bottom:8px;">Il grafico mostra solo gli asset positivi (fondi, obbligazioni, depositi, liquidità) — carte di credito e debiti non compaiono come fetta. Il totale del patrimonio, però, tiene conto sia del saldo utilizzato sulla carta di credito sia del debito residuo (entrambi lo riducono, come vere passività).</div>
       <div class="grid3" style="grid-template-columns:1fr 1fr;">
         <div>
           <div class="subtle" style="margin-bottom:6px;">Per valuta</div>
@@ -3225,7 +3227,7 @@ function renderDebts() {
     </div>
     ${debtsSummary.length>0 ? `<div class="card">
       <h3>Riepilogo debiti</h3>
-      <div class="subtle">Esclusi dal totale del Patrimonio — solo informativo. Aggiungere un debito accredita automaticamente Banca con l'intero importo.</div>
+      <div class="subtle">Il debito residuo riduce il totale del Patrimonio (è una passività reale). Registrando un debito, Banca si accredita del disborso effettivo; il saldo del debito e Banca si compensano a vicenda, e solo gli interessi pagati riducono davvero il patrimonio nel tempo.</div>
       ${debtsSummary.map(g=>`<div class="stat-row"><span class="label">${g.name}</span><span class="val down">${fmt(g.balanceALL)} ALL</span></div>`).join('')}
       <div class="stat-row" style="font-weight:600; padding-top:6px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Totale debiti</span><span class="val down">${fmtDisplay(debtsSummary.reduce((s,g)=>s+g.balanceALL,0))}</span></div>
     </div>` : ''}
@@ -4023,12 +4025,30 @@ function bindMacroAssign(group, refreshFn) {
 }
 
 const RAIFFEISEN_FUNDS = ["Raiffeisen Prestigj","Raiffeisen Vizion","Raiffeisen Invest Euro","Raiffeisen Miks","Raiffeisen Pension","Raiffeisen Solid"];
+const CORS_PROXIES = [
+  url => "https://api.allorigins.win/raw?url=" + encodeURIComponent(url),
+  url => "https://corsproxy.io/?url=" + encodeURIComponent(url),
+  url => "https://r.jina.ai/" + url,
+];
+async function fetchViaProxies(targetUrl) {
+  const errors = [];
+  for (const buildUrl of CORS_PROXIES) {
+    try {
+      const res = await fetch(buildUrl(targetUrl));
+      if (!res.ok) { errors.push("HTTP " + res.status); continue; }
+      const text = await res.text();
+      if (text && text.length > 50) return text;
+      errors.push("risposta vuota");
+    } catch (e) {
+      errors.push(String(e.message||e).slice(0,60));
+    }
+  }
+  throw new Error("Tutti i servizi di recupero hanno fallito (" + errors.join(" · ") + ")");
+}
+
 async function fetchRaiffeisenFundPrice(fundName) {
   const target = "https://www.raiffeisen-invest.al/sq/performanca-e-fondeve.html";
-  const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(target);
-  const res = await fetch(proxyUrl);
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const html = await res.text();
+  const html = await fetchViaProxies(target);
   const nameEscaped = fundName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(nameEscaped + "[\\s\\S]{1,400}?([\\d,]+\\.\\d{2,4})\\s*(ALL|EUR)", "i");
   const m = html.match(re);
@@ -4040,10 +4060,7 @@ async function fetchRaiffeisenFundPrice(fundName) {
 
 async function fetchBoaRate() {
   const target = "https://www.bankofalbania.org/Markets/Official_exchange_rate/";
-  const proxyUrl = "https://api.allorigins.win/raw?url=" + encodeURIComponent(target);
-  const res = await fetch(proxyUrl);
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const html = await res.text();
+  const html = await fetchViaProxies(target);
   const extract = (code) => {
     const re = new RegExp(code + "[^0-9]{1,300}?(\\d{1,3}[.,]\\d{1,4})");
     const m = html.match(re);
@@ -4088,6 +4105,37 @@ function getFxRateForDate(dateStr, currency) {
     if (v) return v;
   }
   return currency === "USD" ? data.settings.fxUsd : data.settings.fx;
+}
+
+async function importBoaCsv(file) {
+  const buf = await file.arrayBuffer();
+  let text;
+  try { text = new TextDecoder("windows-1252").decode(buf); }
+  catch(e) { text = new TextDecoder("utf-8").decode(buf); }
+  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l);
+  let currency = null;
+  const curLine = lines.find(l => /monedha/i.test(l));
+  if (curLine) {
+    if (/eur/i.test(curLine)) currency = "EUR";
+    else if (/usd/i.test(curLine)) currency = "USD";
+  }
+  if (!currency) throw new Error("Non ho capito quale valuta rappresenta il file (manca la riga 'Monedha e zgjedhur').");
+  const dateRe = /^(\d{2})\.(\d{2})\.(\d{4}),\s*([\d.,]+)/;
+  let count = 0;
+  lines.forEach(l => {
+    const m = l.match(dateRe);
+    if (!m) return;
+    const [, d, mo, y, rateStr] = m;
+    const dateStr = `${y}-${mo}-${d}`;
+    const rate = parseFloat(rateStr.replace(",", "."));
+    if (isNaN(rate)) return;
+    fxDbSetRate(dateStr, currency==="EUR"?rate:null, currency==="USD"?rate:null);
+    count++;
+  });
+  if (count === 0) throw new Error("Nessuna riga data/tasso riconosciuta nel file.");
+  fxDbForwardFill();
+  saveData();
+  return { count, currency };
 }
 
 async function importFxHistoryXLSX(file) {
@@ -4160,8 +4208,10 @@ function renderSettings() {
     </div>` : ''}
     <div class="card">
       <h3>Database storico cambio (per data)</h3>
-      <div class="subtle">Scarica il file Excel annuale della Banca d'Albania da <span style="color:#C9A227;">bankofalbania.org/Tregjet/Kursi_zyrtar_i_kembimit/Arkiva_e_kursit_te_kembimit/</span> e caricalo qui: costruisce un database giorno per giorno, riempiendo automaticamente i giorni senza pubblicazione (festivi/weekend) con l'ultimo cambio disponibile.</div>
-      <input type="file" id="fxHistoryFileInput" accept=".xlsx,.xls">
+      <div class="subtle">Costruisce un database giorno per giorno, riempiendo automaticamente i giorni senza dato pubblicato (festivi/weekend) con l'ultimo cambio disponibile. Accetta due formati:</div>
+      <div class="subtle" style="margin-top:6px;"><b>CSV</b> (una valuta per file): righe con intestazioni tipo "Periudha kohore" e "Monedha e zgjedhur" (EUR o USD), poi righe <code>GG.MM.AAAA,tasso</code> una per data. Se ti serve sia EUR sia USD, carica due file separati.</div>
+      <div class="subtle" style="margin-top:4px;"><b>Excel</b>: una tabella con colonne Data, e almeno una tra EUR/USD (i nomi delle colonne possono variare, basta che contengano queste parole).</div>
+      <input type="file" id="fxHistoryFileInput" accept=".xlsx,.xls,.csv">
       <div id="fxHistoryImportStatus" class="subtle" style="margin-top:8px;"></div>
       ${Object.keys(data.fxDatabase||{}).length>0 ? (()=>{
         const dates = Object.keys(data.fxDatabase).sort();
@@ -4262,8 +4312,14 @@ function renderSettings() {
     const statusEl = document.getElementById("fxHistoryImportStatus");
     statusEl.textContent = "Lettura del file in corso…";
     try {
-      const count = await importFxHistoryXLSX(file);
-      statusEl.textContent = `Importate ${count} date. Database aggiornato (giorni mancanti riempiti automaticamente).`;
+      const isCsv = file.name.toLowerCase().endsWith(".csv");
+      if (isCsv) {
+        const { count, currency } = await importBoaCsv(file);
+        statusEl.textContent = `Importate ${count} date (${currency}). Database aggiornato (giorni mancanti riempiti automaticamente). Se hai anche l'altra valuta, carica quel file a parte.`;
+      } else {
+        const count = await importFxHistoryXLSX(file);
+        statusEl.textContent = `Importate ${count} date. Database aggiornato (giorni mancanti riempiti automaticamente).`;
+      }
       renderSettings();
     } catch (err) {
       statusEl.textContent = "Errore nella lettura del file: " + String(err.message||err).slice(0,150);
