@@ -108,7 +108,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.47</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.53</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
     <select id="displayCurrencySelect" style="position:absolute; top:0; right:0; width:auto; padding:5px 8px; font-size:11px; background:#16233B; border:1px solid #2E4159; color:#EDE6D6; border-radius:5px;">
@@ -195,6 +195,7 @@ function loadData() {
       },
       snapshots: parsed.snapshots || [],
       fxHistory: parsed.fxHistory || [],
+      fxDatabase: parsed.fxDatabase || {},
       paymentTypes: (parsed.paymentTypes && parsed.paymentTypes.length) ? parsed.paymentTypes : base.paymentTypes,
       creditCardSettings: parsed.creditCardSettings || {},
       creditCardDebts: parsed.creditCardDebts || []
@@ -228,6 +229,8 @@ function canGenerateOnDate(dateStr) {
   return new Date().getHours() >= 16;
 }
 function localMonthStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
+function monthToDisplay(ym) { if (!ym) return ""; const [y,m] = ym.split("-"); return `${m}/${y}`; }
+function displayToMonth(disp) { const m = String(disp||"").match(/^(\d{1,2})\/(\d{4})$/); return m ? `${m[2]}-${m[1].padStart(2,"0")}` : null; }
 const thisYear = thisYearNum;
 const now = new Date();
 const todayISO = localDateStr(now);
@@ -247,8 +250,9 @@ function toALL(amount, currency) {
 }
 function isCreditCardType(type) {
   if (!type) return false;
+  if (["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD"].includes(type)) return false;
   if (data.creditCardSettings && data.creditCardSettings[type]) return true;
-  return data.paymentTypes.includes(type) && type !== "Banca" && type !== "Cash";
+  return data.paymentTypes.includes(type);
 }
 function isDebtType(type, macro) {
   const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
@@ -307,14 +311,22 @@ function shouldGenerateThisMonth(rule) {
   return shouldGenerateForMonth(rule, thisYearNum, now.getMonth()+1);
 }
 
-function createLiquidityAdjustment(paymentType, signedAmountALL, date, note, linkedTxnId) {
+function createLiquidityAdjustment(paymentType, signedAmount, date, note, linkedTxnId) {
   if (!paymentType) return null;
   const id = uid();
-  data.portfolio.push({ id, type: paymentType, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[paymentType]) || null, amount: signedAmountALL, currency: "ALL", marketValue: null, date, maturityDate: null, note: note||"", linkedTxnId });
+  const cur = currencyOfBankAccount(paymentType);
+  data.portfolio.push({ id, type: paymentType, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[paymentType]) || null, amount: signedAmount, currency: cur, marketValue: null, date, maturityDate: null, note: note||"", linkedTxnId });
   return id;
 }
 function removeLiquidityAdjustment(linkedTxnId) {
   data.portfolio = data.portfolio.filter(p => p.linkedTxnId !== linkedTxnId);
+}
+function deletePortfolioPosition(id) {
+  data.portfolio = data.portfolio.filter(p => p.id !== id);
+  removeLiquidityAdjustment(id);
+  const before = data.recurring.income.length;
+  data.recurring.income = data.recurring.income.filter(r => r.linkedBondId !== id);
+  return before !== data.recurring.income.length;
 }
 function resyncLiquidityAdjustment(txnId, paymentType, signedAmount, date, note) {
   removeLiquidityAdjustment(txnId);
@@ -403,15 +415,27 @@ function autoGenerateSecurityIncome() {
     const taxRate = isBondCoupon ? (Number(p.bondTaxRate)||15) : (Number(p.depositTaxRate)||15);
     const taxAmt = grossAmt * taxRate/100;
     const commAmt = isBondCoupon ? computeCommissionAmount(p.couponCommissionType, p.couponCommissionValue, grossAmt) : 0;
-    const netAmt = grossAmt - taxAmt - commAmt;
     const cat = isBondCoupon ? "Cedola e le info" : "Interesse deposito";
     const taxCat = isBondCoupon ? ensureBondTaxCategory(p.bondYears) : ensureDepositTaxCategory(p.depositYears);
     const code = p.securityCode || "";
     const incId = uid();
-    data.income.push({ id: incId, date: dateStr, amount: grossAmt, category: cat, macro: "Interessi da Titoli - Standard", paymentType: null, note: code, linkedBondId: p.id, securityCode: code||null });
-    data.expenses.push({ id: uid(), date: dateStr, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: code, securityCode: code||null });
-    if (commAmt > 0) data.expenses.push({ id: uid(), date: dateStr, amount: commAmt, category: "Commissione disbursement cedola", note: code, securityCode: code||null });
-    createLiquidityAdjustment("Banca", netAmt, dateStr, `${cat} netta ${code}`.trim(), incId);
+    data.income.push({ id: incId, date: dateStr, amount: grossAmt, currency: p.currency, category: cat, macro: "Interessi da Titoli - Standard", paymentType: null, note: code, linkedBondId: p.id, securityCode: code||null });
+
+    const bankAccount = bankAccountForCurrency(p.currency);
+    const netToCurrencyBank = grossAmt - commAmt;
+    createLiquidityAdjustment(bankAccount, netToCurrencyBank, dateStr, `${cat} netta ${code}`.trim(), incId);
+
+    if (p.currency === "ALL") {
+      data.expenses.push({ id: uid(), date: dateStr, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: code, securityCode: code||null });
+    } else {
+      const fxInfo = getFxRateForDateDetailed(dateStr, p.currency);
+      const taxAmtALL = taxAmt * fxInfo.rate;
+      const taxExpId = uid();
+      data.expenses.push({ id: taxExpId, date: dateStr, amount: taxAmtALL, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `${code} (${fmt(taxAmt)} ${p.currency} al cambio ${fxInfo.rate})`.trim(),
+        securityCode: code||null, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
+      createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione ${cat} ${code}`.trim(), taxExpId);
+    }
+    if (commAmt > 0) data.expenses.push({ id: uid(), date: dateStr, amount: commAmt, currency: p.currency, category: "Commissione disbursement cedola", note: code, securityCode: code||null });
     changed = true;
   });
   if (changed) saveData();
@@ -602,14 +626,36 @@ function migrateFireRatesDefault() {
 function ensureLiquidityCategories() {
   let changed = false;
   if (!data.categories.portfolio.includes("Banca")) { data.categories.portfolio.unshift("Banca"); changed = true; }
+  if (!data.categories.portfolio.includes("Banca EUR")) { data.categories.portfolio.push("Banca EUR"); changed = true; }
+  if (!data.categories.portfolio.includes("Banca USD")) { data.categories.portfolio.push("Banca USD"); changed = true; }
   if (!data.categories.portfolio.includes("Cash")) { data.categories.portfolio.push("Cash"); changed = true; }
+  if (!data.categories.portfolio.includes("Cash EUR")) { data.categories.portfolio.push("Cash EUR"); changed = true; }
+  if (!data.categories.portfolio.includes("Cash USD")) { data.categories.portfolio.push("Cash USD"); changed = true; }
   if (!data.categories.portfolio.includes("Carta di Credito")) { data.categories.portfolio.push("Carta di Credito"); changed = true; }
   if (!data.categories.portfolio.includes("Prestito/Debito")) { data.categories.portfolio.push("Prestito/Debito"); changed = true; }
   if (!data.macroCategories.portfolio.includes("Debiti")) { data.macroCategories.portfolio.push("Debiti"); changed = true; }
   if (data.categoryMacroMap.portfolio["Prestito/Debito"] !== "Debiti") { data.categoryMacroMap.portfolio["Prestito/Debito"] = "Debiti"; changed = true; }
-  if (!data.paymentTypes) { data.paymentTypes = ["Banca","Cash","Carta di Credito"]; changed = true; }
-  else if (!data.paymentTypes.includes("Carta di Credito")) { data.paymentTypes.push("Carta di Credito"); changed = true; }
+  if (!data.paymentTypes) { data.paymentTypes = ["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD","Carta di Credito"]; changed = true; }
+  else {
+    if (!data.paymentTypes.includes("Carta di Credito")) { data.paymentTypes.push("Carta di Credito"); changed = true; }
+    if (!data.paymentTypes.includes("Banca EUR")) { data.paymentTypes.push("Banca EUR"); changed = true; }
+    if (!data.paymentTypes.includes("Banca USD")) { data.paymentTypes.push("Banca USD"); changed = true; }
+    if (!data.paymentTypes.includes("Cash EUR")) { data.paymentTypes.push("Cash EUR"); changed = true; }
+    if (!data.paymentTypes.includes("Cash USD")) { data.paymentTypes.push("Cash USD"); changed = true; }
+  }
   if (changed) saveData();
+}
+
+function bankAccountForCurrency(currency) {
+  if (currency === "EUR") return "Banca EUR";
+  if (currency === "USD") return "Banca USD";
+  return "Banca";
+}
+function currencyOfBankAccount(type) {
+  if (!type) return "ALL";
+  if (type.endsWith(" EUR")) return "EUR";
+  if (type.endsWith(" USD")) return "USD";
+  return "ALL";
 }
 
 function backfillMacroFromMapping() {
@@ -655,7 +701,8 @@ function generateRecurring() {
       if (!shouldGenerateThisMonth(rule)) return;
       if (group === "income" && rule.linkedBondId) {
         const bond = data.portfolio.find(p => p.id === rule.linkedBondId);
-        if (bond && bond.maturityDate && new Date(bond.maturityDate) < now) return;
+        if (!bond) return;
+        if (bond.maturityDate && new Date(bond.maturityDate) < now) return;
       }
       const already = data[group].some(e => e.recurringId === rule.id && e.date.slice(0,7) === thisMonth);
       if (!already) {
@@ -684,7 +731,7 @@ function generateRecurring() {
       const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
       const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
       if (canGenerateOnDate(dateStr)) {
-        const mappedMacro = (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[rule.type]) || null;
+        const mappedMacro = rule.macro || (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[rule.type]) || null;
         const entry = { id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id };
         if (rule.fundName) {
           entry.fundName = rule.fundName;
@@ -1059,6 +1106,7 @@ function renderDashboard() {
       <h3>Patrimonio attuale</h3>
       <div class="stat-row"><span class="label">Totale (ALL)</span><span class="val">${fmt(wealth0)} ALL</span></div>
       <div class="stat-row"><span class="label">Totale (€)</span><span class="val">${fmt(wealth0/s.fx)} €</span></div>
+      <div class="stat-row"><span class="label">Totale ($)</span><span class="val">${fmt(wealth0/s.fxUsd)} $</span></div>
     </div>
     <div class="card">
       <h3>Proiezione FI</h3>
@@ -2329,15 +2377,20 @@ function renderPortfolio() {
     </div>` : ''}
     <div class="card">
       <h3>Trasferimento liquidità</h3>
-      <div class="subtle">Sposta denaro tra Banca e Cash (es. prelievo contanti). Registra due movimenti collegati, senza toccare il totale complessivo del patrimonio.</div>
+      <div class="subtle">Sposta denaro tra conti di liquidità (Banca/Cash, anche tra valute diverse). Registra due movimenti collegati. Il cambio qui sotto è <b>sempre manuale</b>, vale solo per questo trasferimento e non modifica il cambio impostato nelle Assunzioni.</div>
       <form class="entry" id="liquidityTransferForm">
         <div class="row2">
-          <div><label>Da</label><select name="from">${data.paymentTypes.map(t=>`<option ${t==='Banca'?'selected':''}>${t}</option>`).join('')}</select></div>
-          <div><label>A</label><select name="to">${data.paymentTypes.map(t=>`<option ${t==='Cash'?'selected':''}>${t}</option>`).join('')}</select></div>
+          <div><label>Da</label><select name="from" id="transferFromSelect">${data.paymentTypes.map(t=>`<option ${t==='Banca'?'selected':''}>${t}</option>`).join('')}</select></div>
+          <div><label>A</label><select name="to" id="transferToSelect">${data.paymentTypes.map(t=>`<option ${t==='Cash'?'selected':''}>${t}</option>`).join('')}</select></div>
         </div>
         <div class="row2">
-          <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
+          <div><label>Importo (nella valuta "Da")</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
+        </div>
+        <div id="transferFxRow" style="display:none;">
+          <label>Cambio manuale per questo trasferimento (ALL per 1 unità della valuta estera coinvolta)</label>
+          <input type="number" step="0.0001" name="manualFxRate" placeholder="es. 93.5">
+          <div class="subtle" id="transferFxHint"></div>
         </div>
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="secondary" type="submit">Trasferisci</button>
@@ -2401,6 +2454,14 @@ function renderPortfolio() {
       <div class="subtle">Solo conti attivi (Banca, Cash). Carte di credito e debiti sono nella scheda "Debiti".</div>
       ${liquiditySummary.map(g=>`<div class="stat-row"><span class="label">${g.name}</span><span class="val ${g.balanceALL>=0?'':'down'}">${fmt(g.balanceALL)} ALL</span></div>`).join('')}
       <div class="stat-row" style="font-weight:600; padding-top:6px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Totale liquidità</span><span class="val">${fmtDisplay(liquiditySummary.reduce((s,g)=>s+g.balanceALL,0))}</span></div>
+      ${Object.keys(data.creditCardSettings||{}).length>0 ? `<div style="margin-top:8px; padding-top:8px; border-top:1px dashed #24374F;">
+        ${Object.keys(data.creditCardSettings).map(cardName=>{
+          const avail = ccAvailableCredit(cardName);
+          const cc = data.creditCardSettings[cardName];
+          const availALL = toALL(avail, cc.currency||"ALL");
+          return `<div class="stat-row"><span class="label" style="opacity:0.7;">Disponibile su ${cardName} (info, non incluso nel totale)</span><span class="val" style="opacity:0.7;">${fmt(avail)} ${cc.currency||"ALL"}${cc.currency&&cc.currency!=="ALL"?' ('+fmt(availALL)+' ALL)':''}</span></div>`;
+        }).join('')}
+      </div>` : ''}
     </div>` : ''}
     <div class="card">
       <h3>Importa storico fondo</h3>
@@ -2586,9 +2647,12 @@ function renderPortfolio() {
   if (sortedSnapshots.length>1) {
     const whCtx = document.getElementById("wealthHistoryChart");
     if (window.wealthHistoryChartInstance) window.wealthHistoryChartInstance.destroy();
+    const dispCur = data.settings.displayCurrency || "ALL";
+    const symbols = { ALL: "ALL", EUR: "€", USD: "$" };
+    const chartValues = sortedSnapshots.map(sn => dispCur==="ALL" ? sn.wealth : sn.wealth / getFxRateForDate(sn.date, dispCur));
     window.wealthHistoryChartInstance = new Chart(whCtx, {
       type:'line',
-      data:{ labels: sortedSnapshots.map(s=>s.date), datasets:[{ label:'Patrimonio (ALL)', data: sortedSnapshots.map(s=>s.wealth), borderColor:'#C9A227', backgroundColor:'transparent', tension:0.2, pointRadius:2 }] },
+      data:{ labels: sortedSnapshots.map(s=>s.date), datasets:[{ label:`Patrimonio (${symbols[dispCur]})`, data: chartValues, borderColor:'#C9A227', backgroundColor:'transparent', tension:0.2, pointRadius:2 }] },
       options:{ plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } }, scales:{ x:{ ticks:{ color:'#6B7E99', font:{size:9} }, grid:{ color:'#1E2E47' } }, y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M' }, grid:{ color:'#1E2E47' } } } }
     });
   }
@@ -2719,9 +2783,9 @@ function renderPortfolio() {
   });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
-      data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort);
-      removeLiquidityAdjustment(btn.dataset.delPort);
+      const hadLinkedRule = deletePortfolioPosition(btn.dataset.delPort);
       saveData(); renderPortfolio();
+      if (hadLinkedRule) alert("Eliminato anche il reddito ricorrente collegato a questo titolo.");
     });
   });
   document.querySelectorAll("[data-updatefundname]").forEach(btn=>{
@@ -2990,13 +3054,42 @@ function renderPortfolio() {
     const amount = Number(f.get("amount"));
     const date = f.get("date") || todayISO;
     const note = f.get("note") || "";
+    const manualRate = f.get("manualFxRate") ? Number(f.get("manualFxRate")) : null;
     if (from === to) { alert("Scegli due voci diverse per il trasferimento."); return; }
     if (!amount || amount <= 0) { alert("Inserisci un importo valido."); return; }
+    const fromBalance = data.portfolio.filter(p=>p.type===from).reduce((s,p)=>s+Number(p.amount),0);
+    if (amount > fromBalance) { alert(`Non hai abbastanza su "${from}": disponibili ${fmt(fromBalance)} ${currencyOfBankAccount(from)}, richiesti ${fmt(amount)}.`); return; }
+    const fromCur = currencyOfBankAccount(from);
+    const toCur = currencyOfBankAccount(to);
+    let toAmount = amount;
+    if (fromCur !== toCur) {
+      if (!manualRate || manualRate <= 0) { alert(`"${from}" e "${to}" sono in valute diverse (${fromCur}/${toCur}): inserisci il cambio manuale per questo trasferimento.`); return; }
+      if (fromCur === "ALL") toAmount = amount / manualRate;
+      else if (toCur === "ALL") toAmount = amount * manualRate;
+      else toAmount = amount * manualRate;
+    }
     const transferId = uid();
-    data.portfolio.push({ id: uid(), type: from, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[from]) || null, amount: -amount, currency: "ALL", marketValue: null, date, maturityDate: null, note: `Trasferimento a ${to}${note?': '+note:''}`, transferGroup: transferId });
-    data.portfolio.push({ id: uid(), type: to, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[to]) || null, amount: amount, currency: "ALL", marketValue: null, date, maturityDate: null, note: `Trasferimento da ${from}${note?': '+note:''}`, transferGroup: transferId });
+    const rateNote = fromCur!==toCur ? ` (cambio manuale ${manualRate})` : '';
+    data.portfolio.push({ id: uid(), type: from, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[from]) || null, amount: -amount, currency: fromCur, marketValue: null, date, maturityDate: null, note: `Trasferimento a ${to}${rateNote}${note?': '+note:''}`, transferGroup: transferId });
+    data.portfolio.push({ id: uid(), type: to, macro: (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[to]) || null, amount: toAmount, currency: toCur, marketValue: null, date, maturityDate: null, note: `Trasferimento da ${from}${rateNote}${note?': '+note:''}`, transferGroup: transferId });
     saveData(); renderPortfolio();
   });
+  function updateTransferFxVisibility() {
+    const from = document.getElementById("transferFromSelect").value;
+    const to = document.getElementById("transferToSelect").value;
+    const fromCur = currencyOfBankAccount(from), toCur = currencyOfBankAccount(to);
+    const row = document.getElementById("transferFxRow");
+    const hint = document.getElementById("transferFxHint");
+    if (fromCur !== toCur) {
+      row.style.display = "block";
+      hint.textContent = `"${from}" è in ${fromCur}, "${to}" è in ${toCur} — serve un cambio manuale, valido solo per questo trasferimento.`;
+    } else {
+      row.style.display = "none";
+    }
+  }
+  document.getElementById("transferFromSelect").addEventListener("change", updateTransferFxVisibility);
+  document.getElementById("transferToSelect").addEventListener("change", updateTransferFxVisibility);
+  updateTransferFxVisibility();
 }
 
 function renderBudgetGroupCard(groupKey, title) {
@@ -3131,7 +3224,7 @@ function categoryManageBlock(groupKey, title) {
 }
 
 function creditCardSettingsBlock() {
-  return data.paymentTypes.filter(t=>t!=="Banca"&&t!=="Cash").map(t=>{
+  return data.paymentTypes.filter(t=>!["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD"].includes(t)).map(t=>{
     const cc = data.creditCardSettings[t] || {};
     return `<div style="border:1px solid #2E4159; border-radius:6px; padding:12px; margin-bottom:10px;">
       <label style="color:#C9A227;">${t}</label>
@@ -3335,8 +3428,7 @@ function renderDebts() {
   });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
-      data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort);
-      removeLiquidityAdjustment(btn.dataset.delPort);
+      deletePortfolioPosition(btn.dataset.delPort);
       saveData(); renderDebts();
     });
   });
@@ -3393,7 +3485,7 @@ function recurringBlock(groupKey, title) {
           <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="${r.dayOfMonth}"></div>
         </div>
         <div class="row2">
-          <div><label>Da (mese)</label><input type="month" name="startMonth" value="${r.startMonth||thisMonth}"></div>
+          <div><label>Da (mese, MM/AAAA)</label><input type="text" name="startMonth" value="${monthToDisplay(r.startMonth||thisMonth)}" placeholder="08/2026" pattern="\d{2}/\d{4}"></div>
           <div><label>Metodo</label>${paymentTypeSelect(r.paymentType||"Banca")}</div>
         </div>
         <div><label>Nota</label><input type="text" name="note" value="${r.note||''}"></div>
@@ -3425,7 +3517,7 @@ function recurringBlock(groupKey, title) {
         <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="1"></div>
       </div>
       <div class="row2">
-        <div><label>Da (mese)</label><input type="month" name="startMonth" value="${thisMonth}"></div>
+        <div><label>Da (mese, MM/AAAA)</label><input type="text" name="startMonth" value="${monthToDisplay(thisMonth)}" placeholder="08/2026" pattern="\d{2}/\d{4}"></div>
         <div><label>Metodo</label>${paymentTypeSelect("Banca")}</div>
       </div>
       <div><label>Nota</label><input type="text" name="note"></div>
@@ -3434,22 +3526,29 @@ function recurringBlock(groupKey, title) {
   </div>`;
 }
 
+function investmentOnlyFilter(c) {
+  return !isDebtType(c) && !isCreditCardType(c) && !["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD"].includes(c);
+}
+
 function recurringBlockPortfolio(title) {
   const rules = data.recurring.portfolio || [];
   const rows = rules.map(r => {
     if (editingRecurring && editingRecurring.group==="portfolio" && editingRecurring.id===r.id) {
       return `<form class="entry" data-recedit="portfolio|${r.id}" style="border:1px solid #C9A227; border-radius:6px; padding:10px; margin-bottom:8px;">
         <div class="row2">
-          <div><label>Tipo</label>${categorySelect("portfolio", r.type)}</div>
-          <div><label>Importo</label><input type="number" step="0.0001" name="amount" value="${r.amount}" required></div>
+          <div><label>Tipo</label>${categorySelect("portfolio", r.type, investmentOnlyFilter)}</div>
+          <div><label>Macro-categoria</label>${macroSelect("portfolio", r.macro)}</div>
         </div>
         <div class="row2">
+          <div><label>Importo</label><input type="number" step="0.0001" name="amount" value="${r.amount}" required></div>
           <div><label>Valuta</label><select name="currency"><option ${r.currency==='ALL'?'selected':''}>ALL</option><option ${r.currency==='EUR'?'selected':''}>EUR</option><option ${r.currency==='USD'?'selected':''}>USD</option></select></div>
+        </div>
+        <div class="row2">
           <div><label>Frequenza</label>${freqSelect(r.frequency)}</div>
         </div>
         <div class="row2">
           <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="${r.dayOfMonth}"></div>
-          <div><label>Da (mese)</label><input type="month" name="startMonth" value="${r.startMonth||thisMonth}"></div>
+          <div><label>Da (mese, MM/AAAA)</label><input type="text" name="startMonth" value="${monthToDisplay(r.startMonth||thisMonth)}" placeholder="08/2026" pattern="\d{2}/\d{4}"></div>
         </div>
         <div><label>Pagato con (scala da Banca/Cash quando generato)</label>${paymentTypeSelect(r.paymentType)}</div>
         <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
@@ -3498,16 +3597,19 @@ function recurringBlockPortfolio(title) {
     <div>${rows || '<div class="subtle">Nessun versamento ricorrente</div>'}</div>
     <form class="entry" data-recform="portfolio" style="margin-top:8px;">
       <div class="row2">
-        <div><label>Tipo</label>${categorySelect("portfolio")}</div>
-        <div><label>Importo</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
+        <div><label>Tipo</label>${categorySelect("portfolio", null, investmentOnlyFilter)}</div>
+        <div><label>Macro-categoria</label>${macroSelect("portfolio")}</div>
       </div>
       <div class="row2">
+        <div><label>Importo</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
         <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
+      </div>
+      <div class="row2">
         <div><label>Frequenza</label><select name="frequency">${freqOpts}</select></div>
       </div>
       <div class="row2">
         <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="1"></div>
-        <div><label>Da (mese)</label><input type="month" name="startMonth" value="${thisMonth}"></div>
+        <div><label>Da (mese, MM/AAAA)</label><input type="text" name="startMonth" value="${monthToDisplay(thisMonth)}" placeholder="08/2026" pattern="\d{2}/\d{4}"></div>
       </div>
       <div><label>Pagato con (scala da Banca/Cash quando generato)</label>${paymentTypeSelect("Banca")}</div>
       <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
@@ -4080,6 +4182,34 @@ function fxDbSetRate(dateStr, eur, usd) {
   const db = fxDbGet();
   db[dateStr] = { eur: eur||null, usd: usd||null };
 }
+function retroactiveFxCorrection() {
+  let changed = 0;
+  data.expenses.forEach(e => {
+    if (!e.fxRateApprox || !e.fxTargetDate || !e.fxOrigCurrency || e.fxOrigAmount==null) return;
+    const fxInfo = getFxRateForDateDetailed(e.fxTargetDate, e.fxOrigCurrency);
+    if (!fxInfo.exact) return;
+    const newAmountALL = e.fxOrigAmount * fxInfo.rate;
+    e.amount = newAmountALL;
+    e.fxRateApprox = false;
+    e.fxRateUsedDate = fxInfo.usedDate;
+    e.note = `${(e.note||'').split(' (al')[0].split(' (')[0]} (${fmt(e.fxOrigAmount)} ${e.fxOrigCurrency} al cambio ${fxInfo.rate})`.trim();
+    removeLiquidityAdjustment(e.id);
+    createLiquidityAdjustment("Banca", -newAmountALL, e.date, `Tassazione (corretta) ${e.note}`, e.id);
+    changed++;
+  });
+  data.income.forEach(i => {
+    if (!i.fxRateApprox || !i.fxTargetDate || !i.fxOrigCurrency || i.fxOrigAmount==null) return;
+    const fxInfo = getFxRateForDateDetailed(i.fxTargetDate, i.fxOrigCurrency);
+    if (!fxInfo.exact) return;
+    i.amount = i.fxOrigAmount * fxInfo.rate;
+    i.fxRateApprox = false;
+    i.fxRateUsedDate = fxInfo.usedDate;
+    changed++;
+  });
+  if (changed>0) saveData();
+  return changed;
+}
+
 function fxDbForwardFill() {
   const db = fxDbGet();
   const dates = Object.keys(db).sort();
@@ -4105,6 +4235,26 @@ function getFxRateForDate(dateStr, currency) {
     if (v) return v;
   }
   return currency === "USD" ? data.settings.fxUsd : data.settings.fx;
+}
+function getFxRateForDateDetailed(dateStr, currency) {
+  const db = fxDbGet();
+  if (db[dateStr]) {
+    const v = currency === "USD" ? db[dateStr].usd : db[dateStr].eur;
+    if (v) return { rate: v, exact: true, usedDate: dateStr };
+  }
+  const priorDates = Object.keys(db).filter(d => d <= dateStr).sort();
+  if (priorDates.length) {
+    const dd = priorDates[priorDates.length-1];
+    const v = currency === "USD" ? db[dd].usd : db[dd].eur;
+    if (v) return { rate: v, exact: false, usedDate: dd };
+  }
+  const allDates = Object.keys(db).sort();
+  if (allDates.length) {
+    const dd = allDates[0];
+    const v = currency === "USD" ? db[dd].usd : db[dd].eur;
+    if (v) return { rate: v, exact: false, usedDate: dd };
+  }
+  return { rate: currency === "USD" ? data.settings.fxUsd : data.settings.fx, exact: false, usedDate: null };
 }
 
 async function importBoaCsv(file) {
@@ -4313,13 +4463,16 @@ function renderSettings() {
     statusEl.textContent = "Lettura del file in corso…";
     try {
       const isCsv = file.name.toLowerCase().endsWith(".csv");
+      let baseMsg;
       if (isCsv) {
         const { count, currency } = await importBoaCsv(file);
-        statusEl.textContent = `Importate ${count} date (${currency}). Database aggiornato (giorni mancanti riempiti automaticamente). Se hai anche l'altra valuta, carica quel file a parte.`;
+        baseMsg = `Importate ${count} date (${currency}). Database aggiornato (giorni mancanti riempiti automaticamente). Se hai anche l'altra valuta, carica quel file a parte.`;
       } else {
         const count = await importFxHistoryXLSX(file);
-        statusEl.textContent = `Importate ${count} date. Database aggiornato (giorni mancanti riempiti automaticamente).`;
+        baseMsg = `Importate ${count} date. Database aggiornato (giorni mancanti riempiti automaticamente).`;
       }
+      const corrected = retroactiveFxCorrection();
+      statusEl.textContent = baseMsg + (corrected>0 ? ` Corrette in automatico ${corrected} voci che usavano un cambio approssimato.` : '');
       renderSettings();
     } catch (err) {
       statusEl.textContent = "Errore nella lettura del file: " + String(err.message||err).slice(0,150);
@@ -4412,13 +4565,14 @@ function renderSettings() {
       const catValue = form.querySelector(".cat-select").value;
       let rule;
       if (group === "portfolio") {
-        rule = { id: uid(), type: catValue, amount: Number(f.get("amount")), currency: f.get("currency")||"ALL", frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, note: f.get("note")||"",
+        const macroVal = form.querySelector(".macro-select") ? form.querySelector(".macro-select").value : null;
+        rule = { id: uid(), type: catValue, macro: macroVal||null, amount: Number(f.get("amount")), currency: f.get("currency")||"ALL", frequency: f.get("frequency")||"monthly", startMonth: displayToMonth(f.get("startMonth"))||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, note: f.get("note")||"",
           fundName: f.get("fundName")||"", fundRefPrice: f.get("fundRefPrice")?Number(f.get("fundRefPrice")):null,
           bondMode: f.get("bondMode")||"cedola", couponRate: f.get("couponRate")?Number(f.get("couponRate")):null, bondTaxRate: f.get("bondTaxRate")?Number(f.get("bondTaxRate")):15, bondYears: f.get("bondYears")||null,
           depositMode: f.get("depositMode")||"cedola", depositRate: f.get("depositRate")?Number(f.get("depositRate")):null, depositTaxRate: f.get("depositTaxRate")?Number(f.get("depositTaxRate")):15, depositYears: f.get("depositYears")||null,
           paymentType: f.get("paymentType")||"" };
       } else {
-        rule = { id: uid(), category: catValue, amount: Number(f.get("amount")), frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, paymentType: f.get("paymentType")||"", linkedBondId: f.get("linkedBondId")||null, note: f.get("note")||"" };
+        rule = { id: uid(), category: catValue, amount: Number(f.get("amount")), frequency: f.get("frequency")||"monthly", startMonth: displayToMonth(f.get("startMonth"))||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, paymentType: f.get("paymentType")||"", linkedBondId: f.get("linkedBondId")||null, note: f.get("note")||"" };
       }
       data.recurring[group].push(rule);
       saveData(); renderSettings();
@@ -4453,10 +4607,11 @@ function renderSettings() {
         rule.amount = Number(f.get("amount"));
         rule.frequency = f.get("frequency")||"monthly";
         rule.dayOfMonth = Number(f.get("dayOfMonth"))||1;
-        rule.startMonth = f.get("startMonth")||thisMonth;
+        rule.startMonth = displayToMonth(f.get("startMonth"))||thisMonth;
         rule.note = f.get("note")||"";
         if (group === "portfolio") {
           rule.type = catValue; rule.currency = f.get("currency")||"ALL";
+          rule.macro = form.querySelector(".macro-select") ? form.querySelector(".macro-select").value : rule.macro;
           rule.fundName = f.get("fundName")||""; rule.fundRefPrice = f.get("fundRefPrice")?Number(f.get("fundRefPrice")):null;
           rule.bondMode = f.get("bondMode")||"cedola"; rule.couponRate = f.get("couponRate")?Number(f.get("couponRate")):null; rule.bondTaxRate = f.get("bondTaxRate")?Number(f.get("bondTaxRate")):15; rule.bondYears = f.get("bondYears")||null;
           rule.depositMode = f.get("depositMode")||"cedola"; rule.depositRate = f.get("depositRate")?Number(f.get("depositRate")):null; rule.depositTaxRate = f.get("depositTaxRate")?Number(f.get("depositTaxRate")):15; rule.depositYears = f.get("depositYears")||null;
