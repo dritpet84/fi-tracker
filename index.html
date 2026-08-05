@@ -107,10 +107,15 @@ nav.tabs button.active { color:#C9A227; }
   <div id="lockError" style="color:#C1725A;font-size:12px;margin-top:10px;height:16px;"></div>
 </div>
 <div id="app">
-  <header class="top">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.26</span></div>
+  <header class="top" style="position:relative;">
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.43</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
+    <select id="displayCurrencySelect" style="position:absolute; top:0; right:0; width:auto; padding:5px 8px; font-size:11px; background:#16233B; border:1px solid #2E4159; color:#EDE6D6; border-radius:5px;">
+      <option value="ALL">ALL</option>
+      <option value="EUR">EUR</option>
+      <option value="USD">USD</option>
+    </select>
   </header>
   <main id="main"></main>
   <nav class="tabs">
@@ -118,6 +123,7 @@ nav.tabs button.active { color:#C9A227; }
     <button data-tab="income"><span class="ic">＋</span>Reddito</button>
     <button data-tab="expenses"><span class="ic">－</span>Spese</button>
     <button data-tab="portfolio"><span class="ic">▤</span>Patrimonio</button>
+    <button data-tab="debts"><span class="ic">⚠</span>Debiti</button>
     <button data-tab="budget"><span class="ic">◧</span>Budget</button>
     <button data-tab="drive"><span class="ic">☁</span>Drive</button>
     <button data-tab="settings"><span class="ic">⚙</span>Assunzioni</button>
@@ -131,10 +137,10 @@ const STORE_KEY = "fiTrackerData_v1";
 const DEFAULT_CATEGORIES = {
   income: ["Reddito principale","Interessi","Altro"],
   expenses: ["Palestra","Assicurazione auto","Tasse auto","Caffè ufficio","Bar","Acqua","Luce","Telefono","Riparazioni auto","Tagliando auto","Supermercato","Gite/concerti","Vestiti","Vacanze","Ristoranti/uscite","Arredamento casa","Auto (acquisto)","Altro"],
-  portfolio: ["Banca","Cash","Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Altro"]
+  portfolio: ["Banca","Cash","Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Prestito/Debito","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4, fireExpenseBaseMode: "budget", fireRatesText: "4,3.5,3,2.5,2" },
+  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL" },
   income: [],
   expenses: [],
   portfolio: [],
@@ -144,7 +150,10 @@ const DEFAULT_DATA = {
   categoryMacroMap: { income: {}, expenses: {}, portfolio: {} },
   recurring: { income: [], expenses: [], portfolio: [] },
   snapshots: [],
-  fxHistory: []
+  fxHistory: [],
+  paymentTypes: ["Banca", "Cash", "Carta di Credito"],
+  creditCardSettings: {},
+  creditCardDebts: []
 };
 
 // ---------- Storage ----------
@@ -185,7 +194,10 @@ function loadData() {
         portfolio: (parsed.recurring && parsed.recurring.portfolio) || []
       },
       snapshots: parsed.snapshots || [],
-      fxHistory: parsed.fxHistory || []
+      fxHistory: parsed.fxHistory || [],
+      paymentTypes: (parsed.paymentTypes && parsed.paymentTypes.length) ? parsed.paymentTypes : base.paymentTypes,
+      creditCardSettings: parsed.creditCardSettings || {},
+      creditCardDebts: parsed.creditCardDebts || []
     };
   } catch (e) { return base; }
 }
@@ -200,6 +212,14 @@ function scheduleAutoUpload() {
 let data = loadData();
 
 const fmt = n => Math.round(n).toLocaleString("it-IT");
+function fmtDisplay(nALL) {
+  const cur = (data.settings.displayCurrency) || "ALL";
+  const symbols = { ALL: "ALL", EUR: "€", USD: "$" };
+  let converted = nALL;
+  if (cur === "EUR") converted = nALL / data.settings.fx;
+  else if (cur === "USD") converted = nALL / data.settings.fxUsd;
+  return `${Math.round(converted).toLocaleString("it-IT")} ${symbols[cur]}`;
+}
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 function localDateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function canGenerateOnDate(dateStr) {
@@ -225,7 +245,30 @@ function toALL(amount, currency) {
   if (currency === "USD") return amount * data.settings.fxUsd;
   return amount;
 }
-function portfolioTotalALL() { return data.portfolio.reduce((s,p)=> s + toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency), 0); }
+function isCreditCardType(type) {
+  if (!type) return false;
+  if (data.creditCardSettings && data.creditCardSettings[type]) return true;
+  return data.paymentTypes.includes(type) && type !== "Banca" && type !== "Cash";
+}
+function isDebtType(type, macro) {
+  const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
+  const t = (type||"").toLowerCase();
+  return m.includes("debit") || t.includes("debit") || t.includes("prestito");
+}
+function isExcludedFromNetWorth(p) {
+  return isDebtType(p.type, p.macro);
+}
+function isExcludedFromAllocationChart(p) {
+  return isCreditCardType(p.type) || isDebtType(p.type, p.macro);
+}
+function ccAvailableCredit(cardName) {
+  const cc = data.creditCardSettings[cardName];
+  if (!cc) return Infinity;
+  const netBalance = data.portfolio.filter(p=>p.type===cardName).reduce((s,p)=>s+p.amount,0);
+  const used = Math.max(0, -netBalance);
+  return (cc.limit||0) - used;
+}
+function portfolioTotalALL() { return data.portfolio.reduce((s,p)=> isExcludedFromNetWorth(p) ? s : s + toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency), 0); }
 function annualBudgetForYear(y) { const s = data.settings; return s.expenseBase + s.expenseGrowth * (y - s.startYear); }
 
 function normalizedEntries(group, catName) {
@@ -343,14 +386,18 @@ function autoGenerateSecurityIncome() {
     if (p.maturityDate && new Date(p.maturityDate) < now) return;
     const freqKey = p.couponFrequency || "annual";
     const freqObj = FREQUENCIES.find(f => f.key === freqKey) || FREQUENCIES.find(f => f.key === "annual");
-    const rule = { frequency: freqKey, startMonth: p.startMonth || localMonthStr(new Date(p.date)), dayOfMonth: new Date(p.date).getDate() };
+    const scheduleAnchorDate = p.issueDate || p.date;
+    const rule = { frequency: freqKey, startMonth: p.startMonth || localMonthStr(new Date(scheduleAnchorDate)), dayOfMonth: new Date(scheduleAnchorDate).getDate() };
     if (!shouldGenerateThisMonth(rule)) return;
     const already = data.income.some(i => i.linkedBondId === p.id && i.date.slice(0,7) === thisMonth);
     if (already) return;
     const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
     const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
     const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
+    if (dateStr < p.date) return;
     if (!canGenerateOnDate(dateStr)) return;
+    const nominal = p.amount;
+    const rate = isBondCoupon ? (Number(p.couponRate)||0) : (Number(p.depositRate)||0);
     const paymentsPerYear = 12 / freqObj.months;
     const grossAmt = nominal * rate/100 / paymentsPerYear;
     const taxRate = isBondCoupon ? (Number(p.bondTaxRate)||15) : (Number(p.depositTaxRate)||15);
@@ -365,6 +412,103 @@ function autoGenerateSecurityIncome() {
     data.expenses.push({ id: uid(), date: dateStr, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: code, securityCode: code||null });
     if (commAmt > 0) data.expenses.push({ id: uid(), date: dateStr, amount: commAmt, category: "Commissione disbursement cedola", note: code, securityCode: code||null });
     createLiquidityAdjustment("Banca", netAmt, dateStr, `${cat} netta ${code}`.trim(), incId);
+    changed = true;
+  });
+  if (changed) saveData();
+}
+
+function addMonthsToDate(dateStr, n) {
+  const d = new Date(dateStr);
+  const targetMonthIdx = d.getMonth() + n;
+  const daysInTarget = new Date(d.getFullYear(), targetMonthIdx+1, 0).getDate();
+  return localDateStr(new Date(d.getFullYear(), targetMonthIdx, Math.min(d.getDate(), daysInTarget)));
+}
+function computeLoanSchedule(principal, annualRatePct, termMonths, method, firstDueDate) {
+  const r = (annualRatePct||0)/100/12;
+  const schedule = [];
+  let balance = principal;
+  if (method === "italiana") {
+    const capitalPerMonth = principal / termMonths;
+    for (let i=1; i<=termMonths; i++) {
+      const interest = balance * r;
+      let capital = (i===termMonths) ? balance : capitalPerMonth;
+      balance -= capital;
+      schedule.push({ month:i, capital, interest, dueDate: addMonthsToDate(firstDueDate, i-1), processed:false });
+    }
+  } else {
+    const payment = r>0 ? principal*r/(1-Math.pow(1+r,-termMonths)) : principal/termMonths;
+    for (let i=1; i<=termMonths; i++) {
+      const interest = balance*r;
+      let capital = payment-interest;
+      if (i===termMonths || capital>balance) capital = balance;
+      balance -= capital;
+      schedule.push({ month:i, capital, interest, dueDate: addMonthsToDate(firstDueDate, i-1), processed:false });
+    }
+  }
+  return schedule;
+}
+function processLoanInstallments() {
+  let changed = false;
+  data.portfolio.forEach(p => {
+    if (!p.schedule || isCreditCardType(p.type) || !isDebtType(p.type, p.macro)) return;
+    p.schedule.forEach(inst => {
+      if (inst.processed) return;
+      if (!canGenerateOnDate(inst.dueDate)) return;
+      const payId = uid();
+      createLiquidityAdjustment(p.type, inst.capital, inst.dueDate, `Rata prestito: capitale`, payId);
+      createLiquidityAdjustment("Banca", -(inst.capital+inst.interest), inst.dueDate, `Rata prestito ${p.type}`, payId+"-bank");
+      if (inst.interest > 0.005) {
+        const cat = "Interessi prestiti";
+        if (!data.categories.expenses.includes(cat)) data.categories.expenses.push(cat);
+        data.expenses.push({ id: uid(), date: inst.dueDate, amount: inst.interest, category: cat, paymentType: null, note: `${p.type} · rata` });
+      }
+      inst.processed = true;
+      changed = true;
+    });
+  });
+  if (changed) saveData();
+}
+
+function processCreditCardBilling() {
+  let changed = false;
+  Object.keys(data.creditCardSettings||{}).forEach(cardName => {
+    const cc = data.creditCardSettings[cardName];
+    if (!cc || !cc.dueDay) return;
+    const prevMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
+    const billingMonthStr = localMonthStr(prevMonthDate);
+    const alreadyBilled = (data.creditCardDebts||[]).some(d => d.paymentType===cardName && d.billingMonth===billingMonthStr);
+    if (alreadyBilled) return;
+    const daysInThisMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+    const dueDateThisMonth = new Date(now.getFullYear(), now.getMonth(), Math.min(cc.dueDay, daysInThisMonth));
+    if (now < dueDateThisMonth) return;
+    const stillOwed = Math.max(0, -data.portfolio.filter(p=>p.type===cardName && p.date && p.date.slice(0,7)===billingMonthStr).reduce((s,p)=>s+p.amount,0));
+    if (stillOwed <= 0) return;
+    const n = Math.max(1, cc.installments || 1);
+    const rMonthly = (cc.interestRate||0)/100/12;
+    let payment = rMonthly > 0 ? stillOwed * rMonthly / (1 - Math.pow(1+rMonthly, -n)) : stillOwed/n;
+    let balance = stillOwed;
+    const schedule = [];
+    let totalInterest = 0;
+    for (let i=1; i<=n; i++) {
+      const interest = balance * rMonthly;
+      let capital = payment - interest;
+      if (i === n || capital > balance) capital = balance;
+      balance -= capital;
+      totalInterest += interest;
+      const targetMonthIdx = now.getMonth() + i;
+      const daysInTarget = new Date(now.getFullYear(), targetMonthIdx+1, 0).getDate();
+      const dueDate = new Date(now.getFullYear(), targetMonthIdx, Math.min(cc.dueDay, daysInTarget));
+      schedule.push({ dueDate: localDateStr(dueDate), capital, interest });
+    }
+    const billingDate = localDateStr(dueDateThisMonth);
+    if (totalInterest > 0.005) {
+      createLiquidityAdjustment(cardName, -totalInterest, billingDate, `Interessi su utilizzo non ripagato (${billingMonthStr})`, uid());
+      const interestCat = "Interessi carta di credito";
+      if (!data.categories.expenses.includes(interestCat)) data.categories.expenses.push(interestCat);
+      data.expenses.push({ id: uid(), date: billingDate, amount: totalInterest, category: interestCat, paymentType: null, note: `${cardName} · utilizzo ${billingMonthStr} non ripagato` });
+    }
+    data.creditCardDebts = data.creditCardDebts || [];
+    data.creditCardDebts.push({ id: uid(), paymentType: cardName, billingMonth: billingMonthStr, principal: stillOwed, totalInterest, schedule });
     changed = true;
   });
   if (changed) saveData();
@@ -448,10 +592,23 @@ function autoMatureBondsAndDeposits() {
   if (changed) saveData();
 }
 
+function migrateFireRatesDefault() {
+  if (data.settings.fireRatesText === "4,3.5,3,2.5,2") {
+    data.settings.fireRatesText = "4,3,2";
+    saveData();
+  }
+}
+
 function ensureLiquidityCategories() {
   let changed = false;
   if (!data.categories.portfolio.includes("Banca")) { data.categories.portfolio.unshift("Banca"); changed = true; }
   if (!data.categories.portfolio.includes("Cash")) { data.categories.portfolio.push("Cash"); changed = true; }
+  if (!data.categories.portfolio.includes("Carta di Credito")) { data.categories.portfolio.push("Carta di Credito"); changed = true; }
+  if (!data.categories.portfolio.includes("Prestito/Debito")) { data.categories.portfolio.push("Prestito/Debito"); changed = true; }
+  if (!data.macroCategories.portfolio.includes("Debiti")) { data.macroCategories.portfolio.push("Debiti"); changed = true; }
+  if (data.categoryMacroMap.portfolio["Prestito/Debito"] !== "Debiti") { data.categoryMacroMap.portfolio["Prestito/Debito"] = "Debiti"; changed = true; }
+  if (!data.paymentTypes) { data.paymentTypes = ["Banca","Cash","Carta di Credito"]; changed = true; }
+  else if (!data.paymentTypes.includes("Carta di Credito")) { data.paymentTypes.push("Carta di Credito"); changed = true; }
   if (changed) saveData();
 }
 
@@ -528,7 +685,39 @@ function generateRecurring() {
       const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
       if (canGenerateOnDate(dateStr)) {
         const mappedMacro = (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[rule.type]) || null;
-        data.portfolio.push({ id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id });
+        const entry = { id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id };
+        if (rule.fundName) {
+          entry.fundName = rule.fundName;
+          if (rule.fundRefPrice) {
+            entry.fundPurchaseQuotaPrice = rule.fundRefPrice;
+            entry.fundCurrentQuotaPrice = rule.fundRefPrice;
+            entry.fundQuotaCount = rule.amount / rule.fundRefPrice;
+            entry.marketValue = rule.amount;
+            const existingFundLot = data.portfolio.find(p => p.fundName === rule.fundName && p.securityCode);
+            entry.securityCode = existingFundLot ? existingFundLot.securityCode : consumeNextSecurityCode();
+          }
+        }
+        const typeLower = (rule.type||"").toLowerCase();
+        if (typeLower.includes("obbligazione") && rule.couponRate) {
+          entry.bondMode = rule.bondMode || "cedola";
+          entry.couponRate = rule.couponRate;
+          entry.couponFrequency = "annual";
+          entry.bondTaxRate = rule.bondTaxRate || 15;
+          entry.bondYears = rule.bondYears || null;
+          entry.issueDate = dateStr;
+          entry.purchasedAtIssue = true;
+          if (rule.bondYears) { const md = new Date(dateStr); md.setFullYear(md.getFullYear()+Number(rule.bondYears)); entry.maturityDate = localDateStr(md); }
+          entry.securityCode = consumeNextSecurityCode();
+        }
+        if (typeLower.includes("deposito") && rule.depositRate) {
+          entry.depositMode = rule.depositMode || "cedola";
+          entry.depositRate = rule.depositRate;
+          entry.depositTaxRate = rule.depositTaxRate || 15;
+          entry.depositYears = rule.depositYears || null;
+          if (rule.depositYears) { const md = new Date(dateStr); md.setFullYear(md.getFullYear()+Number(rule.depositYears)); entry.maturityDate = localDateStr(md); }
+        }
+        data.portfolio.push(entry);
+        if (rule.paymentType) createLiquidityAdjustment(rule.paymentType, -rule.amount, dateStr, `${rule.type}${rule.fundName?' ('+rule.fundName+')':''} ricorrente`, entry.id);
         changed = true;
       }
     }
@@ -539,17 +728,23 @@ function generateRecurring() {
 // ---------- FI projection ----------
 function project(wealth0, income0, savingsRate, expense0, expenseGrowth, incomeGrowth2y, ret, horizon, withdrawalRate) {
   const multiplier = 100 / (withdrawalRate || 4);
-  const rows = []; let wealth = wealth0; let income = income0; let hitYear = null;
+  const rows = []; let wealth = wealth0; let income = income0; let hitYear = null; let hitYearFrac = null;
   for (let y=1; y<=horizon; y++) {
     if (y>1 && (y-1)%2===0) income += incomeGrowth2y;
     const expense = expense0 + expenseGrowth*(y-1);
     const contribution = income * savingsRate;
+    const wealthStart = wealth;
     wealth = wealth*(1+ret) + contribution;
     const target = expense*multiplier;
-    if (!hitYear && wealth >= target) hitYear = y;
+    if (!hitYear && wealth >= target) {
+      hitYear = y;
+      const range = wealth - wealthStart;
+      const frac = range > 0 ? Math.max(0, Math.min(1, (target - wealthStart) / range)) : 0;
+      hitYearFrac = (y - 1) + frac;
+    }
     rows.push({year:y, wealth, expense, target});
   }
-  return {rows, hitYear};
+  return {rows, hitYear, hitYearFrac};
 }
 
 let chartInstance = null;
@@ -561,6 +756,7 @@ let macroDrilldownChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
 let editingPortfolioId = null;
+let portfolioBulkEditFilter = null; // {type: 'category'|'macro', value: string}
 let editingIncomeId = null;
 let editingExpenseId = null;
 let fundImportPreview = null; // {type, fundName, rows: [{date, amount, unitPrice, units}]}
@@ -593,15 +789,16 @@ function barColor(pct) { return pct <= 80 ? "#3F6E5E" : pct <= 100 ? "#C9A227" :
 function budgetBlock(label, spent, budget) {
   const pct = budget > 0 ? (spent/budget*100) : 0;
   return `<div class="budget-block">
-    <div class="budget-head"><span class="l">${label}</span><span>${fmt(spent)} / ${fmt(budget)} ALL</span></div>
+    <div class="budget-head"><span class="l">${label}</span><span>${fmtDisplay(spent)} / ${fmtDisplay(budget)}</span></div>
     <div class="bar-bg"><div class="bar-fg" style="width:${Math.min(pct,100)}%; background:${barColor(pct)};"></div></div>
   </div>`;
 }
 
 // ---------- Category select ----------
-function categorySelect(groupKey, selected) {
+function categorySelect(groupKey, selected, filterFn) {
   const counts = usageCounts(groupKey);
-  const cats = [...data.categories[groupKey]].sort((a,b)=> (counts[b]||0)-(counts[a]||0));
+  let cats = [...data.categories[groupKey]].sort((a,b)=> (counts[b]||0)-(counts[a]||0));
+  if (filterFn) cats = cats.filter(filterFn);
   const opts = cats.map(c => `<option ${c===selected?'selected':''}>${c}</option>`).join('');
   return `<select class="cat-select" data-group="${groupKey}">${opts}<option value="__new__">+ Nuova categoria...</option></select>`;
 }
@@ -621,6 +818,11 @@ function bindCategorySelects() {
       }
     });
   });
+}
+
+function paymentTypeSelect(selected) {
+  const opts = data.paymentTypes.map(t => `<option value="${t}" ${t===selected?'selected':''}>${t}</option>`).join('');
+  return `<select class="payment-type-select" name="paymentType">${opts}<option value="" ${!selected?'selected':''}>— non tracciare in Patrimonio —</option></select>`;
 }
 
 function macroSelect(groupKey, selected) {
@@ -668,10 +870,13 @@ function renderDashboard() {
   generateSnapshot();
   backfillMacroFromMapping();
   ensureLiquidityCategories();
+  migrateFireRatesDefault();
   ensureBondDepositCategories();
   autoGenerateSecurityIncome();
   autoMatureBondsAndDeposits();
   autoChargeCustodyFees();
+  processCreditCardBilling();
+  processLoanInstallments();
   const s = data.settings;
   const incomeThisYear = yearTotal(data.income, thisYear);
   const expenseThisYear = yearTotal(data.expenses, thisYear);
@@ -693,24 +898,25 @@ function renderDashboard() {
   const projIncome = effIncome || 0;
   const projExpenseBase = effExpense || s.expenseBase;
 
-  const scenarios = [
-    {key:"bear", ret:(s.centralRet-1)/100, color:"#8B3A2F", label:"Bear"},
-    {key:"central", ret:s.centralRet/100, color:"#C9A227", label:"Central"},
-    {key:"bull", ret:(s.centralRet+1)/100, color:"#3F6E5E", label:"Bull"},
-  ];
-  const results = scenarios.map(sc => ({...sc, ...project(wealth0, projIncome, s.savingsRateTarget/100, projExpenseBase, s.expenseGrowth, s.incomeGrowth2y, sc.ret, s.horizon, s.withdrawalRate||4)}));
-  const central = results[1];
-
   const dayOfYearNow = Math.ceil((now - new Date(thisYear,0,1)) / 86400000) || 1;
   const annualBudgetVal = annualBudgetForYear(thisYear);
   const projectedAnnualExpense = expenseThisYear>0 ? (expenseThisYear/dayOfYearNow*365) : annualBudgetVal;
   const fireBaseMode = s.fireExpenseBaseMode || "budget";
   const fireExpenseBase = fireBaseMode === "projected" ? projectedAnnualExpense : annualBudgetVal;
-  const fireRates = (s.fireRatesText || "4,3.5,3,2.5,2").split(",").map(x=>parseFloat(x.trim())).filter(n=>!isNaN(n) && n>0);
+
+  const scenarios = [
+    {key:"bear", ret:(s.centralRet-1)/100, color:"#8B3A2F", label:"Bear"},
+    {key:"central", ret:s.centralRet/100, color:"#C9A227", label:"Central"},
+    {key:"bull", ret:(s.centralRet+1)/100, color:"#3F6E5E", label:"Bull"},
+  ];
+  const results = scenarios.map(sc => ({...sc, ...project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, sc.ret, s.horizon, s.withdrawalRate||4)}));
+  const central = results[1];
+
+  const fireRates = (s.fireRatesText || "4,3,2").split(",").map(x=>parseFloat(x.trim())).filter(n=>!isNaN(n) && n>0);
   const fireNumbers = fireRates.map(rate => {
     const target = fireExpenseBase * 100/rate;
     const proj = project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, s.horizon, rate);
-    return { rate, target, years: proj.hitYear };
+    return { rate, target, years: proj.hitYearFrac };
   });
 
   const currentAbsoluteTargetYear = thisYear + (central.hitYear || s.horizon);
@@ -741,7 +947,7 @@ function renderDashboard() {
   const freeFromIncome = incomeMonthlyRef!==null ? incomeMonthlyRef - recurringTotalMonthly : null;
   const freeFromTarget = monthlyBudget - recurringExpMonthly;
 
-  const fiTarget = annualBudget * (100/(s.withdrawalRate||4));
+  const fiTarget = fireExpenseBase * (100/(s.withdrawalRate||4));
   const fiProgressPct = fiTarget>0 ? Math.min(100, wealth0/fiTarget*100) : 0;
 
   const streak = budgetStreak();
@@ -784,7 +990,7 @@ function renderDashboard() {
 
   document.getElementById("main").innerHTML = `
     <div class="seal">
-      <div class="n">${central.hitYear ?? s.horizon+"+"}</div>
+      <div class="n">${central.hitYearFrac!=null ? central.hitYearFrac.toFixed(1) : s.horizon+"+"}</div>
       <div class="l">Anni · FI centrale</div>
     </div>
     <div class="progress-wrap">
@@ -808,10 +1014,10 @@ function renderDashboard() {
       </div>
       <div class="chart-wrap"><canvas id="fireChart" height="200"></canvas></div>
       <div style="margin-top:10px;">
-        ${fireNumbers.map(f=>`<div class="stat-row"><span class="label">${f.rate}% — ${fmt(f.target)} ALL</span><span class="val">${f.years ? f.years+' anni' : '>'+s.horizon+' anni'}</span></div>`).join('')}
+        ${fireNumbers.map(f=>`<div class="stat-row"><span class="label">${f.rate}% — ${fmtDisplay(f.target)}</span><span class="val">${f.years!=null ? f.years.toFixed(1)+' anni' : '>'+s.horizon+' anni'}</span></div>`).join('')}
       </div>
       <div class="row2" style="margin-top:10px;">
-        <div><label>Percentuali (separate da virgola)</label><input type="text" id="fireRatesInput" value="${s.fireRatesText || '4,3.5,3,2.5,2'}"></div>
+        <div><label>Percentuali (separate da virgola)</label><input type="text" id="fireRatesInput" value="${s.fireRatesText || '4,3,2'}"></div>
         <button class="secondary" type="button" id="fireRatesSave" style="align-self:flex-end;">Salva percentuali</button>
       </div>
     </div>
@@ -891,7 +1097,7 @@ function renderDashboard() {
       labels: fireNumbers.map(f=>f.rate+'%'),
       datasets: [
         { type:'bar', label:'Numero FIRE (ALL)', data: fireNumbers.map(f=>f.target), backgroundColor:'#C9A227', yAxisID:'y' },
-        { type:'line', label:'Anni stimati', data: fireNumbers.map(f=>f.years||s.horizon), borderColor:'#3F6E5E', backgroundColor:'transparent', pointRadius:4, borderWidth:2, yAxisID:'y1' }
+        { type:'line', label:'Anni stimati', data: fireNumbers.map(f=>f.years!=null?f.years:s.horizon), borderColor:'#3F6E5E', backgroundColor:'transparent', pointRadius:4, borderWidth:2, yAxisID:'y1' }
       ]
     },
     options: {
@@ -949,7 +1155,7 @@ function renderIncomeEditForm(e) {
     </div>
     <div><label>Categoria</label>${categorySelect("income", e.category)}</div>
     <div><label>Macro-categoria</label>${macroSelect("income", e.macro)}</div>
-    <div><label>Ricevuto su</label><select name="paymentType"><option value="Banca" ${e.paymentType==='Banca'?'selected':''}>Banca</option><option value="Cash" ${e.paymentType==='Cash'?'selected':''}>Cash</option><option value="" ${!e.paymentType?'selected':''}>— non tracciare in Patrimonio —</option></select></div>
+    <div><label>Ricevuto su</label>${paymentTypeSelect(e.paymentType)}</div>
     <div><label>Nota</label><input type="text" name="note" value="${e.note||''}"></div>
     <div class="row2">
       <button class="primary" type="submit">Salva</button>
@@ -981,7 +1187,7 @@ function renderIncome() {
         <button class="secondary" type="button" id="toggleMacroManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.income ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <button class="secondary" type="button" id="toggleMacroAssign-income" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.income ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         ${bondOptions ? `<div><label>Bond collegato (opzionale, per cedole)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptions}</select></div>` : ''}
-        <div><label>Ricevuto su</label><select name="paymentType"><option value="Banca">Banca</option><option value="Cash">Cash</option><option value="">— non tracciare in Patrimonio —</option></select></div>
+        <div><label>Ricevuto su</label>${paymentTypeSelect("Banca")}</div>
         <div style="display:flex; align-items:center; gap:8px;">
           <input type="checkbox" name="applyTax" id="applyTaxChk" style="width:auto;">
           <label style="margin:0;" for="applyTaxChk">Applica ritenuta 15% (interessi/cedole) — importo inserito è lordo</label>
@@ -1020,7 +1226,7 @@ function renderIncome() {
             <button class="li-del" data-del-income="${e.id}">✕</button>
           </div>
         </div>`).join('')}
-      <div class="section-total"><span>Totale ${thisYear}</span><span>${fmt(total)} ALL</span></div>
+      <div class="section-total"><span>Totale ${thisYear}</span><span>${fmtDisplay(total)}</span></div>
     </div>
   `;
   bindCategorySelects();
@@ -1271,7 +1477,7 @@ function renderExpenseEditForm(e) {
     </div>
     <div><label>Categoria</label>${categorySelect("expenses", e.category)}</div>
     <div><label>Macro-categoria</label>${macroSelect("expenses", e.macro)}</div>
-    <div><label>Pagato con</label><select name="paymentType"><option value="Banca" ${e.paymentType==='Banca'?'selected':''}>Banca</option><option value="Cash" ${e.paymentType==='Cash'?'selected':''}>Cash</option><option value="" ${!e.paymentType?'selected':''}>— non tracciare in Patrimonio —</option></select></div>
+    <div><label>Pagato con</label>${paymentTypeSelect(e.paymentType)}</div>
     <div><label>Nota</label><input type="text" name="note" value="${e.note||''}"></div>
     <div class="row2">
       <button class="primary" type="submit">Salva</button>
@@ -1335,7 +1541,7 @@ function renderExpenses() {
         <div><label>Macro-categoria</label>${macroSelect("expenses")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.expenses ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <button class="secondary" type="button" id="toggleMacroAssign-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.expenses ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
-        <div><label>Pagato con</label><select name="paymentType"><option value="Banca">Banca</option><option value="Cash">Cash</option><option value="">— non tracciare in Patrimonio —</option></select></div>
+        <div><label>Pagato con</label>${paymentTypeSelect("Banca")}</div>
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -1390,7 +1596,7 @@ function renderExpenses() {
             <button class="li-del" data-del-expense="${e.id}">✕</button>
           </div>
         </div>`).join('')}
-      <div class="section-total"><span>Totale ${thisYear}</span><span>${fmt(total)} ALL</span></div>
+      <div class="section-total"><span>Totale ${thisYear}</span><span>${fmtDisplay(total)}</span></div>
     </div>
   `;
   bindCategorySelects();
@@ -1495,6 +1701,10 @@ function renderExpenses() {
     const paymentType = f.get("paymentType") || "";
     const amount = Number(f.get("amount"));
     const date = f.get("date");
+    if (isCreditCardType(paymentType)) {
+      const available = ccAvailableCredit(paymentType);
+      if (amount > available) { alert(`Disponibilità insufficiente su "${paymentType}": ${fmt(available)} ALL disponibili, importo richiesto ${fmt(amount)} ALL.`); return; }
+    }
     const expId = uid();
     data.expenses.push({id:expId, date, amount, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||""});
     if (paymentType) createLiquidityAdjustment(paymentType, -amount, date, `Spesa: ${cat}`, expId);
@@ -1520,11 +1730,22 @@ function renderExpenses() {
       const entry = data.expenses.find(e=>e.id===id);
       if (!entry) return;
       const f = new FormData(ev.target);
+      const newAmount = Number(f.get("amount"));
+      const newPaymentType = f.get("paymentType") || null;
+      removeLiquidityAdjustment(id);
+      if (isCreditCardType(newPaymentType)) {
+        const available = ccAvailableCredit(newPaymentType);
+        if (newAmount > available) {
+          alert(`Disponibilità insufficiente su "${newPaymentType}": ${fmt(available)} ALL disponibili, importo richiesto ${fmt(newAmount)} ALL.`);
+          resyncLiquidityAdjustment(id, entry.paymentType, -entry.amount, entry.date, `Spesa: ${entry.category}`);
+          return;
+        }
+      }
       entry.date = f.get("date") || entry.date;
-      entry.amount = Number(f.get("amount"));
+      entry.amount = newAmount;
       entry.category = form.querySelector(".cat-select").value;
       entry.macro = form.querySelector(".macro-select").value || null;
-      entry.paymentType = f.get("paymentType") || null;
+      entry.paymentType = newPaymentType;
       entry.note = f.get("note") || "";
       resyncLiquidityAdjustment(id, entry.paymentType, -entry.amount, entry.date, `Spesa: ${entry.category}`);
       editingExpenseId = null;
@@ -1692,13 +1913,14 @@ function renderPortfolioEditForm(p) {
   const typeL = (p.type||"").toLowerCase();
   const isBond = typeL.includes("obbligazione");
   const isDeposit = typeL.includes("deposito");
-  const isFund = typeL.includes("fondo");
+  const isFund = isFundEntry(p);
   return `<form class="entry" data-editportform="${p.id}" style="border:1px solid #C9A227; border-radius:6px; padding:12px; margin-bottom:8px;">
     <div><label>Tipo</label>${categorySelect("portfolio", p.type)}</div>
     ${isFund ? `<div><label>Nome fondo</label><input type="text" name="fundName" value="${p.fundName||''}"></div>` : ''}
+    ${(isFund || isBond) ? `<div><label>Società/Ente (di proprietà/gestione)</label><input type="text" name="issuer" value="${p.issuer||''}"></div>` : ''}
     <div><label>Codice titolo</label><input type="text" name="securityCode" maxlength="8" value="${p.securityCode||''}"></div>
     <div class="row2">
-      <div><label>Importo nominale</label><input type="number" step="0.0001" name="amount" value="${p.amount}"></div>
+      ${!isFund ? `<div><label>Importo nominale</label><input type="number" step="0.0001" name="amount" value="${p.amount}"></div>` : ''}
       <div><label>Valuta</label><select name="currency"><option ${p.currency==='ALL'?'selected':''}>ALL</option><option ${p.currency==='EUR'?'selected':''}>EUR</option><option ${p.currency==='USD'?'selected':''}>USD</option></select></div>
     </div>
     <div class="row2">
@@ -1715,7 +1937,15 @@ function renderPortfolioEditForm(p) {
       <div><label>Prezzo collocamento</label><input type="number" step="0.0001" name="purchasePrice" value="${p.purchasePrice!=null?p.purchasePrice:100}"></div>
       <div><label>Prezzo rimborso</label><input type="number" step="0.0001" name="redemptionPrice" value="${p.redemptionPrice!=null?p.redemptionPrice:100}"></div>
     </div>
-    <div><label>Durata (anni)</label><input type="number" name="bondYears" value="${p.bondYears||''}"></div>` : ''}
+    <div><label>Durata originale (anni)</label><input type="number" name="bondYears" value="${p.bondYears||''}"></div>
+    <div class="row2">
+      <div><label>Data di collocamento (emissione)</label><input type="date" name="issueDate" value="${p.issueDate||''}"></div>
+      <div style="display:flex; align-items:flex-end; gap:6px; padding-bottom:8px;">
+        <input type="checkbox" name="purchasedAtIssue" ${p.purchasedAtIssue?'checked':''} style="width:auto;">
+        <label style="margin:0;">Acquistato al collocamento</label>
+      </div>
+    </div>
+    ${p.date && p.maturityDate ? `<div class="subtle">Durata a scadere dall'acquisto: ${((new Date(p.maturityDate)-new Date(p.date))/(365.25*86400000)).toFixed(2)} anni</div>` : ''}` : ''}
     ${isDeposit ? `
     <div class="row2">
       <div><label>Tasso annuo (%)</label><input type="number" step="0.0001" name="depositRate" value="${p.depositRate!=null?p.depositRate:''}"></div>
@@ -1795,21 +2025,93 @@ function parseFundHistoryText(text) {
   return { rows, errors };
 }
 
+function isFundEntry(p) {
+  const t = (p.type||"").toLowerCase();
+  const m = (p.macro||"").toLowerCase();
+  return t.includes("fond") || m.includes("fond");
+}
+
+function computeBondsSummary() {
+  const bonds = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("obbligazione") && p.amount > 0);
+  const grouped = {};
+  bonds.forEach(p => {
+    const key = p.type;
+    if (!grouped[key]) grouped[key] = { name:key, totalInvestedALL:0, count:0, couponsReceivedALL:0, nextMaturity:null };
+    grouped[key].totalInvestedALL += toALL(p.amount, p.currency);
+    grouped[key].count++;
+    const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
+    grouped[key].couponsReceivedALL += coupons;
+    if (p.maturityDate && (!grouped[key].nextMaturity || p.maturityDate < grouped[key].nextMaturity)) grouped[key].nextMaturity = p.maturityDate;
+  });
+  return Object.values(grouped).map(g => ({...g, rendPct: g.totalInvestedALL>0 ? g.couponsReceivedALL/g.totalInvestedALL*100 : 0}));
+}
+function computeDepositsSummary() {
+  const deposits = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("deposito") && p.amount > 0);
+  const grouped = {};
+  deposits.forEach(p => {
+    const key = p.type;
+    if (!grouped[key]) grouped[key] = { name:key, totalInvestedALL:0, count:0, interestReceivedALL:0, nextMaturity:null };
+    grouped[key].totalInvestedALL += toALL(p.amount, p.currency);
+    grouped[key].count++;
+    const interest = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
+    grouped[key].interestReceivedALL += interest;
+    if (p.maturityDate && (!grouped[key].nextMaturity || p.maturityDate < grouped[key].nextMaturity)) grouped[key].nextMaturity = p.maturityDate;
+  });
+  return Object.values(grouped).map(g => ({...g, rendPct: g.totalInvestedALL>0 ? g.interestReceivedALL/g.totalInvestedALL*100 : 0}));
+}
+function computeLiquiditySummary() {
+  const items = data.portfolio.filter(p => data.paymentTypes.includes(p.type) && !isCreditCardType(p.type));
+  const grouped = {};
+  items.forEach(p => {
+    const key = p.type;
+    if (!grouped[key]) grouped[key] = { name:key, balanceALL:0 };
+    grouped[key].balanceALL += toALL(p.amount, p.currency);
+  });
+  return Object.values(grouped);
+}
+function computeCreditCardSummary() {
+  const items = data.portfolio.filter(p => isCreditCardType(p.type));
+  const grouped = {};
+  items.forEach(p => {
+    const key = p.type;
+    if (!grouped[key]) grouped[key] = { name:key, balanceALL:0 };
+    grouped[key].balanceALL += toALL(p.amount, p.currency);
+  });
+  return Object.values(grouped);
+}
+function computeDebtsSummary() {
+  const debts = data.portfolio.filter(p => p.macro === "Debiti" || (p.type||"").toLowerCase().includes("debit") || (p.type||"").toLowerCase().includes("prestito"));
+  const grouped = {};
+  debts.forEach(p => {
+    const key = p.type;
+    if (!grouped[key]) grouped[key] = { name:key, balanceALL:0 };
+    grouped[key].balanceALL += toALL(p.amount, p.currency);
+  });
+  return Object.values(grouped);
+}
+
 function computeFundsSummary() {
-  const funds = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("fondo") && p.amount>0 && p.fundQuotaCount);
+  const funds = data.portfolio.filter(p => isFundEntry(p) && p.amount>0 && p.fundQuotaCount);
   const grouped = {};
   funds.forEach(p => {
     const key = p.fundName || p.type;
-    if (!grouped[key]) grouped[key] = { name:key, totalQuote:0, totalInvested:0, currentPrice:0, currency:p.currency, priceHistory:[], earliestDate:p.date };
+    if (!grouped[key]) grouped[key] = { name:key, totalQuote:0, totalInvested:0, latestPrice:0, latestPriceDate:null, currency:p.currency, priceHistory:[], earliestDate:p.date, id:p.id };
     grouped[key].totalQuote += Number(p.fundQuotaCount)||0;
     grouped[key].totalInvested += Number(p.amount)||0;
-    const cp = Number(p.fundCurrentQuotaPrice)||Number(p.fundPurchaseQuotaPrice)||0;
-    if (cp > grouped[key].currentPrice || grouped[key].currentPrice===0) grouped[key].currentPrice = cp;
     if (p.priceHistory) grouped[key].priceHistory.push(...p.priceHistory);
+    // Fallback candidate: this lot's own current/purchase price, dated at its priceHistory's latest entry or its own date
+    const ownLatestHist = (p.priceHistory||[]).slice().sort((a,b)=>b.date.localeCompare(a.date))[0];
+    const ownPrice = ownLatestHist ? ownLatestHist.price : (Number(p.fundCurrentQuotaPrice)||Number(p.fundPurchaseQuotaPrice)||0);
+    const ownDate = ownLatestHist ? ownLatestHist.date : p.date;
+    if (!grouped[key].latestPriceDate || ownDate > grouped[key].latestPriceDate) {
+      grouped[key].latestPrice = ownPrice;
+      grouped[key].latestPriceDate = ownDate;
+    }
     if (p.date && p.date < grouped[key].earliestDate) grouped[key].earliestDate = p.date;
   });
   const yearStart = `${thisYear}-01-01`;
   return Object.values(grouped).map(g => {
+    g.currentPrice = g.latestPrice;
     const avgPrice = g.totalQuote>0 ? g.totalInvested/g.totalQuote : 0;
     const currentValue = g.totalQuote * g.currentPrice;
     const rendValore = currentValue - g.totalInvested;
@@ -1827,7 +2129,9 @@ function computeFundsSummary() {
       const dayOfYear = Math.ceil((now - new Date(thisYear,0,1)) / 86400000) || 1;
       projectedPct = ytdPct * (365/dayOfYear);
     }
-    return { name:g.name, totalQuote:g.totalQuote, currentPrice:g.currentPrice, currentValue, avgPrice, rendPct, rendValore, ytdPct, projectedPct, currency:g.currency };
+    const currentValueALL = toALL(currentValue, g.currency);
+    const totalInvestedALL = toALL(g.totalInvested, g.currency);
+    return { name:g.name, totalQuote:g.totalQuote, currentPrice:g.currentPrice, currentValue, currentValueALL, totalInvestedALL, avgPrice, rendPct, rendValore, ytdPct, projectedPct, currency:g.currency };
   });
 }
 
@@ -1837,20 +2141,27 @@ function renderPortfolio() {
   const duration = computeWeightedDuration();
   const bondPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("obbligazione") && p.amount > 0);
   const bondSaleOptions = bondPositions.map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''} — ${fmt(p.amount)} ${p.currency}</option>`).join('');
-  const fundPositions = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("fondo") && p.amount > 0);
+  const fundPositions = data.portfolio.filter(p => isFundEntry(p) && p.amount > 0);
   const fundSaleOptions = fundPositions.map(p=>`<option value="${p.id}">${p.fundName||p.type}${p.note?' · '+p.note:''} — ${p.fundQuotaCount||0} quote</option>`).join('');
   const fundsSummary = computeFundsSummary();
+  const bondsSummary = computeBondsSummary();
+  const depositsSummary = computeDepositsSummary();
+  const liquiditySummary = computeLiquiditySummary();
+  const debtsSummary = computeDebtsSummary();
   const eurTotal = data.portfolio.reduce((s,p)=>{
+    if (isExcludedFromAllocationChart(p)) return s;
     const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount;
     return s + (p.currency==="EUR" ? toALL(mv,"EUR") : 0);
   },0);
   const usdTotal = data.portfolio.reduce((s,p)=>{
+    if (isExcludedFromAllocationChart(p)) return s;
     const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount;
     return s + (p.currency==="USD" ? toALL(mv,"USD") : 0);
   },0);
   const allTotal = totalALL - eurTotal - usdTotal;
   const typeTotals = {};
   data.portfolio.forEach(p=>{
+    if (isExcludedFromAllocationChart(p)) return;
     const mv = toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency);
     typeTotals[p.type] = (typeTotals[p.type]||0) + mv;
   });
@@ -1862,18 +2173,19 @@ function renderPortfolio() {
   const macroFilterOptions = ["all", ...data.macroCategories.portfolio].map(m=>`<option value="${m}" ${portfolioMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
   let filteredPositions = data.portfolio.filter(p=> portfolioTypeFilter==="all" || p.type===portfolioTypeFilter);
   if (portfolioMacroFilter !== "all") filteredPositions = filteredPositions.filter(p=>p.macro===portfolioMacroFilter);
+  filteredPositions = filteredPositions.filter(p => !isDebtType(p.type, p.macro) && !isCreditCardType(p.type));
 
   document.getElementById("main").innerHTML = `
     <div class="card">
       <h3>Nuova posizione</h3>
       <form class="entry" id="portForm">
-        <div><label>Tipo</label>${categorySelect("portfolio")}</div>
+        <div><label>Tipo</label>${categorySelect("portfolio", null, c => !isDebtType(c) && !isCreditCardType(c))}</div>
         <button class="secondary" type="button" id="toggleCatManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.portfolio ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div><label>Macro-categoria</label>${macroSelect("portfolio")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.portfolio ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <button class="secondary" type="button" id="toggleMacroAssign-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.portfolio ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         <div class="row2">
-          <div><label>Importo nominale</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
+          <div id="amountField"><label>Importo nominale</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
         </div>
         <div class="row2">
@@ -1881,6 +2193,10 @@ function renderPortfolio() {
           <div><label>Data di partenza</label><input type="date" name="date" value="${todayISO}"></div>
         </div>
         <div id="maturityDateField"><label>Data scadenza (opz., per bond/deposito)</label><input type="date" name="maturityDate"></div>
+
+        <div id="issuerField" style="display:none;">
+          <label>Società/Ente (di proprietà/gestione)</label><input type="text" name="issuer" placeholder="es. Raiffeisen Invest, Ministria e Financave">
+        </div>
 
         <div id="titleCodeField" style="display:none;">
           <label>Codice titolo</label><input type="text" name="securityCode" id="securityCodeInput" maxlength="8" value="${peekNextSecurityCode()}">
@@ -1890,8 +2206,16 @@ function renderPortfolio() {
           <label style="color:#C9A227;">Dettagli obbligazione</label>
           <div class="row2">
             <div><label>Modalità</label><select name="bondMode" id="bondModeSelect"><option value="cedola">Con cedola periodica</option><option value="finale">Liquidazione finale (zero-coupon)</option></select></div>
-            <div><label>Durata (anni, per la tassa)</label><input type="number" name="bondYears" placeholder="es. 7"></div>
+            <div><label>Durata originale (anni)</label><input type="number" name="bondYears" id="bondYearsInput" placeholder="es. 7"></div>
           </div>
+          <div class="row2">
+            <div><label>Data di collocamento (emissione)</label><input type="date" name="issueDate" id="bondIssueDateInput"></div>
+            <div style="display:flex; align-items:flex-end; gap:6px; padding-bottom:8px;">
+              <input type="checkbox" name="purchasedAtIssue" id="purchasedAtIssueChk" checked style="width:auto;">
+              <label style="margin:0;" for="purchasedAtIssueChk">Acquistato al collocamento (data acquisto = data emissione)</label>
+            </div>
+          </div>
+          <div><label>Durata a scadere dall'acquisto (anni, auto)</label><input type="text" id="bondRemainingYearsPreview" readonly style="opacity:0.7;"></div>
           <div class="row2" id="bondCouponRow">
             <div><label>Cedola annua (%)</label><input type="number" step="0.0001" name="couponRate" placeholder="es. 4.5"></div>
             <div><label>Frequenza cedola</label><select name="couponFrequency"><option value="monthly">Mensile</option><option value="quarterly">Trimestrale</option><option value="semiannual">Semestrale</option><option value="annual" selected>Annuale</option><option value="biennial">Biennale</option></select></div>
@@ -2006,8 +2330,8 @@ function renderPortfolio() {
       <div class="subtle">Sposta denaro tra Banca e Cash (es. prelievo contanti). Registra due movimenti collegati, senza toccare il totale complessivo del patrimonio.</div>
       <form class="entry" id="liquidityTransferForm">
         <div class="row2">
-          <div><label>Da</label><select name="from"><option value="Banca">Banca</option><option value="Cash">Cash</option></select></div>
-          <div><label>A</label><select name="to"><option value="Cash">Cash</option><option value="Banca">Banca</option></select></div>
+          <div><label>Da</label><select name="from">${data.paymentTypes.map(t=>`<option ${t==='Banca'?'selected':''}>${t}</option>`).join('')}</select></div>
+          <div><label>A</label><select name="to">${data.paymentTypes.map(t=>`<option ${t==='Cash'?'selected':''}>${t}</option>`).join('')}</select></div>
         </div>
         <div class="row2">
           <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
@@ -2020,25 +2344,71 @@ function renderPortfolio() {
     ${fundsSummary.length>0 ? `<div class="card">
       <h3>Riepilogo fondi</h3>
       <div class="subtle">Rendimento YTD calcolato dal primo aggiornamento prezzo registrato quest'anno (o dal prezzo di acquisto se la posizione è aperta quest'anno). "Proiettato" estrapola il ritmo attuale a fine anno — è una stima, non una previsione.</div>
-      ${fundsSummary.map(g=>`
+      ${fundsSummary.map(g=>{
+        const preselect = RAIFFEISEN_FUNDS.find(f => g.name.toLowerCase().includes(f.replace("Raiffeisen ","").toLowerCase())) || RAIFFEISEN_FUNDS[0];
+        return `
         <div style="border-bottom:1px solid #24374F; padding:10px 0;">
           <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.name}</div>
           <div class="stat-row"><span class="label">Quote totali</span><span class="val">${g.totalQuote.toFixed(4)}</span></div>
           <div class="stat-row"><span class="label">Prezzo di mercato attuale</span><span class="val">${fmt(g.currentPrice)} ${g.currency}</span></div>
-          <div class="stat-row"><span class="label">Valore attuale</span><span class="val">${fmt(g.currentValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Valore attuale</span><span class="val">${fmt(g.currentValue)} ${g.currency}${g.currency!=='ALL'?' ('+fmt(g.currentValueALL)+' ALL)':''}</span></div>
           <div class="stat-row"><span class="label">Prezzo medio di acquisto</span><span class="val">${fmt(g.avgPrice)} ${g.currency}</span></div>
           <div class="stat-row"><span class="label">Rendimento totale</span><span class="val ${g.rendPct>=0?'up':'down'}">${g.rendPct>=0?'+':''}${g.rendPct.toFixed(2)}% (${g.rendValore>=0?'+':''}${fmt(g.rendValore)} ${g.currency})</span></div>
           <div class="stat-row"><span class="label">Rendimento YTD</span><span class="val ${g.ytdPct===null?'':(g.ytdPct>=0?'up':'down')}">${g.ytdPct===null?'N/D — aggiorna il prezzo per iniziare a tracciarlo':(g.ytdPct>=0?'+':'')+g.ytdPct.toFixed(2)+'%'}</span></div>
           <div class="stat-row"><span class="label">Proiettato a fine anno</span><span class="val ${g.projectedPct===null?'':(g.projectedPct>=0?'up':'down')}">${g.projectedPct===null?'N/D':(g.projectedPct>=0?'+':'')+g.projectedPct.toFixed(2)+'%'}</span></div>
-        </div>
-      `).join('')}
+          <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+            <select class="raif-fund-select" data-fundname="${g.name}" style="width:auto; font-size:11px; padding:5px;">${RAIFFEISEN_FUNDS.map(f=>`<option ${f===preselect?'selected':''}>${f}</option>`).join('')}</select>
+            <button class="secondary" type="button" data-updatefundname="${g.name}" style="width:auto; padding:5px 10px; font-size:11px;">🔄 Aggiorna prezzo (Raiffeisen)</button>
+          </div>
+          <div class="subtle" data-statusforname="${g.name}" style="margin-top:4px;"></div>
+        </div>`;
+      }).join('')}
+      ${fundsSummary.length>1 ? (()=>{
+        const totVal = fundsSummary.reduce((s,g)=>s+g.currentValueALL,0);
+        const totInv = fundsSummary.reduce((s,g)=>s+g.totalInvestedALL,0);
+        const totRend = totVal-totInv;
+        const totRendPct = totInv>0 ? totRend/totInv*100 : 0;
+        return `<div style="padding-top:10px;">
+          <div class="stat-row" style="font-weight:600;"><span class="label">Totale complessivo (tutti i fondi)</span><span class="val">${fmtDisplay(totVal)}</span></div>
+          <div class="stat-row"><span class="label">Rendimento complessivo</span><span class="val ${totRend>=0?'up':'down'}">${totRend>=0?'+':''}${totRendPct.toFixed(2)}% (${totRend>=0?'+':''}${fmt(totRend)} ALL)</span></div>
+        </div>`;
+      })() : ''}
+    </div>` : ''}
+    ${bondsSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo obbligazioni</h3>
+      ${bondsSummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.name} <span class="pill">${g.count} posizion${g.count===1?'e':'i'}</span></div>
+          <div class="stat-row"><span class="label">Capitale investito</span><span class="val">${fmt(g.totalInvestedALL)} ALL</span></div>
+          <div class="stat-row"><span class="label">Cedole/plusvalenze ricevute</span><span class="val ${g.couponsReceivedALL>=0?'up':'down'}">${fmt(g.couponsReceivedALL)} ALL (${g.rendPct.toFixed(2)}%)</span></div>
+          ${g.nextMaturity ? `<div class="stat-row"><span class="label">Prossima scadenza</span><span class="val">${g.nextMaturity}</span></div>` : ''}
+        </div>`).join('')}
+    </div>` : ''}
+    ${depositsSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo depositi</h3>
+      ${depositsSummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.name} <span class="pill">${g.count} posizion${g.count===1?'e':'i'}</span></div>
+          <div class="stat-row"><span class="label">Capitale depositato</span><span class="val">${fmt(g.totalInvestedALL)} ALL</span></div>
+          <div class="stat-row"><span class="label">Interessi ricevuti</span><span class="val ${g.interestReceivedALL>=0?'up':'down'}">${fmt(g.interestReceivedALL)} ALL (${g.rendPct.toFixed(2)}%)</span></div>
+          ${g.nextMaturity ? `<div class="stat-row"><span class="label">Prossima scadenza</span><span class="val">${g.nextMaturity}</span></div>` : ''}
+        </div>`).join('')}
+    </div>` : ''}
+    ${liquiditySummary.length>0 ? `<div class="card">
+      <h3>Riepilogo liquidità</h3>
+      <div class="subtle">Solo conti attivi (Banca, Cash). Carte di credito e debiti sono nella scheda "Debiti".</div>
+      ${liquiditySummary.map(g=>`<div class="stat-row"><span class="label">${g.name}</span><span class="val ${g.balanceALL>=0?'':'down'}">${fmt(g.balanceALL)} ALL</span></div>`).join('')}
+      <div class="stat-row" style="font-weight:600; padding-top:6px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Totale liquidità</span><span class="val">${fmtDisplay(liquiditySummary.reduce((s,g)=>s+g.balanceALL,0))}</span></div>
     </div>` : ''}
     <div class="card">
       <h3>Importa storico fondo</h3>
       <div class="subtle">Incolla lo storico degli acquisti di un fondo (una riga per movimento: Data, Importo, Prezzo per quota, Quote acquistate). Funziona per qualsiasi fondo, inclusa la Pensione. Prima di salvare vedrai un'anteprima da controllare.</div>
       ${!fundImportPreview ? `
       <form class="entry" id="fundImportForm">
-        <div><label>Categoria/tipo</label>${categorySelect("portfolio")}</div>
+        <div class="row2">
+          <div><label>Categoria/tipo</label>${categorySelect("portfolio")}</div>
+          <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
+        </div>
         <div><label>Nome fondo</label><input type="text" name="fundName" placeholder="es. Raiffeisen Pension"></div>
         <div class="row2">
           <div><label>Prezzo inizio anno (opzionale, per YTD) — data</label><input type="date" name="baselineDate"></div>
@@ -2068,6 +2438,7 @@ function renderPortfolio() {
     </div>
     <div class="card">
       <h3>Allocazione</h3>
+      <div class="subtle" style="margin-bottom:8px;">Il grafico mostra solo gli asset positivi (fondi, obbligazioni, depositi, liquidità) — carte di credito e debiti non compaiono come fetta. Il totale del patrimonio, invece, tiene conto del saldo utilizzato sulla carta di credito (lo riduce), mentre i debiti restano fuori dal totale come voce puramente informativa.</div>
       <div class="grid3" style="grid-template-columns:1fr 1fr;">
         <div>
           <div class="subtle" style="margin-bottom:6px;">Per valuta</div>
@@ -2088,11 +2459,21 @@ function renderPortfolio() {
     <div class="card">
       <h3>Posizioni attuali</h3>
       <div class="row2" style="margin-bottom:10px;">
+        <select id="bulkEditSelect">
+          <option value="">— scegli categoria o macro-categoria da modificare in blocco —</option>
+          <optgroup label="Categoria">${data.categories.portfolio.map(c=>`<option value="cat:${c}">${c}</option>`).join('')}</optgroup>
+          <optgroup label="Macro-categoria">${data.macroCategories.portfolio.map(m=>`<option value="macro:${m}">${m}</option>`).join('')}</optgroup>
+        </select>
+        <button class="secondary" type="button" id="bulkEditBtn" style="width:auto;">Modifica</button>
+      </div>
+      ${portfolioBulkEditFilter ? `<div class="alert-banner">✎ Modifica multipla attiva: ${portfolioBulkEditFilter.type==='cat'?'Categoria':'Macro-categoria'} "${portfolioBulkEditFilter.value}". <button class="secondary" type="button" id="bulkEditClose" style="width:auto; margin-top:6px;">Chiudi modifica multipla</button></div>` : ''}
+      <div class="row2" style="margin-bottom:10px;">
         <div><label>Filtra per tipo</label><select id="portFilterSelect">${filterOptions}</select></div>
         <div><label>Filtra per macro-categoria</label><select id="portMacroFilterSelect">${macroFilterOptions}</select></div>
       </div>
       ${filteredPositions.length===0 ? '<div class="empty">Nessuna posizione con questo filtro.</div>' : filteredPositions.map(p=>{
-        if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
+        const inBulkEdit = portfolioBulkEditFilter && ((portfolioBulkEditFilter.type==='cat' && p.type===portfolioBulkEditFilter.value) || (portfolioBulkEditFilter.type==='macro' && p.macro===portfolioBulkEditFilter.value));
+        if (editingPortfolioId === p.id || inBulkEdit) return renderPortfolioEditForm(p);
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
         let maturityTag = "";
         if (p.maturityDate) {
@@ -2103,26 +2484,6 @@ function renderPortfolio() {
         const mv = (p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? p.marketValue : p.amount;
         const autoNote = (p.bondMode==="cedola"||p.depositMode==="cedola") ? '<div class="subtle" style="margin-top:4px;">Cedola/interesse generati automaticamente in base alla frequenza impostata.</div>'
           : (p.depositMode==="finale"||p.bondMode==="finale") ? '<div class="subtle" style="margin-top:4px;">Liquidazione automatica alla scadenza.</div>' : '';
-        let rendHtml = "";
-        let raifUpdateHtml = "";
-        const typeL = (p.type||"").toLowerCase();
-        if (typeL.includes("fondo") && p.amount>0) {
-          const rendValore = mv - p.amount;
-          const rendPct = (rendValore/p.amount*100);
-          const rc = rendValore>=0 ? "#3F6E5E" : "#8B3A2F";
-          rendHtml = `<div class="subtle" style="margin-top:4px; color:${rc};">Rendimento: ${rendPct>=0?'+':''}${rendPct.toFixed(2)}% (${rendValore>=0?'+':''}${fmt(rendValore)} ALL) — ${p.fundQuotaCount||0} quote a ${fmt(p.fundCurrentQuotaPrice||p.fundPurchaseQuotaPrice||0)}/quota</div>`;
-          const preselect = RAIFFEISEN_FUNDS.find(f => (p.fundName||"").toLowerCase().includes(f.replace("Raiffeisen ","").toLowerCase())) || RAIFFEISEN_FUNDS[0];
-          raifUpdateHtml = `<div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-            <select class="raif-fund-select" data-fundpos="${p.id}" style="width:auto; font-size:11px; padding:5px;">${RAIFFEISEN_FUNDS.map(f=>`<option ${f===preselect?'selected':''}>${f}</option>`).join('')}</select>
-            <button class="secondary" type="button" data-updatefundprice="${p.id}" style="width:auto; padding:5px 10px; font-size:11px;">🔄 Aggiorna prezzo (Raiffeisen)</button>
-          </div>
-          <div class="subtle" data-statusfor="${p.id}" style="margin-top:4px;"></div>`;
-        } else if (typeL.includes("obbligazione") && p.amount>0) {
-          const rendValore = coupons;
-          const rendPct = (rendValore/p.amount*100);
-          const rc = rendValore>=0 ? "#3F6E5E" : "#8B3A2F";
-          rendHtml = `<div class="subtle" style="margin-top:4px; color:${rc};">Rendimento cedole/plusvalenze ricevute: +${rendPct.toFixed(2)}% (+${fmt(rendValore)} ALL) sul capitale investito</div>`;
-        }
         return `<div class="list-item" style="flex-direction:column; align-items:stretch;">
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <div class="li-main"><span class="li-cat">${p.fundName || p.type}${p.securityCode?' <span class=\"pill\">'+p.securityCode+'</span>':''}${p.macro?' <span class=\"pill\">'+p.macro+'</span>':''}${p.note?' · '+p.note:''}${maturityTag}</span><span class="li-date">${p.date||''} · ${p.currency}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
@@ -2132,12 +2493,11 @@ function renderPortfolio() {
               <button class="li-del" data-del-port="${p.id}">✕</button>
             </div>
           </div>
-          ${rendHtml}
-          ${raifUpdateHtml}
           ${autoNote}
         </div>`;
       }).join('')}
-      <div class="section-total"><span>Totale (mercato)</span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} € · ${fmt(totalALL/data.settings.fxUsd)} $</span></div>
+      <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
+      <div class="section-total" style="font-size:11px; opacity:0.7;"><span></span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} € · ${fmt(totalALL/data.settings.fxUsd)} $</span></div>
     </div>
   `;
   bindCategorySelects();
@@ -2145,18 +2505,23 @@ function renderPortfolio() {
 
   function updatePortFieldsVisibility() {
     const catSel = document.getElementById("portForm").querySelector(".cat-select");
+    const macroSel = document.getElementById("portForm").querySelector(".macro-select");
     const val = (catSel.value || "").toLowerCase();
+    const macroVal = (macroSel ? macroSel.value : "").toLowerCase();
     const bondFields = document.getElementById("bondFields");
     const depositFields = document.getElementById("depositFields");
     const fundFields = document.getElementById("fundFields");
-    const isFund = val.includes("fondo");
-    const isSecurity = val.includes("obbligazione") || val.includes("deposito") || isFund;
-    bondFields.style.display = val.includes("obbligazione") ? "block" : "none";
+    const isBond = val.includes("obbligazione");
+    const isFund = val.includes("fond") || macroVal.includes("fond");
+    const isSecurity = isBond || val.includes("deposito") || isFund;
+    bondFields.style.display = isBond ? "block" : "none";
     depositFields.style.display = val.includes("deposito") ? "block" : "none";
     fundFields.style.display = isFund ? "block" : "none";
     document.getElementById("titleCodeField").style.display = isSecurity ? "block" : "none";
     document.getElementById("marketValueField").style.display = isFund ? "none" : "block";
     document.getElementById("maturityDateField").style.display = isFund ? "none" : "block";
+    document.getElementById("amountField").style.display = isFund ? "none" : "block";
+    document.getElementById("issuerField").style.display = (isFund || isBond) ? "block" : "none";
   }
   function updateFundInvestedPreview() {
     const price = Number(document.getElementById("fundPurchaseQuotaPrice").value) || 0;
@@ -2173,11 +2538,34 @@ function renderPortfolio() {
     document.getElementById("bondCouponRow").style.display = mode === "cedola" ? "flex" : "none";
     document.getElementById("bondPriceRow").style.display = mode === "finale" ? "flex" : "none";
   }
+  function updateBondDatesSync() {
+    const chk = document.getElementById("purchasedAtIssueChk");
+    const issueDateInput = document.getElementById("bondIssueDateInput");
+    const dateInput = document.getElementById("portForm").querySelector('[name="date"]');
+    if (chk.checked) { dateInput.value = issueDateInput.value; dateInput.readOnly = true; dateInput.style.opacity = "0.7"; }
+    else { dateInput.readOnly = false; dateInput.style.opacity = "1"; }
+    updateBondRemainingYearsPreview();
+  }
+  function updateBondRemainingYearsPreview() {
+    const dateInput = document.getElementById("portForm").querySelector('[name="date"]');
+    const maturityInput = document.getElementById("portForm").querySelector('[name="maturityDate"]');
+    const preview = document.getElementById("bondRemainingYearsPreview");
+    if (!dateInput.value || !maturityInput.value) { preview.value = ""; return; }
+    const years = (new Date(maturityInput.value) - new Date(dateInput.value)) / (365.25*86400000);
+    preview.value = years > 0 ? years.toFixed(2) + " anni" : "data non valida";
+  }
   const portCatSelectForFields = document.getElementById("portForm").querySelector(".cat-select");
+  const portMacroSelectForFields = document.getElementById("portForm").querySelector(".macro-select");
   portCatSelectForFields.addEventListener("change", updatePortFieldsVisibility);
+  if (portMacroSelectForFields) portMacroSelectForFields.addEventListener("change", updatePortFieldsVisibility);
   document.getElementById("bondModeSelect").addEventListener("change", updateBondModeVisibility);
+  document.getElementById("purchasedAtIssueChk").addEventListener("change", updateBondDatesSync);
+  document.getElementById("bondIssueDateInput").addEventListener("change", updateBondDatesSync);
+  document.getElementById("portForm").querySelector('[name="date"]').addEventListener("change", updateBondRemainingYearsPreview);
+  document.getElementById("portForm").querySelector('[name="maturityDate"]').addEventListener("change", updateBondRemainingYearsPreview);
   updatePortFieldsVisibility();
   updateBondModeVisibility();
+  updateBondDatesSync();
 
   const allocCtx = document.getElementById("allocCurrencyChart");
   if (window.allocCurrencyChartInstance) window.allocCurrencyChartInstance.destroy();
@@ -2203,6 +2591,15 @@ function renderPortfolio() {
     });
   }
 
+  document.getElementById("bulkEditBtn").addEventListener("click", ()=>{
+    const val = document.getElementById("bulkEditSelect").value;
+    if (!val) { alert("Scegli prima una categoria o macro-categoria."); return; }
+    const [t, ...rest] = val.split(":");
+    portfolioBulkEditFilter = { type: t, value: rest.join(":") };
+    renderPortfolio();
+  });
+  const bulkEditCloseBtn = document.getElementById("bulkEditClose");
+  if (bulkEditCloseBtn) bulkEditCloseBtn.addEventListener("click", ()=>{ portfolioBulkEditFilter = null; renderPortfolio(); });
   document.getElementById("portFilterSelect").addEventListener("change", ev=>{ portfolioTypeFilter = ev.target.value; renderPortfolio(); });
   document.getElementById("portMacroFilterSelect").addEventListener("change", ev=>{ portfolioMacroFilter = ev.target.value; renderPortfolio(); });
   document.getElementById("toggleCatManage-portfolio").addEventListener("click", ()=>{ catManagerOpen.portfolio = !catManagerOpen.portfolio; renderPortfolio(); });
@@ -2228,9 +2625,10 @@ function renderPortfolio() {
     const type = ev.target.querySelector(".cat-select").value;
     const macro = ev.target.querySelector(".macro-select").value;
     const typeLower = type.toLowerCase();
+    const macroLower = (macro||"").toLowerCase();
     const isBond = typeLower.includes("obbligazione");
     const isDeposit = typeLower.includes("deposito");
-    const isFund = typeLower.includes("fondo");
+    const isFund = typeLower.includes("fond") || macroLower.includes("fond");
     const date = f.get("date") || todayISO;
     const fundQuotaCount = isFund ? (Number(f.get("fundQuotaCount"))||0) : 0;
     const fundPurchasePrice = isFund ? (Number(f.get("fundPurchaseQuotaPrice"))||0) : 0;
@@ -2240,12 +2638,14 @@ function renderPortfolio() {
     const posObj = {
       id:posId, type, macro:macro||null, amount:nominal, currency:f.get("currency"),
       marketValue: isFund ? (fundQuotaCount*fundCurrentPrice) : (f.get("marketValue")? Number(f.get("marketValue")) : null),
-      date, maturityDate: f.get("maturityDate")||null, note:f.get("note")||""
+      date, maturityDate: f.get("maturityDate")||null, note:f.get("note")||"", issuer: f.get("issuer")||null
     };
     let placementCommissionAmt = 0;
     if (isBond) {
       posObj.bondMode = f.get("bondMode") || "cedola";
       posObj.bondYears = f.get("bondYears") || null;
+      posObj.issueDate = f.get("issueDate") || null;
+      posObj.purchasedAtIssue = f.get("purchasedAtIssue") === "on";
       posObj.couponRate = f.get("couponRate") ? Number(f.get("couponRate")) : null;
       posObj.couponFrequency = f.get("couponFrequency") || "annual";
       posObj.bondTaxRate = f.get("bondTaxRate") ? Number(f.get("bondTaxRate")) : 15;
@@ -2270,9 +2670,13 @@ function renderPortfolio() {
       posObj.fundQuotaCount = fundQuotaCount;
       posObj.fundPurchaseQuotaPrice = fundPurchasePrice;
       posObj.fundCurrentQuotaPrice = fundCurrentPrice;
-      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+      const existingFundLot = data.portfolio.find(p => p.fundName === posObj.fundName && p.securityCode);
+      posObj.securityCode = (f.get("securityCode")||"").trim() || (existingFundLot ? existingFundLot.securityCode : consumeNextSecurityCode());
     }
     data.portfolio.push(posObj);
+    if (isDebtType(posObj.type, posObj.macro)) {
+      createLiquidityAdjustment("Banca", Math.abs(nominal), date, `Debito ricevuto: ${type}`, posObj.id);
+    }
     if (placementCommissionAmt > 0) {
       const commId = uid();
       data.expenses.push({id:commId, date, amount:placementCommissionAmt, category:"Commissione collocamento titoli", macro:null, note:`Collocamento: ${type} ${posObj.securityCode||''}`.trim()});
@@ -2296,43 +2700,50 @@ function renderPortfolio() {
       const type = ev.target.querySelector(".cat-select").value;
       pos.type = type;
       pos.securityCode = f.get("securityCode") || pos.securityCode || null;
-      pos.amount = Number(f.get("amount"));
+      if (f.has("amount")) pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
+      if (f.has("issuer")) pos.issuer = f.get("issuer") || null;
       if (f.has("marketValue")) { const mv = f.get("marketValue"); pos.marketValue = mv ? Number(mv) : null; }
       pos.date = f.get("date") || pos.date;
       if (f.has("maturityDate")) pos.maturityDate = f.get("maturityDate") || null;
       pos.note = f.get("note") || "";
       if (f.has("fundName")) pos.fundName = f.get("fundName") || "";
-      if (f.has("couponRate")) { pos.couponRate = f.get("couponRate")?Number(f.get("couponRate")):null; pos.bondTaxRate = Number(f.get("bondTaxRate"))||15; pos.purchasePrice = Number(f.get("purchasePrice"))||100; pos.redemptionPrice = Number(f.get("redemptionPrice"))||100; pos.bondYears = f.get("bondYears")||null; }
+      if (f.has("couponRate")) { pos.couponRate = f.get("couponRate")?Number(f.get("couponRate")):null; pos.bondTaxRate = Number(f.get("bondTaxRate"))||15; pos.purchasePrice = Number(f.get("purchasePrice"))||100; pos.redemptionPrice = Number(f.get("redemptionPrice"))||100; pos.bondYears = f.get("bondYears")||null; pos.issueDate = f.get("issueDate")||null; pos.purchasedAtIssue = f.get("purchasedAtIssue")==="on"; }
       if (f.has("depositRate")) { pos.depositRate = f.get("depositRate")?Number(f.get("depositRate")):null; pos.depositTaxRate = Number(f.get("depositTaxRate"))||15; pos.depositYears = f.get("depositYears")||null; }
-      if (f.has("fundQuotaCount")) { pos.fundQuotaCount = Number(f.get("fundQuotaCount"))||0; pos.fundPurchaseQuotaPrice = Number(f.get("fundPurchaseQuotaPrice"))||0; if (!pos.fundCurrentQuotaPrice) pos.fundCurrentQuotaPrice = pos.fundPurchaseQuotaPrice; if (!pos.marketValue) pos.marketValue = pos.fundQuotaCount*pos.fundCurrentQuotaPrice; }
+      if (f.has("fundQuotaCount")) { pos.fundQuotaCount = Number(f.get("fundQuotaCount"))||0; pos.fundPurchaseQuotaPrice = Number(f.get("fundPurchaseQuotaPrice"))||0; pos.amount = pos.fundQuotaCount*pos.fundPurchaseQuotaPrice; if (!pos.fundCurrentQuotaPrice) pos.fundCurrentQuotaPrice = pos.fundPurchaseQuotaPrice; pos.marketValue = pos.fundQuotaCount*pos.fundCurrentQuotaPrice; }
       editingPortfolioId = null;
       saveData(); renderPortfolio();
     });
   });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort); saveData(); renderPortfolio(); });
+    btn.addEventListener("click", ()=>{
+      data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort);
+      removeLiquidityAdjustment(btn.dataset.delPort);
+      saveData(); renderPortfolio();
+    });
   });
-  document.querySelectorAll("[data-updatefundprice]").forEach(btn=>{
+  document.querySelectorAll("[data-updatefundname]").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
-      const posId = btn.dataset.updatefundprice;
-      const pos = data.portfolio.find(p=>p.id===posId);
-      const select = document.querySelector(`.raif-fund-select[data-fundpos="${posId}"]`);
-      const statusEl = document.querySelector(`[data-statusfor="${posId}"]`);
-      if (!pos || !select) return;
+      const fundName = btn.dataset.updatefundname;
+      const select = document.querySelector(`.raif-fund-select[data-fundname="${fundName}"]`);
+      const statusEl = document.querySelector(`[data-statusforname="${fundName}"]`);
+      const lots = data.portfolio.filter(p => (p.fundName||p.type)===fundName && isFundEntry(p));
+      if (!select || lots.length===0) return;
       statusEl.textContent = "Recupero prezzo da Raiffeisen Invest…";
       try {
         const { price, currency } = await fetchRaiffeisenFundPrice(select.value);
-        pos.fundCurrentQuotaPrice = price;
-        pos.marketValue = (pos.fundQuotaCount||0) * price;
-        if (!pos.priceHistory) pos.priceHistory = [];
-        const existingIdx = pos.priceHistory.findIndex(h=>h.date===todayISO);
-        if (existingIdx>=0) pos.priceHistory[existingIdx].price = price;
-        else pos.priceHistory.push({ date: todayISO, price });
-        pos.priceHistory.sort((a,b)=>a.date.localeCompare(b.date));
-        if (currency && currency !== pos.currency) statusEl.textContent = `Attenzione: il fondo quota in ${currency}, la tua posizione è in ${pos.currency} — controlla manualmente.`;
+        lots.forEach(pos => {
+          pos.fundCurrentQuotaPrice = price;
+          pos.marketValue = (pos.fundQuotaCount||0) * price;
+          if (!pos.priceHistory) pos.priceHistory = [];
+          const existingIdx = pos.priceHistory.findIndex(h=>h.date===todayISO);
+          if (existingIdx>=0) pos.priceHistory[existingIdx].price = price;
+          else pos.priceHistory.push({ date: todayISO, price });
+          pos.priceHistory.sort((a,b)=>a.date.localeCompare(b.date));
+        });
+        if (currency && currency !== lots[0].currency) statusEl.textContent = `Attenzione: il fondo quota in ${currency}, la posizione è in ${lots[0].currency} — controlla manualmente.`;
         saveData();
-        statusEl.textContent = `Aggiornato: ${fmt(price)} ${currency}/quota (${select.value}).`;
+        statusEl.textContent = `Aggiornato su ${lots.length} lotti: ${fmt(price)} ${currency}/quota (${select.value}).`;
         renderPortfolio();
       } catch (err) {
         statusEl.textContent = "Errore: " + String(err.message||err).slice(0,150);
@@ -2501,6 +2912,7 @@ function renderPortfolio() {
     ev.preventDefault();
     const f = new FormData(ev.target);
     const type = ev.target.querySelector(".cat-select").value;
+    const currency = f.get("currency") || "ALL";
     const fundName = (f.get("fundName")||"").trim();
     const baselineDate = f.get("baselineDate");
     const baselinePrice = f.get("baselinePrice");
@@ -2510,14 +2922,19 @@ function renderPortfolio() {
       const existing = data.portfolio.find(p => p.fundName === fundName && p.date === r.date && p.fundQuotaCount !== undefined);
       r.matchId = existing ? existing.id : null;
     });
-    fundImportPreview = { type, fundName, rows, errors, baselineDate: baselineDate||null, baselinePrice: baselinePrice?Number(baselinePrice):null };
+    fundImportPreview = { type, currency, fundName, rows, errors, baselineDate: baselineDate||null, baselinePrice: baselinePrice?Number(baselinePrice):null };
     renderPortfolio();
   });
   const fundImportCancelBtn = document.getElementById("fundImportCancel");
   if (fundImportCancelBtn) fundImportCancelBtn.addEventListener("click", ()=>{ fundImportPreview = null; renderPortfolio(); });
   const fundImportConfirmBtn = document.getElementById("fundImportConfirm");
   if (fundImportConfirmBtn) fundImportConfirmBtn.addEventListener("click", ()=>{
-    const { type, fundName, rows, baselineDate, baselinePrice } = fundImportPreview;
+    const { type, currency, fundName, rows, baselineDate, baselinePrice } = fundImportPreview;
+    const existingFundCode = (() => {
+      const anyLot = data.portfolio.find(p => (p.fundName===fundName) && p.securityCode);
+      return anyLot ? anyLot.securityCode : null;
+    })();
+    const sharedCode = existingFundCode || consumeNextSecurityCode();
     let firstId = null;
     let updated = 0, added = 0;
     rows.forEach((r,idx) => {
@@ -2529,6 +2946,8 @@ function renderPortfolio() {
           existing.fundPurchaseQuotaPrice = r.unitPrice;
           existing.fundQuotaCount = r.units;
           existing.type = type;
+          existing.currency = currency || existing.currency;
+          if (!existing.securityCode) existing.securityCode = sharedCode;
           if (!existing.priceHistory) existing.priceHistory = [];
           const hIdx = existing.priceHistory.findIndex(h=>h.date===r.date);
           if (hIdx>=0) existing.priceHistory[hIdx].price = r.unitPrice; else existing.priceHistory.push({date:r.date, price:r.unitPrice});
@@ -2540,10 +2959,10 @@ function renderPortfolio() {
       const id = uid();
       if (idx===0) firstId = id;
       data.portfolio.push({
-        id, type, fundName, amount: r.amount, currency: "ALL", marketValue: r.amount,
+        id, type, fundName, amount: r.amount, currency: currency || "ALL", marketValue: r.amount,
         date: r.date, maturityDate: null, note: "Importato da storico",
         fundQuotaCount: r.units, fundPurchaseQuotaPrice: r.unitPrice, fundCurrentQuotaPrice: r.unitPrice,
-        securityCode: consumeNextSecurityCode(), priceHistory: [{date: r.date, price: r.unitPrice}]
+        securityCode: sharedCode, priceHistory: [{date: r.date, price: r.unitPrice}]
       });
       added++;
     });
@@ -2709,6 +3128,253 @@ function categoryManageBlock(groupKey, title) {
     </div>`;
 }
 
+function creditCardSettingsBlock() {
+  return data.paymentTypes.filter(t=>t!=="Banca"&&t!=="Cash").map(t=>{
+    const cc = data.creditCardSettings[t] || {};
+    return `<div style="border:1px solid #2E4159; border-radius:6px; padding:12px; margin-bottom:10px;">
+      <label style="color:#C9A227;">${t}</label>
+      <form class="entry" data-ccform="${t}">
+        <div class="row2">
+          <div><label>Banca emittente</label><input type="text" name="bank" value="${cc.bank||''}" placeholder="es. Raiffeisen Bank"></div>
+          <div><label>Valuta</label><select name="currency"><option ${(cc.currency||'ALL')==='ALL'?'selected':''}>ALL</option><option ${cc.currency==='EUR'?'selected':''}>EUR</option><option ${cc.currency==='USD'?'selected':''}>USD</option></select></div>
+        </div>
+        <div class="row2">
+          <div><label>Limite di credito</label><input type="number" step="0.0001" name="limit" value="${cc.limit||''}"></div>
+          <div><label>Data di scadenza carta</label><input type="date" name="expiryDate" value="${cc.expiryDate||''}"></div>
+        </div>
+        <div class="row2">
+          <div><label>Interesse annuo (%)</label><input type="number" step="0.0001" name="interestRate" value="${cc.interestRate!=null?cc.interestRate:''}" placeholder="es. 20"></div>
+          <div><label>Numero di rate</label><input type="number" name="installments" value="${cc.installments||3}"></div>
+        </div>
+        <div><label>Giorno massimo di pagamento (del mese successivo)</label><input type="number" min="1" max="31" name="dueDay" value="${cc.dueDay||15}"></div>
+        <div class="row2">
+          <div><label>Limite di prelievo contante</label><input type="number" step="0.0001" name="cashLimit" value="${cc.cashLimit||''}"></div>
+          <div><label>Fonte prelievo</label><select name="cashSource"><option value="cash" ${cc.cashSource==='cash'?'selected':''}>Cash</option><option value="banca" ${(cc.cashSource||'banca')==='banca'?'selected':''}>Banca</option></select></div>
+        </div>
+        <div class="row2">
+          <div><label>Commissione prelievo</label><input type="number" step="0.0001" name="cashFeeValue" value="${cc.cashFeeValue||0}"></div>
+          <div><label>Tipo commissione</label><select name="cashFeeType"><option value="percent" ${(cc.cashFeeType||'percent')==='percent'?'selected':''}>%</option><option value="fixed" ${cc.cashFeeType==='fixed'?'selected':''}>Fissa</option></select></div>
+        </div>
+        <button class="primary" type="submit">Salva ${t}</button>
+      </form>
+    </div>`;
+  }).join('');
+}
+
+function renderDebts() {
+  document.getElementById("headerTitle").textContent = "Debiti";
+  const debtsSummary = computeDebtsSummary();
+  const ccSummary = computeCreditCardSummary();
+  const debtOrCcFilter = c => isDebtType(c) || isCreditCardType(c);
+  const debtPositions = data.portfolio.filter(p => (isDebtType(p.type, p.macro) || isCreditCardType(p.type)) && p.date);
+
+  document.getElementById("main").innerHTML = `
+    <div class="card">
+      <h3>Nuova voce (debito o carta di credito)</h3>
+      <div class="subtle">Solo passività: debiti/prestiti e carte di credito. Per asset (fondi, obbligazioni, depositi, Banca/Cash) usa la scheda Patrimonio.</div>
+      <form class="entry" id="debtForm">
+        <div><label>Tipo</label>${categorySelect("portfolio", null, debtOrCcFilter)}</div>
+        <div class="row2">
+          <div><label>Importo del debito</label><input type="number" step="0.0001" name="amount" placeholder="es. 100000" required></div>
+          <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
+        </div>
+        <div><label>Data di partenza</label><input type="date" name="date" value="${todayISO}"></div>
+        <div><label>Nota</label><input type="text" name="note" placeholder="es. prestito auto"></div>
+        <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
+          <label style="color:#C9A227;">Piano di ammortamento (se è un prestito/mutuo, non una carta)</label>
+          <div class="row2">
+            <div><label>Banca emittente</label><input type="text" name="issuer" placeholder="es. Raiffeisen Bank"></div>
+            <div><label>Tipo pagamento</label><select name="amortizationType"><option value="francese">Alla francese (rata costante)</option><option value="italiana">All'italiana (capitale costante)</option></select></div>
+          </div>
+          <div class="row2">
+            <div><label>Mesi totali</label><input type="number" name="termMonths" placeholder="es. 60"></div>
+            <div><label>Interesse annuo (%)</label><input type="number" step="0.0001" name="loanInterestRate" placeholder="es. 7"></div>
+          </div>
+          <div><label>Giorno del mese pagamento rate</label><input type="number" min="1" max="31" name="paymentDay" value="1"></div>
+          <div class="row2">
+            <div><label>Commissione</label><input type="number" step="0.0001" name="commissionValue" placeholder="0"></div>
+            <div><label>Tipo commissione</label><select name="commissionType"><option value="percent">%</option><option value="fixed">Fissa</option></select></div>
+          </div>
+          <div class="row2">
+            <div><label>Assicurazione richiesta (valore)</label><input type="number" step="0.0001" name="insuranceValue" placeholder="0"></div>
+            <div><label>% del disborso</label><input type="number" step="0.0001" name="disbursementPct" value="100" placeholder="es. 95"></div>
+          </div>
+          <div><label>Fee pagamento anticipato (%)</label><input type="number" step="0.0001" name="earlyRepaymentFeePct" placeholder="0"></div>
+        </div>
+        <button class="primary" type="submit">Aggiungi</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Voci registrate</h3>
+      ${debtPositions.length===0 ? '<div class="empty">Nessun debito o carta registrati.</div>' : debtPositions.map(p=>{
+        if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
+        const nextInst = p.schedule ? p.schedule.find(i=>!i.processed) : null;
+        const remaining = p.schedule ? p.schedule.filter(i=>!i.processed).reduce((s,i)=>s+i.capital,0) : null;
+        return `<div class="list-item" style="flex-direction:column; align-items:stretch;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="li-main"><span class="li-cat">${p.type}${p.issuer?' · '+p.issuer:''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
+            <div style="display:flex;align-items:center;">
+              <span class="li-amt ${p.amount<0?'down':''}">${fmt(p.amount)} ${p.currency}</span>
+              <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+              <button class="li-del" data-del-port="${p.id}">✕</button>
+            </div>
+          </div>
+          ${p.schedule ? `<div class="subtle" style="margin-top:4px;">${p.amortizationType==='italiana'?"All'italiana":'Alla francese'} · ${p.termMonths} mesi · capitale residuo: ${fmt(remaining)} ${p.currency}${nextInst?' · prossima rata '+nextInst.dueDate+': '+fmt(nextInst.capital+nextInst.interest)+' '+p.currency:' · piano completato'}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+    ${debtsSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo debiti</h3>
+      <div class="subtle">Esclusi dal totale del Patrimonio — solo informativo. Aggiungere un debito accredita automaticamente Banca con l'intero importo.</div>
+      ${debtsSummary.map(g=>`<div class="stat-row"><span class="label">${g.name}</span><span class="val down">${fmt(g.balanceALL)} ALL</span></div>`).join('')}
+      <div class="stat-row" style="font-weight:600; padding-top:6px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Totale debiti</span><span class="val down">${fmtDisplay(debtsSummary.reduce((s,g)=>s+g.balanceALL,0))}</span></div>
+    </div>` : ''}
+    ${ccSummary.length>0 ? `<div class="card">
+      <h3>Carte di credito — saldo</h3>
+      <div class="subtle">Il saldo usato riduce il patrimonio totale (è debito reale). Paga con "Trasferimento liquidità" in Patrimonio (Banca → carta).</div>
+      ${ccSummary.map(g=>`<div class="stat-row"><span class="label">${g.name}</span><span class="val ${g.balanceALL>=0?'':'down'}">${fmt(g.balanceALL)} ALL</span></div>`).join('')}
+      ${(data.creditCardDebts||[]).length>0 ? `<div style="margin-top:10px; padding-top:10px; border-top:1px solid #24374F;">
+        <div class="subtle" style="margin-bottom:6px;">Piano rate suggerito (non pagate in automatico)</div>
+        ${[...data.creditCardDebts].sort((a,b)=>b.billingMonth.localeCompare(a.billingMonth)).slice(0,3).map(d=>`
+          <div class="subtle" style="margin:6px 0 2px;">${d.paymentType} · utilizzo di ${d.billingMonth} non ripagato: ${fmt(d.principal)} ALL + ${fmt(d.totalInterest)} ALL interessi = ${fmt(d.principal+d.totalInterest)} ALL</div>
+          ${d.schedule.map(i=>`<div class="stat-row"><span class="label">Rata sugg. entro ${i.dueDate}</span><span class="val">${fmt(i.capital+i.interest)} ALL (capitale ${fmt(i.capital)}, interessi ${fmt(i.interest)})</span></div>`).join('')}
+        `).join('')}
+      </div>` : ''}
+    </div>` : ''}
+    <div class="card">
+      <h3>Carte di credito — impostazioni</h3>
+      <div class="subtle">Configura un metodo di pagamento come carta di credito. Ogni mese, se non ripaghi entro il giorno indicato, l'app calcola le rate (capitale + interessi) e somma gli interessi al saldo usato.</div>
+      ${creditCardSettingsBlock()}
+    </div>
+  `;
+  bindCategorySelects();
+
+  document.getElementById("debtForm").addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const type = ev.target.querySelector(".cat-select").value;
+    const macro = (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type]) || null;
+    const amount = Number(f.get("amount"));
+    const currency = f.get("currency")||"ALL";
+    const date = f.get("date") || todayISO;
+    const posId = uid();
+    const isLoan = isDebtType(type, macro) && !isCreditCardType(type);
+    const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: f.get("issuer")||null };
+
+    const termMonths = Number(f.get("termMonths"))||0;
+    if (isLoan && termMonths > 0) {
+      const loanInterestRate = Number(f.get("loanInterestRate"))||0;
+      const amortizationType = f.get("amortizationType")||"francese";
+      const paymentDay = Number(f.get("paymentDay"))||1;
+      const commissionType = f.get("commissionType")||"percent";
+      const commissionValue = Number(f.get("commissionValue"))||0;
+      const insuranceValue = Number(f.get("insuranceValue"))||0;
+      const disbursementPct = Number(f.get("disbursementPct"))||100;
+      const earlyRepaymentFeePct = Number(f.get("earlyRepaymentFeePct"))||0;
+
+      posObj.loanInterestRate = loanInterestRate;
+      posObj.amortizationType = amortizationType;
+      posObj.paymentDay = paymentDay;
+      posObj.commissionType = commissionType;
+      posObj.commissionValue = commissionValue;
+      posObj.insuranceValue = insuranceValue;
+      posObj.disbursementPct = disbursementPct;
+      posObj.earlyRepaymentFeePct = earlyRepaymentFeePct;
+      posObj.termMonths = termMonths;
+
+      const daysInStartMonth = new Date(new Date(date).getFullYear(), new Date(date).getMonth()+1, 0).getDate();
+      const firstDueDate = localDateStr(new Date(new Date(date).getFullYear(), new Date(date).getMonth() + (new Date(date).getDate()>paymentDay?1:0), Math.min(paymentDay, daysInStartMonth)));
+      posObj.schedule = computeLoanSchedule(amount, loanInterestRate, termMonths, amortizationType, firstDueDate);
+      posObj.maturityDate = posObj.schedule[posObj.schedule.length-1].dueDate;
+
+      const commissionAmt = computeCommissionAmount(commissionType, commissionValue, amount);
+      const disbursed = amount * disbursementPct/100;
+      data.portfolio.push(posObj);
+      createLiquidityAdjustment("Banca", disbursed, date, `Debito ricevuto: ${type}`, posId);
+      if (commissionAmt > 0) {
+        const commId = uid();
+        if (!data.categories.expenses.includes("Commissione prestito")) data.categories.expenses.push("Commissione prestito");
+        data.expenses.push({ id: commId, date, amount: commissionAmt, category: "Commissione prestito", paymentType: null, note: type });
+        createLiquidityAdjustment("Banca", -commissionAmt, date, `Commissione prestito: ${type}`, commId);
+      }
+      if (insuranceValue > 0) {
+        const insId = uid();
+        if (!data.categories.expenses.includes("Assicurazione prestito")) data.categories.expenses.push("Assicurazione prestito");
+        data.expenses.push({ id: insId, date, amount: insuranceValue, category: "Assicurazione prestito", paymentType: null, note: type });
+        createLiquidityAdjustment("Banca", -insuranceValue, date, `Assicurazione prestito: ${type}`, insId);
+      }
+    } else {
+      data.portfolio.push(posObj);
+      if (isLoan) createLiquidityAdjustment("Banca", Math.abs(amount), date, `Debito ricevuto: ${type}`, posId);
+    }
+    saveData(); renderDebts();
+  });
+  document.querySelectorAll("[data-editport]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingPortfolioId = btn.dataset.editport; renderDebts(); });
+  });
+  document.querySelectorAll("[data-editport-cancel]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingPortfolioId = null; renderDebts(); });
+  });
+  document.querySelectorAll("[data-editportform]").forEach(form=>{
+    form.addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const id = form.dataset.editportform;
+      const pos = data.portfolio.find(p=>p.id===id);
+      if (!pos) return;
+      const f = new FormData(ev.target);
+      pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("amount")) pos.amount = Number(f.get("amount"));
+      pos.currency = f.get("currency");
+      pos.date = f.get("date") || pos.date;
+      pos.note = f.get("note") || "";
+      editingPortfolioId = null;
+      saveData(); renderDebts();
+    });
+  });
+  document.querySelectorAll("[data-del-port]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      data.portfolio = data.portfolio.filter(p=>p.id!==btn.dataset.delPort);
+      removeLiquidityAdjustment(btn.dataset.delPort);
+      saveData(); renderDebts();
+    });
+  });
+  document.querySelectorAll("[data-ccform]").forEach(form=>{
+    form.addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const t = form.dataset.ccform;
+      const f = new FormData(ev.target);
+      data.creditCardSettings[t] = {
+        bank: f.get("bank")||"", currency: f.get("currency")||"ALL", limit: Number(f.get("limit"))||0,
+        expiryDate: f.get("expiryDate")||null, interestRate: Number(f.get("interestRate"))||0,
+        installments: Number(f.get("installments"))||3, dueDay: Number(f.get("dueDay"))||15,
+        cashLimit: Number(f.get("cashLimit"))||0, cashSource: f.get("cashSource")||"banca",
+        cashFeeType: f.get("cashFeeType")||"percent", cashFeeValue: Number(f.get("cashFeeValue"))||0
+      };
+      saveData();
+      alert(`Impostazioni "${t}" salvate.`);
+      renderDebts();
+    });
+  });
+}
+
+function paymentTypesManageBlock() {
+  const rows = data.paymentTypes.map(t => `<div class="cat-row" data-origname="${t}">
+      <input type="text" class="paytype-name-input" value="${t}">
+      <button data-paytypedel="${t}">✕</button>
+    </div>`).join('');
+  return `
+    <div style="margin-bottom:18px;">
+      <label>Metodi di pagamento</label>
+      <div class="subtle">Ogni metodo corrisponde a una voce omonima in Patrimonio (Banca, Cash, ecc.) dove si accumula il saldo. Rinomina, elimina o aggiungine di nuovi.</div>
+      <div class="cat-rows">${rows}</div>
+      <div class="cat-add-row" style="margin-top:8px;">
+        <input type="text" placeholder="Nuovo metodo (es. PayPal)" id="paytypeInput">
+        <button class="secondary" type="button" id="paytypeAdd">Aggiungi</button>
+      </div>
+      <button class="primary" type="button" id="paytypeSave" style="margin-top:8px;">Salva modifiche ai metodi</button>
+    </div>`;
+}
+
 function recurringBlock(groupKey, title) {
   const rules = data.recurring[groupKey] || [];
   const bondOptionsRec = groupKey==="income" ? data.portfolio.filter(p=>p.maturityDate).map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''} (scad. ${p.maturityDate})</option>`).join('') : '';
@@ -2726,7 +3392,7 @@ function recurringBlock(groupKey, title) {
         </div>
         <div class="row2">
           <div><label>Da (mese)</label><input type="month" name="startMonth" value="${r.startMonth||thisMonth}"></div>
-          <div><label>Metodo</label><select name="paymentType"><option value="Banca" ${(r.paymentType||'Banca')==='Banca'?'selected':''}>Banca</option><option value="Cash" ${r.paymentType==='Cash'?'selected':''}>Cash</option><option value="" ${r.paymentType===''?'selected':''}>— non tracciare —</option></select></div>
+          <div><label>Metodo</label>${paymentTypeSelect(r.paymentType||"Banca")}</div>
         </div>
         <div><label>Nota</label><input type="text" name="note" value="${r.note||''}"></div>
         <div class="row2">
@@ -2758,7 +3424,7 @@ function recurringBlock(groupKey, title) {
       </div>
       <div class="row2">
         <div><label>Da (mese)</label><input type="month" name="startMonth" value="${thisMonth}"></div>
-        <div><label>Metodo</label><select name="paymentType"><option value="Banca">Banca</option><option value="Cash">Cash</option><option value="">— non tracciare —</option></select></div>
+        <div><label>Metodo</label>${paymentTypeSelect("Banca")}</div>
       </div>
       <div><label>Nota</label><input type="text" name="note"></div>
       <button class="secondary" type="submit">Aggiungi ricorrenza</button>
@@ -2783,6 +3449,34 @@ function recurringBlockPortfolio(title) {
           <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="${r.dayOfMonth}"></div>
           <div><label>Da (mese)</label><input type="month" name="startMonth" value="${r.startMonth||thisMonth}"></div>
         </div>
+        <div><label>Pagato con (scala da Banca/Cash quando generato)</label>${paymentTypeSelect(r.paymentType)}</div>
+        <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
+          <label style="color:#C9A227;">Se è un fondo (opzionale)</label>
+          <div><label>Nome fondo</label><input type="text" name="fundName" value="${r.fundName||''}" placeholder="es. Raiffeisen Pension"></div>
+          <div><label>Prezzo per quota di riferimento (per stimare le quote ogni mese)</label><input type="number" step="0.0001" name="fundRefPrice" value="${r.fundRefPrice||''}" placeholder="es. 2350.00"></div>
+        </div>
+        <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
+          <label style="color:#C9A227;">Se è un'obbligazione (opzionale)</label>
+          <div class="row2">
+            <div><label>Modalità</label><select name="bondMode"><option value="cedola" ${(r.bondMode||'cedola')==='cedola'?'selected':''}>Con cedola</option><option value="finale" ${r.bondMode==='finale'?'selected':''}>Liquidazione finale</option></select></div>
+            <div><label>Cedola annua (%)</label><input type="number" step="0.0001" name="couponRate" value="${r.couponRate||''}" placeholder="es. 4.5"></div>
+          </div>
+          <div class="row2">
+            <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="bondTaxRate" value="${r.bondTaxRate||15}"></div>
+            <div><label>Durata fino a scadenza (anni)</label><input type="number" name="bondYears" value="${r.bondYears||''}" placeholder="es. 7"></div>
+          </div>
+        </div>
+        <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
+          <label style="color:#C9A227;">Se è un deposito (opzionale)</label>
+          <div class="row2">
+            <div><label>Modalità</label><select name="depositMode"><option value="cedola" ${(r.depositMode||'cedola')==='cedola'?'selected':''}>Con cedola</option><option value="finale" ${r.depositMode==='finale'?'selected':''}>Pagamento finale</option></select></div>
+            <div><label>Tasso annuo (%)</label><input type="number" step="0.0001" name="depositRate" value="${r.depositRate||''}" placeholder="es. 3.2"></div>
+          </div>
+          <div class="row2">
+            <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="depositTaxRate" value="${r.depositTaxRate||15}"></div>
+            <div><label>Durata (anni)</label><input type="number" name="depositYears" value="${r.depositYears||''}" placeholder="es. 3"></div>
+          </div>
+        </div>
         <div><label>Nota</label><input type="text" name="note" value="${r.note||''}"></div>
         <div class="row2">
           <button class="primary" type="submit">Salva</button>
@@ -2791,7 +3485,7 @@ function recurringBlockPortfolio(title) {
       </form>`;
     }
     return `<div class="recurring-row">
-      <span class="rn">${r.type} · ${fmt(r.amount)} ${r.currency||"ALL"} · ${freqLabel(r.frequency)} · giorno ${r.dayOfMonth}${r.note?' · '+r.note:''}</span>
+      <span class="rn">${r.type}${r.fundName?' ('+r.fundName+')':''} · ${fmt(r.amount)} ${r.currency||"ALL"} · ${freqLabel(r.frequency)} · giorno ${r.dayOfMonth}${r.note?' · '+r.note:''}</span>
       <button data-recedit-open="portfolio|${r.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;">✎</button>
       <button data-recdel="portfolio|${r.id}" style="background:none;border:none;color:#8B3A2F;cursor:pointer;">✕</button>
     </div>`;
@@ -2812,6 +3506,34 @@ function recurringBlockPortfolio(title) {
       <div class="row2">
         <div><label>Giorno del mese</label><input type="number" name="dayOfMonth" min="1" max="31" value="1"></div>
         <div><label>Da (mese)</label><input type="month" name="startMonth" value="${thisMonth}"></div>
+      </div>
+      <div><label>Pagato con (scala da Banca/Cash quando generato)</label>${paymentTypeSelect("Banca")}</div>
+      <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
+        <label style="color:#C9A227;">Se è un fondo (opzionale)</label>
+        <div><label>Nome fondo</label><input type="text" name="fundName" placeholder="es. Raiffeisen Pension"></div>
+        <div><label>Prezzo per quota di riferimento (per stimare le quote ogni mese)</label><input type="number" step="0.0001" name="fundRefPrice" placeholder="es. 2350.00"></div>
+      </div>
+      <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
+        <label style="color:#C9A227;">Se è un'obbligazione (opzionale)</label>
+        <div class="row2">
+          <div><label>Modalità</label><select name="bondMode"><option value="cedola">Con cedola</option><option value="finale">Liquidazione finale</option></select></div>
+          <div><label>Cedola annua (%)</label><input type="number" step="0.0001" name="couponRate" placeholder="es. 4.5"></div>
+        </div>
+        <div class="row2">
+          <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="bondTaxRate" value="15"></div>
+          <div><label>Durata fino a scadenza (anni)</label><input type="number" name="bondYears" placeholder="es. 7"></div>
+        </div>
+      </div>
+      <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
+        <label style="color:#C9A227;">Se è un deposito (opzionale)</label>
+        <div class="row2">
+          <div><label>Modalità</label><select name="depositMode"><option value="cedola">Con cedola</option><option value="finale">Pagamento finale</option></select></div>
+          <div><label>Tasso annuo (%)</label><input type="number" step="0.0001" name="depositRate" placeholder="es. 3.2"></div>
+        </div>
+        <div class="row2">
+          <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="depositTaxRate" value="15"></div>
+          <div><label>Durata (anni)</label><input type="number" name="depositYears" placeholder="es. 3"></div>
+        </div>
       </div>
       <div><label>Nota</label><input type="text" name="note" placeholder="es. contributo mensile fondo pensione"></div>
       <button class="secondary" type="submit">Aggiungi versamento ricorrente</button>
@@ -3448,6 +4170,10 @@ function renderSettings() {
       })() : ''}
     </div>
     <div class="card">
+      <h3>Metodi di pagamento</h3>
+      ${paymentTypesManageBlock()}
+    </div>
+    <div class="card">
       <h3>Gestisci categorie</h3>
       <div class="subtle">Modifica nome e budget annuo di ciascuna voce, elimina quelle che non ti servono più, o aggiungine di nuove — indipendentemente per Reddito, Spese e Patrimonio. Ricorda di premere "Salva modifiche" dopo aver cambiato un nome.</div>
       ${categoryManageBlock("income", "Reddito")}
@@ -3544,6 +4270,46 @@ function renderSettings() {
     }
   });
 
+  const paytypeAddBtn = document.getElementById("paytypeAdd");
+  if (paytypeAddBtn) paytypeAddBtn.addEventListener("click", ()=>{
+    const input = document.getElementById("paytypeInput");
+    const val = input.value.trim();
+    if (val && !data.paymentTypes.includes(val)) { data.paymentTypes.push(val); saveData(); renderSettings(); }
+  });
+  document.querySelectorAll("[data-paytypedel]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const name = btn.dataset.paytypedel;
+      if (!confirm(`Eliminare il metodo "${name}"? Le voci già registrate manterranno il nome come testo libero.`)) return;
+      data.paymentTypes = data.paymentTypes.filter(t=>t!==name);
+      saveData(); renderSettings();
+    });
+  });
+  const paytypeSaveBtn = document.getElementById("paytypeSave");
+  if (paytypeSaveBtn) paytypeSaveBtn.addEventListener("click", ()=>{
+    const rows = document.querySelectorAll(".paytype-name-input");
+    const renames = [];
+    rows.forEach(input => {
+      const row = input.closest(".cat-row");
+      const oldName = row.dataset.origname;
+      const newName = input.value.trim();
+      if (newName && newName !== oldName) renames.push({oldName, newName});
+    });
+    renames.forEach(({oldName, newName}) => {
+      const idx = data.paymentTypes.indexOf(oldName);
+      if (idx>=0) data.paymentTypes[idx] = newName;
+      data.income.forEach(e=>{ if (e.paymentType===oldName) e.paymentType = newName; });
+      data.expenses.forEach(e=>{ if (e.paymentType===oldName) e.paymentType = newName; });
+      data.portfolio.forEach(p=>{ if (p.type===oldName) p.type = newName; if (p.linkedTxnId) return; });
+      (data.recurring.income||[]).forEach(r=>{ if (r.paymentType===oldName) r.paymentType = newName; });
+      (data.recurring.expenses||[]).forEach(r=>{ if (r.paymentType===oldName) r.paymentType = newName; });
+      if (data.categories.portfolio.includes(oldName)) data.categories.portfolio = data.categories.portfolio.map(c=>c===oldName?newName:c);
+      if (data.creditCardSettings[oldName]) { data.creditCardSettings[newName] = data.creditCardSettings[oldName]; delete data.creditCardSettings[oldName]; }
+    });
+    saveData();
+    alert("Metodi di pagamento aggiornati.");
+    renderSettings();
+  });
+
   document.getElementById("fetchBoaBtn").addEventListener("click", async ()=>{
     const statusEl = document.getElementById("boaFetchStatus");
     statusEl.textContent = "Recupero cambio dalla Banca d'Albania…";
@@ -3590,7 +4356,11 @@ function renderSettings() {
       const catValue = form.querySelector(".cat-select").value;
       let rule;
       if (group === "portfolio") {
-        rule = { id: uid(), type: catValue, amount: Number(f.get("amount")), currency: f.get("currency")||"ALL", frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, note: f.get("note")||"" };
+        rule = { id: uid(), type: catValue, amount: Number(f.get("amount")), currency: f.get("currency")||"ALL", frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, note: f.get("note")||"",
+          fundName: f.get("fundName")||"", fundRefPrice: f.get("fundRefPrice")?Number(f.get("fundRefPrice")):null,
+          bondMode: f.get("bondMode")||"cedola", couponRate: f.get("couponRate")?Number(f.get("couponRate")):null, bondTaxRate: f.get("bondTaxRate")?Number(f.get("bondTaxRate")):15, bondYears: f.get("bondYears")||null,
+          depositMode: f.get("depositMode")||"cedola", depositRate: f.get("depositRate")?Number(f.get("depositRate")):null, depositTaxRate: f.get("depositTaxRate")?Number(f.get("depositTaxRate")):15, depositYears: f.get("depositYears")||null,
+          paymentType: f.get("paymentType")||"" };
       } else {
         rule = { id: uid(), category: catValue, amount: Number(f.get("amount")), frequency: f.get("frequency")||"monthly", startMonth: f.get("startMonth")||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, paymentType: f.get("paymentType")||"", linkedBondId: f.get("linkedBondId")||null, note: f.get("note")||"" };
       }
@@ -3629,7 +4399,13 @@ function renderSettings() {
         rule.dayOfMonth = Number(f.get("dayOfMonth"))||1;
         rule.startMonth = f.get("startMonth")||thisMonth;
         rule.note = f.get("note")||"";
-        if (group === "portfolio") { rule.type = catValue; rule.currency = f.get("currency")||"ALL"; }
+        if (group === "portfolio") {
+          rule.type = catValue; rule.currency = f.get("currency")||"ALL";
+          rule.fundName = f.get("fundName")||""; rule.fundRefPrice = f.get("fundRefPrice")?Number(f.get("fundRefPrice")):null;
+          rule.bondMode = f.get("bondMode")||"cedola"; rule.couponRate = f.get("couponRate")?Number(f.get("couponRate")):null; rule.bondTaxRate = f.get("bondTaxRate")?Number(f.get("bondTaxRate")):15; rule.bondYears = f.get("bondYears")||null;
+          rule.depositMode = f.get("depositMode")||"cedola"; rule.depositRate = f.get("depositRate")?Number(f.get("depositRate")):null; rule.depositTaxRate = f.get("depositTaxRate")?Number(f.get("depositTaxRate")):15; rule.depositYears = f.get("depositYears")||null;
+          rule.paymentType = f.get("paymentType")||"";
+        }
         else { rule.category = catValue; rule.paymentType = f.get("paymentType")||""; rule.linkedBondId = f.get("linkedBondId")||null; }
       }
       editingRecurring = null;
@@ -3638,12 +4414,21 @@ function renderSettings() {
   });
 }
 
-const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, budget: renderBudget, drive: renderDrive, settings: renderSettings };
+const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, debts: renderDebts, budget: renderBudget, drive: renderDrive, settings: renderSettings };
 function switchTab(tab) {
   document.querySelectorAll("nav.tabs button").forEach(b=> b.classList.toggle("active", b.dataset.tab===tab));
   RENDERERS[tab]();
 }
 document.querySelectorAll("nav.tabs button").forEach(btn=>{ btn.addEventListener("click", ()=> switchTab(btn.dataset.tab)); });
+
+const displayCurrencySelectEl = document.getElementById("displayCurrencySelect");
+displayCurrencySelectEl.value = data.settings.displayCurrency || "ALL";
+displayCurrencySelectEl.addEventListener("change", ()=>{
+  data.settings.displayCurrency = displayCurrencySelectEl.value;
+  saveData();
+  const activeBtn = document.querySelector("nav.tabs button.active");
+  if (activeBtn) RENDERERS[activeBtn.dataset.tab]();
+});
 
 async function tryUnlock() {
   const input = document.getElementById("lockPinInput");
