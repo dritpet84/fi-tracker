@@ -108,7 +108,7 @@ nav.tabs button.active { color:#C9A227; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.53</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v1.70</span></div>
     <div class="title" id="headerTitle">Panoramica</div>
     <div id="syncBadge" style="font-size:10px;color:#8FA3BF;margin-top:4px;font-family:'IBM Plex Mono',monospace;"></div>
     <select id="displayCurrencySelect" style="position:absolute; top:0; right:0; width:auto; padding:5px 8px; font-size:11px; background:#16233B; border:1px solid #2E4159; color:#EDE6D6; border-radius:5px;">
@@ -123,6 +123,7 @@ nav.tabs button.active { color:#C9A227; }
     <button data-tab="income"><span class="ic">＋</span>Reddito</button>
     <button data-tab="expenses"><span class="ic">－</span>Spese</button>
     <button data-tab="portfolio"><span class="ic">▤</span>Patrimonio</button>
+    <button data-tab="assets"><span class="ic">📈</span>Assets</button>
     <button data-tab="debts"><span class="ic">⚠</span>Debiti</button>
     <button data-tab="budget"><span class="ic">◧</span>Budget</button>
     <button data-tab="drive"><span class="ic">☁</span>Drive</button>
@@ -134,10 +135,18 @@ nav.tabs button.active { color:#C9A227; }
 // ---------- Constants ----------
 const thisYearNum = new Date().getFullYear();
 const STORE_KEY = "fiTrackerData_v1";
+const AUTO_MANAGED_INCOME_CATEGORIES = ["Cedola e le info", "Interesse deposito", "Capital gain obbligazioni", "Capital gain fondi", "Affitto immobile", "Vendita immobile", "Dividendo"];
+const AUTO_MANAGED_EXPENSE_CATEGORIES = ["Commissione collocamento titoli", "Commissione disbursement cedola", "Commissione vendita titoli", "Commissione titoli custodia", "Tassa immobile", "Commissione agenzia affitto", "Tassazione plusvalenza immobile", "Interessi carta di credito", "Interessi prestiti", "Commissione prestito", "Assicurazione prestito", "Tassazione capital gain fondi", "Tassazione dividendi"];
+function isAutoManagedIncomeCategory(cat) {
+  return AUTO_MANAGED_INCOME_CATEGORIES.includes(cat);
+}
+function isAutoManagedExpenseCategory(cat) {
+  return AUTO_MANAGED_EXPENSE_CATEGORIES.includes(cat) || cat.startsWith("Tassa titoli obbligazioni") || cat.startsWith("Tassa depositi");
+}
 const DEFAULT_CATEGORIES = {
   income: ["Reddito principale","Interessi","Altro"],
   expenses: ["Palestra","Assicurazione auto","Tasse auto","Caffè ufficio","Bar","Acqua","Luce","Telefono","Riparazioni auto","Tagliando auto","Supermercato","Gite/concerti","Vestiti","Vacanze","Ristoranti/uscite","Arredamento casa","Auto (acquisto)","Altro"],
-  portfolio: ["Banca","Cash","Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Prestito/Debito","Altro"]
+  portfolio: ["Banca","Cash","Fondo pensione","Obbligazione statale 7Y","Obbligazione statale 10Y","Obbligazione statale 15Y","Obbligazione statale 20Y","Deposito","Fondo azionario","Prestito/Debito","Immobile","Commodity","Crypto","Azione","Derivato","Altro"]
 };
 const DEFAULT_DATA = {
   settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL" },
@@ -153,7 +162,8 @@ const DEFAULT_DATA = {
   fxHistory: [],
   paymentTypes: ["Banca", "Cash", "Carta di Credito"],
   creditCardSettings: {},
-  creditCardDebts: []
+  creditCardDebts: [],
+  marketYieldCurve: null
 };
 
 // ---------- Storage ----------
@@ -198,7 +208,8 @@ function loadData() {
       fxDatabase: parsed.fxDatabase || {},
       paymentTypes: (parsed.paymentTypes && parsed.paymentTypes.length) ? parsed.paymentTypes : base.paymentTypes,
       creditCardSettings: parsed.creditCardSettings || {},
-      creditCardDebts: parsed.creditCardDebts || []
+      creditCardDebts: parsed.creditCardDebts || [],
+      marketYieldCurve: parsed.marketYieldCurve || null
     };
   } catch (e) { return base; }
 }
@@ -213,6 +224,7 @@ function scheduleAutoUpload() {
 let data = loadData();
 
 const fmt = n => Math.round(n).toLocaleString("it-IT");
+const escAttr = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;");
 function fmtDisplay(nALL) {
   const cur = (data.settings.displayCurrency) || "ALL";
   const symbols = { ALL: "ALL", EUR: "€", USD: "$" };
@@ -220,6 +232,16 @@ function fmtDisplay(nALL) {
   if (cur === "EUR") converted = nALL / data.settings.fx;
   else if (cur === "USD") converted = nALL / data.settings.fxUsd;
   return `${Math.round(converted).toLocaleString("it-IT")} ${symbols[cur]}`;
+}
+function toDisplay(nALL) {
+  const cur = (data.settings.displayCurrency) || "ALL";
+  if (cur === "EUR") return nALL / data.settings.fx;
+  if (cur === "USD") return nALL / data.settings.fxUsd;
+  return nALL;
+}
+function displaySymbol() {
+  const cur = (data.settings.displayCurrency) || "ALL";
+  return { ALL: "ALL", EUR: "€", USD: "$" }[cur];
 }
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 function localDateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
@@ -240,7 +262,7 @@ const lastMonthStr = localMonthStr(lastMonthDate);
 const lastYear = thisYear - 1;
 
 // ---------- Totals ----------
-function yearTotal(arr, year) { return arr.filter(e => new Date(e.date).getFullYear() === year).reduce((s,e)=>s+Number(e.amount),0); }
+function yearTotal(arr, year) { return arr.filter(e => new Date(e.date).getFullYear() === year).reduce((s,e)=>s+toALL(Number(e.amount), e.currency||"ALL"),0); }
 function monthTotal(arr, monthStr) { return arr.filter(e => e.date.slice(0,7) === monthStr).reduce((s,e)=>s+Number(e.amount),0); }
 function dayTotal(arr, dayStr) { return arr.filter(e => e.date === dayStr).reduce((s,e)=>s+Number(e.amount),0); }
 function toALL(amount, currency) {
@@ -258,6 +280,31 @@ function isDebtType(type, macro) {
   const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
   const t = (type||"").toLowerCase();
   return m.includes("debit") || t.includes("debit") || t.includes("prestito");
+}
+function isRealEstateType(type, macro) {
+  const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
+  const t = (type||"").toLowerCase();
+  return m.includes("real estate") || m.includes("immobil") || t.includes("immobil") || t.includes("casa") || t.includes("appartamento");
+}
+function isCommodityType(type, macro) {
+  const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
+  const t = (type||"").toLowerCase();
+  return m.includes("commodit") || t.includes("commodit") || t.includes("oro") || t.includes("argento") || t.includes("materia prima");
+}
+function isCryptoType(type, macro) {
+  const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
+  const t = (type||"").toLowerCase();
+  return m.includes("crypto") || t.includes("crypto") || t.includes("cripto");
+}
+function isStockType(type, macro) {
+  const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
+  const t = (type||"").toLowerCase();
+  return m.includes("stock") || t.includes("azione") || t.includes("stock");
+}
+function isDerivativeType(type, macro) {
+  const m = (macro||(data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type])||"").toLowerCase();
+  const t = (type||"").toLowerCase();
+  return m.includes("derivat") || t.includes("derivat") || t.includes("opzione") || t.includes("future");
 }
 function isExcludedFromNetWorth(p) {
   return false;
@@ -563,6 +610,126 @@ function autoChargeCustodyFees() {
   if (changed) saveData();
 }
 
+function autoChargePropertyTax() {
+  let changed = false;
+  data.portfolio.forEach(p => {
+    if (!isRealEstateType(p.type, p.macro) || !p.amount || p.amount<=0) return;
+    const rate = Number(p.propertyTaxPct) || 0;
+    if (rate <= 0 || !p.date) return;
+    const start = new Date(p.date);
+    const anniversaryThisYear = new Date(now.getFullYear(), start.getMonth(), start.getDate());
+    if (!canGenerateOnDate(localDateStr(anniversaryThisYear))) return;
+    const already = data.expenses.some(e => e.linkedBondId === p.id && e.category === "Tassa immobile" && e.date.slice(0,4) === String(now.getFullYear()));
+    if (already) return;
+    const base = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
+    const taxAmt = base * rate / 100;
+    if (taxAmt <= 0) return;
+    const code = p.securityCode || "";
+    const dateStr = localDateStr(anniversaryThisYear);
+    const method = p.propertyTaxPaymentMethod || "Banca";
+    const taxId = uid();
+    if (p.currency === "ALL" || currencyOfBankAccount(method) === p.currency) {
+      data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassa immobile", note: code, linkedBondId: p.id, securityCode: code||null });
+      createLiquidityAdjustment(method, -taxAmt, dateStr, `Tassa immobile ${code}`.trim(), taxId);
+    } else {
+      const fxInfo = getFxRateForDateDetailed(dateStr, p.currency);
+      const taxAmtALL = taxAmt * fxInfo.rate;
+      data.expenses.push({ id: taxId, date: dateStr, amount: taxAmtALL, category: "Tassa immobile", note: `${code} (${fmt(taxAmt)} ${p.currency} al cambio ${fxInfo.rate})`.trim(), linkedBondId: p.id, securityCode: code||null,
+        fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
+      createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassa immobile ${code}`.trim(), taxId);
+    }
+    changed = true;
+  });
+  if (changed) saveData();
+}
+
+function autoGenerateRentalIncome() {
+  let changed = false;
+  data.portfolio.forEach(p => {
+    if (!isRealEstateType(p.type, p.macro) || !p.isRented || !p.rentalAmount || !p.rentalStartDate) return;
+    if (p.rentalEndDate && new Date(p.rentalEndDate) < now) return;
+    const rule = { frequency: "monthly", startMonth: localMonthStr(new Date(p.rentalStartDate)), dayOfMonth: new Date(p.rentalStartDate).getDate() };
+    if (!shouldGenerateThisMonth(rule)) return;
+    const already = data.income.some(i => i.linkedBondId === p.id && i.date.slice(0,7) === thisMonth && i.category === "Affitto immobile");
+    if (already) return;
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+    const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
+    const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
+    if (dateStr < p.rentalStartDate) return;
+    if (!canGenerateOnDate(dateStr)) return;
+    const code = p.securityCode || "";
+    const grossAmt = p.rentalAmount;
+    const taxAmt = grossAmt * (p.rentalTaxPct||0)/100;
+    const incId = uid();
+    data.income.push({ id: incId, date: dateStr, amount: grossAmt, currency: p.rentalCurrency, category: "Affitto immobile", macro: "Real Estate", paymentType: null, note: code, linkedBondId: p.id, securityCode: code||null });
+    const bankAccount = bankAccountForCurrency(p.rentalCurrency);
+    createLiquidityAdjustment(bankAccount, grossAmt, dateStr, `Affitto netto ${code}`.trim(), incId);
+    if (taxAmt > 0.005) {
+      if (p.rentalCurrency === "ALL") {
+        const taxId = uid();
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassa immobile", macro: "Real Estate", note: code, linkedBondId: p.id, securityCode: code||null });
+        createLiquidityAdjustment("Banca", -taxAmt, dateStr, `Tassazione affitto ${code}`.trim(), taxId);
+      } else {
+        const fxInfo = getFxRateForDateDetailed(dateStr, p.rentalCurrency);
+        const taxAmtALL = taxAmt * fxInfo.rate;
+        const taxId = uid();
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmtALL, category: "Tassa immobile", macro: "Real Estate", note: `${code} (${fmt(taxAmt)} ${p.rentalCurrency} al cambio ${fxInfo.rate})`.trim(),
+          linkedBondId: p.id, securityCode: code||null, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.rentalCurrency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
+        createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione affitto ${code}`.trim(), taxId);
+      }
+    }
+    if (p.rentalAgencyFee > 0 && (p.rentalAgencyFeePaid||0) < p.rentalAgencyFeeInstallments) {
+      const installmentAmt = p.rentalAgencyFee / p.rentalAgencyFeeInstallments;
+      const feeId = uid();
+      data.expenses.push({ id: feeId, date: dateStr, amount: installmentAmt, category: "Commissione agenzia affitto", macro: "Real Estate", note: `${code} (rata ${(p.rentalAgencyFeePaid||0)+1}/${p.rentalAgencyFeeInstallments})`, linkedBondId: p.id, securityCode: code||null });
+      createLiquidityAdjustment(bankAccount, -installmentAmt, dateStr, `Commissione agenzia ${code}`.trim(), feeId);
+      p.rentalAgencyFeePaid = (p.rentalAgencyFeePaid||0) + 1;
+    }
+    changed = true;
+  });
+  if (changed) saveData();
+}
+
+function autoGenerateDividends() {
+  let changed = false;
+  data.portfolio.forEach(p => {
+    if (!isStockType(p.type, p.macro) || !p.dividendAmount || !p.dividendStartDate) return;
+    const rule = { frequency: p.dividendFrequency||"quarterly", startMonth: localMonthStr(new Date(p.dividendStartDate)), dayOfMonth: new Date(p.dividendStartDate).getDate() };
+    if (!shouldGenerateThisMonth(rule)) return;
+    const already = data.income.some(i => i.linkedBondId === p.id && i.date.slice(0,7) === thisMonth && i.category === "Dividendo");
+    if (already) return;
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+    const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
+    const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
+    if (dateStr < p.dividendStartDate) return;
+    if (!canGenerateOnDate(dateStr)) return;
+    const code = p.securityCode || p.stockTicker || "";
+    const grossAmt = (p.stockQuantity||0) * (p.dividendAmount||0);
+    if (grossAmt<=0) return;
+    const taxAmt = grossAmt * (p.dividendTaxPct||0)/100;
+    const incId = uid();
+    data.income.push({ id: incId, date: dateStr, amount: grossAmt, currency: p.currency, category: "Dividendo", macro: "Stocks", paymentType: null, note: code, linkedBondId: p.id, securityCode: code||null });
+    const bankAccount = bankAccountForCurrency(p.currency);
+    createLiquidityAdjustment(bankAccount, grossAmt, dateStr, `Dividendo netto ${code}`.trim(), incId);
+    if (taxAmt > 0.005) {
+      if (p.currency === "ALL") {
+        const taxId = uid();
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassazione dividendi", macro: "Stocks", note: code, linkedBondId: p.id, securityCode: code||null });
+        createLiquidityAdjustment("Banca", -taxAmt, dateStr, `Tassazione dividendo ${code}`.trim(), taxId);
+      } else {
+        const fxInfo = getFxRateForDateDetailed(dateStr, p.currency);
+        const taxAmtALL = taxAmt * fxInfo.rate;
+        const taxId = uid();
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmtALL, category: "Tassazione dividendi", macro: "Stocks", note: `${code} (${fmt(taxAmt)} ${p.currency} al cambio ${fxInfo.rate})`.trim(),
+          linkedBondId: p.id, securityCode: code||null, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
+        createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione dividendo ${code}`.trim(), taxId);
+      }
+    }
+    changed = true;
+  });
+  if (changed) saveData();
+}
+
 function autoMatureBondsAndDeposits() {
   let changed = false;
   data.portfolio.forEach(p => {
@@ -633,8 +800,28 @@ function ensureLiquidityCategories() {
   if (!data.categories.portfolio.includes("Cash USD")) { data.categories.portfolio.push("Cash USD"); changed = true; }
   if (!data.categories.portfolio.includes("Carta di Credito")) { data.categories.portfolio.push("Carta di Credito"); changed = true; }
   if (!data.categories.portfolio.includes("Prestito/Debito")) { data.categories.portfolio.push("Prestito/Debito"); changed = true; }
+  if (!data.categories.portfolio.includes("Immobile")) { data.categories.portfolio.push("Immobile"); changed = true; }
+  if (!data.categories.portfolio.includes("Commodity")) { data.categories.portfolio.push("Commodity"); changed = true; }
+  if (!data.categories.portfolio.includes("Crypto")) { data.categories.portfolio.push("Crypto"); changed = true; }
+  if (!data.categories.portfolio.includes("Azione")) { data.categories.portfolio.push("Azione"); changed = true; }
+  if (!data.categories.portfolio.includes("Derivato")) { data.categories.portfolio.push("Derivato"); changed = true; }
+  if (!data.categories.income.includes("Dividendo")) { data.categories.income.push("Dividendo"); changed = true; }
+  if (!data.categories.income.includes("Affitto immobile")) { data.categories.income.push("Affitto immobile"); changed = true; }
+  if (!data.categories.expenses.includes("Tassa immobile")) { data.categories.expenses.push("Tassa immobile"); changed = true; }
+  if (!data.categories.expenses.includes("Commissione agenzia affitto")) { data.categories.expenses.push("Commissione agenzia affitto"); changed = true; }
+  if (!data.categories.expenses.includes("Tassazione dividendi")) { data.categories.expenses.push("Tassazione dividendi"); changed = true; }
   if (!data.macroCategories.portfolio.includes("Debiti")) { data.macroCategories.portfolio.push("Debiti"); changed = true; }
+  if (!data.macroCategories.portfolio.includes("Real Estate")) { data.macroCategories.portfolio.push("Real Estate"); changed = true; }
+  if (!data.macroCategories.portfolio.includes("Commodities")) { data.macroCategories.portfolio.push("Commodities"); changed = true; }
+  if (!data.macroCategories.portfolio.includes("Crypto")) { data.macroCategories.portfolio.push("Crypto"); changed = true; }
+  if (!data.macroCategories.portfolio.includes("Stocks")) { data.macroCategories.portfolio.push("Stocks"); changed = true; }
+  if (!data.macroCategories.portfolio.includes("Derivatives")) { data.macroCategories.portfolio.push("Derivatives"); changed = true; }
   if (data.categoryMacroMap.portfolio["Prestito/Debito"] !== "Debiti") { data.categoryMacroMap.portfolio["Prestito/Debito"] = "Debiti"; changed = true; }
+  if (data.categoryMacroMap.portfolio["Immobile"] !== "Real Estate") { data.categoryMacroMap.portfolio["Immobile"] = "Real Estate"; changed = true; }
+  if (data.categoryMacroMap.portfolio["Commodity"] !== "Commodities") { data.categoryMacroMap.portfolio["Commodity"] = "Commodities"; changed = true; }
+  if (data.categoryMacroMap.portfolio["Crypto"] !== "Crypto") { data.categoryMacroMap.portfolio["Crypto"] = "Crypto"; changed = true; }
+  if (data.categoryMacroMap.portfolio["Azione"] !== "Stocks") { data.categoryMacroMap.portfolio["Azione"] = "Stocks"; changed = true; }
+  if (data.categoryMacroMap.portfolio["Derivato"] !== "Derivatives") { data.categoryMacroMap.portfolio["Derivato"] = "Derivatives"; changed = true; }
   if (!data.paymentTypes) { data.paymentTypes = ["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD","Carta di Credito"]; changed = true; }
   else {
     if (!data.paymentTypes.includes("Carta di Credito")) { data.paymentTypes.push("Carta di Credito"); changed = true; }
@@ -803,7 +990,7 @@ let macroDrilldownChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
 let editingPortfolioId = null;
-let portfolioBulkEditFilter = null; // {type: 'category'|'macro', value: string}
+let portfolioEditModeActive = false;
 let editingIncomeId = null;
 let editingExpenseId = null;
 let fundImportPreview = null; // {type, fundName, rows: [{date, amount, unitPrice, units}]}
@@ -922,6 +1109,9 @@ function renderDashboard() {
   autoGenerateSecurityIncome();
   autoMatureBondsAndDeposits();
   autoChargeCustodyFees();
+  autoChargePropertyTax();
+  autoGenerateRentalIncome();
+  autoGenerateDividends();
   processCreditCardBilling();
   processLoanInstallments();
   const s = data.settings;
@@ -1081,10 +1271,10 @@ function renderDashboard() {
     </div>
     <div class="card">
       <h3>Budget libero (al netto delle ricorrenze)</h3>
-      <div class="subtle">Impegni fissi mensili: spese ricorrenti ${fmt(recurringExpMonthly)} ALL + versamenti ricorrenti ${fmt(recurringInvMonthly)} ALL</div>
-      <div class="stat-row"><span class="label">Impegni ricorrenti mensili totali</span><span class="val">${fmt(recurringTotalMonthly)} ALL</span></div>
-      <div class="stat-row"><span class="label">Libero rispetto al reddito mensile ${incomeThisMonth>0?'(registrato)':'(media anno)'}</span><span class="val ${freeFromIncome!==null && freeFromIncome<0?'down':''}">${freeFromIncome!==null ? fmt(freeFromIncome)+" ALL" : "— (nessun reddito registrato)"}</span></div>
-      <div class="stat-row"><span class="label">Libero rispetto al budget obiettivo mensile</span><span class="val ${freeFromTarget<0?'down':''}">${fmt(freeFromTarget)} ALL</span></div>
+      <div class="subtle">Impegni fissi mensili: spese ricorrenti ${fmtDisplay(recurringExpMonthly)} + versamenti ricorrenti ${fmtDisplay(recurringInvMonthly)}</div>
+      <div class="stat-row"><span class="label">Impegni ricorrenti mensili totali</span><span class="val">${fmtDisplay(recurringTotalMonthly)}</span></div>
+      <div class="stat-row"><span class="label">Libero rispetto al reddito mensile ${incomeThisMonth>0?'(registrato)':'(media anno)'}</span><span class="val ${freeFromIncome!==null && freeFromIncome<0?'down':''}">${freeFromIncome!==null ? fmtDisplay(freeFromIncome) : "— (nessun reddito registrato)"}</span></div>
+      <div class="stat-row"><span class="label">Libero rispetto al budget obiettivo mensile</span><span class="val ${freeFromTarget<0?'down':''}">${fmtDisplay(freeFromTarget)}</span></div>
     </div>
     <div class="card">
       <h3>Picchi di spesa durante l'anno</h3>
@@ -1126,8 +1316,8 @@ function renderDashboard() {
     data: {
       labels,
       datasets: [
-        ...results.map(r => ({ label: r.label, data: r.rows.map(row=>row.wealth), borderColor: r.color, backgroundColor:'transparent', tension:0.25, pointRadius:0, borderWidth: r.key==='central'?2.5:1.5 })),
-        { label:'Target', data: central.rows.map(row=>row.target), borderColor:'#5C4A2E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 }
+        ...results.map(r => ({ label: r.label, data: r.rows.map(row=>toDisplay(row.wealth)), borderColor: r.color, backgroundColor:'transparent', tension:0.25, pointRadius:0, borderWidth: r.key==='central'?2.5:1.5 })),
+        { label:'Target', data: central.rows.map(row=>toDisplay(row.target)), borderColor:'#5C4A2E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 }
       ]
     },
     options: {
@@ -1135,7 +1325,7 @@ function renderDashboard() {
       plugins: { legend: { labels:{ color:'#8FA3BF', font:{size:10} } } },
       scales: {
         x: { ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
-        y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(0)+'M' }, grid:{ color:'#1E2E47' } }
+        y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M '+displaySymbol() }, grid:{ color:'#1E2E47' } }
       }
     }
   });
@@ -1146,7 +1336,7 @@ function renderDashboard() {
     data: {
       labels: fireNumbers.map(f=>f.rate+'%'),
       datasets: [
-        { type:'bar', label:'Numero FIRE (ALL)', data: fireNumbers.map(f=>f.target), backgroundColor:'#C9A227', yAxisID:'y' },
+        { type:'bar', label:`Numero FIRE (${displaySymbol()})`, data: fireNumbers.map(f=>toDisplay(f.target)), backgroundColor:'#C9A227', yAxisID:'y' },
         { type:'line', label:'Anni stimati', data: fireNumbers.map(f=>f.years!=null?f.years:s.horizon), borderColor:'#3F6E5E', backgroundColor:'transparent', pointRadius:4, borderWidth:2, yAxisID:'y1' }
       ]
     },
@@ -1178,9 +1368,9 @@ function renderDashboard() {
     data: {
       labels: peaks.map(p=>p.label),
       datasets: [
-        { type:'bar', label:'Spesa base', data: peaks.map(p=>p.base), backgroundColor:'#3F5A72', stack:'s' },
-        { type:'bar', label:'Ricorrenze non mensili', data: peaks.map(p=>p.recurring), backgroundColor:'#C9A227', stack:'s' },
-        { type:'line', label:'Effettivo', data: peaks.map(p=>p.actual>0?p.actual:null), borderColor:'#8B3A2F', backgroundColor:'transparent', spanGaps:true, tension:0.2, pointRadius:3, borderWidth:2 }
+        { type:'bar', label:'Spesa base', data: peaks.map(p=>toDisplay(p.base)), backgroundColor:'#3F5A72', stack:'s' },
+        { type:'bar', label:'Ricorrenze non mensili', data: peaks.map(p=>toDisplay(p.recurring)), backgroundColor:'#C9A227', stack:'s' },
+        { type:'line', label:'Effettivo', data: peaks.map(p=>p.actual>0?toDisplay(p.actual):null), borderColor:'#8B3A2F', backgroundColor:'transparent', spanGaps:true, tension:0.2, pointRadius:3, borderWidth:2 }
       ]
     },
     options: {
@@ -1188,7 +1378,7 @@ function renderDashboard() {
       plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
       scales:{
         x:{ stacked:true, ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
-        y:{ stacked:true, ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k' }, grid:{ color:'#1E2E47' } }
+        y:{ stacked:true, ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } }
       }
     }
   });
@@ -1231,7 +1421,7 @@ function renderIncome() {
           <div><label>Data</label><input type="date" name="date" value="${todayISO}" required></div>
           <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
         </div>
-        <div><label>Categoria</label>${categorySelect("income")}</div>
+        <div><label>Categoria</label>${categorySelect("income", null, c => !isAutoManagedIncomeCategory(c))}</div>
         <button class="secondary" type="button" id="toggleCatManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.income ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div><label>Macro-categoria</label>${macroSelect("income")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.income ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
@@ -1507,12 +1697,12 @@ function drawMacroDrilldownChart(group) {
   if (labels.length === 0) return;
   macroDrilldownChartInstance = new Chart(ctx, {
     type: 'bar',
-    data: { labels, datasets: [{ label: macro, data: labels.map(l=>totals[l]), backgroundColor:'#C9A227' }] },
+    data: { labels, datasets: [{ label: macro, data: labels.map(l=>toDisplay(totals[l])), backgroundColor:'#C9A227' }] },
     options: {
       indexAxis:'y', responsive:true,
       plugins:{ legend:{ display:false } },
       scales:{
-        x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+        x:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>v+' '+displaySymbol() }, grid:{ color:'#1E2E47' } },
         y:{ ticks:{ color:'#8FA3BF', font:{size:11} }, grid:{ display:false } }
       }
     }
@@ -1586,7 +1776,7 @@ function renderExpenses() {
           <div><label>Data</label><input type="date" name="date" value="${todayISO}" required></div>
           <div><label>Importo (ALL)</label><input type="number" step="0.0001" name="amount" placeholder="0" required></div>
         </div>
-        <div><label>Categoria</label>${categorySelect("expenses")}</div>
+        <div><label>Categoria</label>${categorySelect("expenses", null, c => !isAutoManagedExpenseCategory(c))}</div>
         <button class="secondary" type="button" id="toggleCatManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.expenses ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div><label>Macro-categoria</label>${macroSelect("expenses")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.expenses ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
@@ -1811,8 +2001,8 @@ function renderExpenses() {
       data: {
         labels: allCats,
         datasets: [
-          { label:'Mese scorso', data: allCats.map(c=>catsLastMonth[c]||0), backgroundColor:'#3F5A72' },
-          { label:'Questo mese', data: allCats.map(c=>catsThisMonth[c]||0), backgroundColor:'#C9A227' }
+          { label:'Mese scorso', data: allCats.map(c=>toDisplay(catsLastMonth[c]||0)), backgroundColor:'#3F5A72' },
+          { label:'Questo mese', data: allCats.map(c=>toDisplay(catsThisMonth[c]||0)), backgroundColor:'#C9A227' }
         ]
       },
       options: {
@@ -1834,8 +2024,8 @@ function renderExpenses() {
       data: {
         labels: allMacros,
         datasets: [
-          { label:'Mese scorso', data: allMacros.map(m=>macrosLastMonth[m]||0), backgroundColor:'#3F5A72' },
-          { label:'Questo mese', data: allMacros.map(m=>macrosThisMonth[m]||0), backgroundColor:'#C9A227' }
+          { label:'Mese scorso', data: allMacros.map(m=>toDisplay(macrosLastMonth[m]||0)), backgroundColor:'#3F5A72' },
+          { label:'Questo mese', data: allMacros.map(m=>toDisplay(macrosThisMonth[m]||0)), backgroundColor:'#C9A227' }
         ]
       },
       options: {
@@ -1863,9 +2053,9 @@ function renderExpenses() {
       data: {
         labels: MONTH_LABELS,
         datasets: [
-          { type:'bar', label:'Spesa mensile', data: monthlyTotalsThisYear, backgroundColor:'#C9A227' },
-          { type:'line', label:'Media reale', data: new Array(12).fill(monthlyAvgEffective), borderColor:'#3F6E5E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 },
-          { type:'line', label:'Media semplice', data: new Array(12).fill(monthlyAvgSimple), borderColor:'#8B3A2F', borderDash:[2,3], pointRadius:0, borderWidth:1.5 }
+          { type:'bar', label:'Spesa mensile', data: monthlyTotalsThisYear.map(toDisplay), backgroundColor:'#C9A227' },
+          { type:'line', label:'Media reale', data: new Array(12).fill(toDisplay(monthlyAvgEffective)), borderColor:'#3F6E5E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 },
+          { type:'line', label:'Media semplice', data: new Array(12).fill(toDisplay(monthlyAvgSimple)), borderColor:'#8B3A2F', borderDash:[2,3], pointRadius:0, borderWidth:1.5 }
         ]
       },
       options: {
@@ -1873,7 +2063,7 @@ function renderExpenses() {
         plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
         scales:{
           x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
-          y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k' }, grid:{ color:'#1E2E47' } }
+          y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } }
         }
       }
     });
@@ -1964,20 +2154,30 @@ function renderPortfolioEditForm(p) {
   const isBond = typeL.includes("obbligazione");
   const isDeposit = typeL.includes("deposito");
   const isFund = isFundEntry(p);
+  const isRealEstate = isRealEstateType(p.type, p.macro);
+  const isCommodity = isCommodityType(p.type, p.macro);
+  const isCrypto = isCryptoType(p.type, p.macro);
+  const isStock = isStockType(p.type, p.macro);
+  const isDerivative = isDerivativeType(p.type, p.macro);
+  const isQtyPriceAsset = isFund || isCommodity || isCrypto || isStock;
+  const isLoanDebt = isDebtType(p.type, p.macro) && !isCreditCardType(p.type);
+  const propertyOptionsForEdit = isLoanDebt ? data.portfolio.filter(x => isRealEstateType(x.type, x.macro) && x.amount>0) : [];
   return `<form class="entry" data-editportform="${p.id}" style="border:1px solid #C9A227; border-radius:6px; padding:12px; margin-bottom:8px;">
     <div><label>Tipo</label>${categorySelect("portfolio", p.type)}</div>
     ${isFund ? `<div><label>Nome fondo</label><input type="text" name="fundName" value="${p.fundName||''}"></div>` : ''}
     ${(isFund || isBond) ? `<div><label>Società/Ente (di proprietà/gestione)</label><input type="text" name="issuer" value="${p.issuer||''}"></div>` : ''}
     <div><label>Codice titolo</label><input type="text" name="securityCode" maxlength="8" value="${p.securityCode||''}"></div>
     <div class="row2">
-      ${!isFund ? `<div><label>Importo nominale</label><input type="number" step="0.0001" name="amount" value="${p.amount}"></div>` : ''}
+      ${!isQtyPriceAsset && !isDerivative ? `<div><label>Importo nominale</label><input type="number" step="0.0001" name="amount" value="${p.amount}"></div>` : ''}
+      ${isDerivative ? `<div><label>Valore acquisto</label><input type="number" step="0.0001" name="amount" value="${p.amount}"></div>` : ''}
       <div><label>Valuta</label><select name="currency"><option ${p.currency==='ALL'?'selected':''}>ALL</option><option ${p.currency==='EUR'?'selected':''}>EUR</option><option ${p.currency==='USD'?'selected':''}>USD</option></select></div>
     </div>
     <div class="row2">
-      ${!isFund ? `<div><label>Valore di mercato</label><input type="number" step="0.0001" name="marketValue" value="${p.marketValue!=null?p.marketValue:''}"></div>` : ''}
+      ${!isQtyPriceAsset ? `<div><label>Valore di mercato</label><input type="number" step="0.0001" name="marketValue" value="${p.marketValue!=null?p.marketValue:''}"></div>` : ''}
       <div><label>Data</label><input type="date" name="date" value="${p.date||''}"></div>
     </div>
-    ${!isFund ? `<div><label>Data scadenza</label><input type="date" name="maturityDate" value="${p.maturityDate||''}"></div>` : ''}
+    ${isDerivative ? `<div><label>Data scadenza (opz.)</label><input type="date" name="maturityDate" value="${p.maturityDate||''}"></div>` : ''}
+    ${!isQtyPriceAsset && !isRealEstate && !isDerivative ? `<div><label>Data scadenza</label><input type="date" name="maturityDate" value="${p.maturityDate||''}"></div>` : ''}
     ${isBond ? `
     <div class="row2">
       <div><label>Cedola annua (%)</label><input type="number" step="0.0001" name="couponRate" value="${p.couponRate!=null?p.couponRate:''}"></div>
@@ -2007,6 +2207,79 @@ function renderPortfolioEditForm(p) {
       <div><label>Numero di quote</label><input type="number" step="0.0001" name="fundQuotaCount" value="${p.fundQuotaCount||''}"></div>
       <div><label>Prezzo acquisto/quota</label><input type="number" step="0.0001" name="fundPurchaseQuotaPrice" value="${p.fundPurchaseQuotaPrice||''}"></div>
     </div>` : ''}
+    ${isStock ? `
+    <div class="row2">
+      <div><label>Ticker/simbolo</label><input type="text" name="stockTicker" value="${p.stockTicker||''}"></div>
+      <div><label>Nome società</label><input type="text" name="stockName" value="${p.stockName||''}"></div>
+    </div>
+    <div><label>Borsa/mercato</label><input type="text" name="stockExchange" value="${p.stockExchange||''}"></div>
+    <div class="row2">
+      <div><label>Quantità</label><input type="number" step="0.0001" name="stockQuantity" value="${p.stockQuantity||''}"></div>
+      <div><label>Prezzo acquisto/azione</label><input type="number" step="0.0001" name="stockPurchasePrice" value="${p.stockPurchasePrice||''}"></div>
+    </div>
+    <div><label>Prezzo attuale/azione</label><input type="number" step="0.0001" name="stockCurrentPrice" value="${p.stockCurrentPrice||''}"></div>
+    <div style="border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:8px;">
+      <label style="color:#8FA3BF; font-size:11px;">Dividendo (opzionale)</label>
+      <div class="row2">
+        <div><label>Dividendo per azione</label><input type="number" step="0.0001" name="dividendAmount" value="${p.dividendAmount||''}"></div>
+        <div><label>Frequenza</label><select name="dividendFrequency"><option value="monthly" ${p.dividendFrequency==='monthly'?'selected':''}>Mensile</option><option value="quarterly" ${(p.dividendFrequency||'quarterly')==='quarterly'?'selected':''}>Trimestrale</option><option value="semiannual" ${p.dividendFrequency==='semiannual'?'selected':''}>Semestrale</option><option value="annual" ${p.dividendFrequency==='annual'?'selected':''}>Annuale</option></select></div>
+      </div>
+      <div class="row2">
+        <div><label>Data primo pagamento</label><input type="date" name="dividendStartDate" value="${p.dividendStartDate||''}"></div>
+        <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="dividendTaxPct" value="${p.dividendTaxPct!=null?p.dividendTaxPct:15}"></div>
+      </div>
+    </div>` : ''}
+    ${isDerivative ? `
+    <div class="row2">
+      <div><label>Tipo derivato</label><input type="text" name="derivativeType" value="${p.derivativeType||''}"></div>
+      <div><label>Sottostante</label><input type="text" name="derivativeUnderlying" value="${p.derivativeUnderlying||''}"></div>
+    </div>` : ''}
+    ${isCommodity ? `
+    <div class="row2">
+      <div><label>Nome</label><input type="text" name="commodityName" value="${p.commodityName||''}"></div>
+      <div><label>Unità di misura</label><input type="text" name="commodityUnit" value="${p.commodityUnit||''}"></div>
+    </div>
+    <div class="row2">
+      <div><label>Quantità</label><input type="number" step="0.0001" name="commodityQuantity" value="${p.commodityQuantity||''}"></div>
+      <div><label>Prezzo acquisto/unità</label><input type="number" step="0.0001" name="commodityPurchasePrice" value="${p.commodityPurchasePrice||''}"></div>
+    </div>
+    <div><label>Prezzo attuale/unità</label><input type="number" step="0.0001" name="commodityCurrentPrice" value="${p.commodityCurrentPrice||''}"></div>` : ''}
+    ${isCrypto ? `
+    <div class="row2">
+      <div><label>ID CoinGecko</label><input type="text" name="cryptoId" value="${p.cryptoId||''}"></div>
+      <div><label>Simbolo</label><input type="text" name="cryptoSymbol" value="${p.cryptoSymbol||''}"></div>
+    </div>
+    <div class="row2">
+      <div><label>Quantità</label><input type="number" step="0.00000001" name="cryptoQuantity" value="${p.cryptoQuantity||''}"></div>
+      <div><label>Prezzo acquisto/unità</label><input type="number" step="0.0001" name="cryptoPurchasePrice" value="${p.cryptoPurchasePrice||''}"></div>
+    </div>
+    <div><label>Prezzo attuale/unità</label><input type="number" step="0.0001" name="cryptoCurrentPrice" value="${p.cryptoCurrentPrice||''}"></div>` : ''}
+    ${isRealEstate ? `
+    <div class="row2">
+      <div><label>Tipo immobile</label><input type="text" name="propertyType" value="${p.propertyType||''}"></div>
+      <div><label>Tassa annuale (%)</label><input type="number" step="0.0001" name="propertyTaxPct" value="${p.propertyTaxPct||''}"></div>
+    </div>
+    <div><label>Metodo pagamento tassa</label>${paymentTypeSelect(p.propertyTaxPaymentMethod||"Banca")}</div>
+    <div><label><input type="checkbox" name="propertyRevalued" ${p.propertyRevalued?'checked':''} style="width:auto;"> Il valore di mercato viene rivalutato manualmente nel tempo</label></div>
+    <div><label><input type="checkbox" name="propertyIsRented" id="editPropertyIsRentedChk_${p.id}" ${p.isRented?'checked':''} style="width:auto;"> È affittato</label></div>
+    <div id="editRentalSubFields_${p.id}" style="display:${p.isRented?'block':'none'}; border:1px solid #24374F; border-radius:6px; padding:8px; margin-top:8px;">
+      <label style="color:#8FA3BF; font-size:11px;">Dettagli affitto</label>
+      <div class="row2">
+        <div><label>Canone mensile</label><input type="number" step="0.0001" name="rentalAmount" value="${p.rentalAmount||''}"></div>
+        <div><label>Valuta affitto</label><select name="rentalCurrency"><option ${(p.rentalCurrency||'ALL')==='ALL'?'selected':''}>ALL</option><option ${p.rentalCurrency==='EUR'?'selected':''}>EUR</option><option ${p.rentalCurrency==='USD'?'selected':''}>USD</option></select></div>
+      </div>
+      <div class="row2">
+        <div><label>Data inizio contratto</label><input type="date" name="rentalStartDate" value="${p.rentalStartDate||''}"></div>
+        <div><label>Durata (mesi)</label><input type="number" name="rentalDurationMonths" value="${p.rentalDurationMonths||''}"></div>
+      </div>
+      <div class="row2">
+        <div><label>Tassazione affitto (%)</label><input type="number" step="0.0001" name="rentalTaxPct" value="${p.rentalTaxPct!=null?p.rentalTaxPct:15}"></div>
+        <div><label>Commissione agenzia (totale)</label><input type="number" step="0.0001" name="rentalAgencyFee" value="${p.rentalAgencyFee||''}"></div>
+      </div>
+      <div><label>Rate commissione agenzia</label><input type="number" name="rentalAgencyFeeInstallments" value="${p.rentalAgencyFeeInstallments||1}"></div>
+      ${p.rentalAgencyFeePaid ? `<div class="subtle">Rate già addebitate: ${p.rentalAgencyFeePaid}/${p.rentalAgencyFeeInstallments}</div>` : ''}
+    </div>` : ''}
+    ${isLoanDebt && propertyOptionsForEdit.length>0 ? `<div><label>Immobile collegato (opzionale, solo per report)</label><select name="linkedPropertyId"><option value="">— nessuno —</option>${propertyOptionsForEdit.map(x=>`<option value="${x.id}" ${p.linkedPropertyId===x.id?'selected':''}>${x.propertyType||x.type} ${x.securityCode||''}</option>`).join('')}</select></div>` : ''}
     <div><label>Nota</label><input type="text" name="note" value="${p.note||''}"></div>
     <div class="row2">
       <button class="primary" type="submit">Salva</button>
@@ -2081,6 +2354,315 @@ function isFundEntry(p) {
   return t.includes("fond") || m.includes("fond");
 }
 
+function computeRealEstateSummary() {
+  return data.portfolio.filter(p => isRealEstateType(p.type, p.macro) && p.amount>0).map(p => {
+    const marketVal = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
+    const rentReceived = data.income.filter(i=>i.linkedBondId===p.id && i.category==="Affitto immobile").reduce((s,i)=>s+Number(i.amount),0);
+    const linkedDebts = data.portfolio.filter(d => d.linkedPropertyId === p.id);
+    const linkedDebtBalanceALL = linkedDebts.reduce((s,d)=>s+toALL(d.amount, d.currency),0);
+    return {
+      id: p.id, name: p.propertyType||p.type, code: p.securityCode, purchaseValue: p.amount, marketValue: marketVal,
+      currency: p.currency, gainPct: p.amount>0 ? (marketVal-p.amount)/p.amount*100 : 0,
+      isRented: p.isRented, rentalAmount: p.rentalAmount, rentalCurrency: p.rentalCurrency, rentReceived,
+      linkedDebts, linkedDebtBalanceALL
+    };
+  });
+}
+function computeCommoditySummary() {
+  const items = data.portfolio.filter(p => isCommodityType(p.type, p.macro) && p.amount>0);
+  const grouped = {};
+  items.forEach(p => {
+    const key = p.commodityName || p.type;
+    if (!grouped[key]) grouped[key] = { name:key, unit:p.commodityUnit||'', totalQty:0, totalInvested:0, currentPrice:0, currency:p.currency };
+    grouped[key].totalQty += Number(p.commodityQuantity)||0;
+    grouped[key].totalInvested += Number(p.amount)||0;
+    const cp = Number(p.commodityCurrentPrice)||Number(p.commodityPurchasePrice)||0;
+    if (cp>0) grouped[key].currentPrice = cp;
+  });
+  return Object.values(grouped).map(g => {
+    const currentValue = g.totalQty*g.currentPrice;
+    const avgPrice = g.totalQty>0 ? g.totalInvested/g.totalQty : 0;
+    const rendValore = currentValue-g.totalInvested;
+    const rendPct = g.totalInvested>0 ? rendValore/g.totalInvested*100 : 0;
+    return { ...g, currentValue, avgPrice, rendValore, rendPct };
+  });
+}
+function computeCryptoSummary() {
+  const items = data.portfolio.filter(p => isCryptoType(p.type, p.macro) && p.amount>0);
+  const grouped = {};
+  items.forEach(p => {
+    const key = p.cryptoId || p.type;
+    if (!grouped[key]) grouped[key] = { name:key, symbol:p.cryptoSymbol||'', totalQty:0, totalInvested:0, currentPrice:0, currency:p.currency };
+    grouped[key].totalQty += Number(p.cryptoQuantity)||0;
+    grouped[key].totalInvested += Number(p.amount)||0;
+    const cp = Number(p.cryptoCurrentPrice)||Number(p.cryptoPurchasePrice)||0;
+    if (cp>0) grouped[key].currentPrice = cp;
+  });
+  return Object.values(grouped).map(g => {
+    const currentValue = g.totalQty*g.currentPrice;
+    const avgPrice = g.totalQty>0 ? g.totalInvested/g.totalQty : 0;
+    const rendValore = currentValue-g.totalInvested;
+    const rendPct = g.totalInvested>0 ? rendValore/g.totalInvested*100 : 0;
+    return { ...g, currentValue, avgPrice, rendValore, rendPct };
+  });
+}
+async function fetchCryptoPrice(coinGeckoId, vsCurrency) {
+  const cur = (vsCurrency||"ALL").toLowerCase();
+  const cgCurrency = (cur==="all") ? "usd" : cur; // CoinGecko doesn't support ALL directly
+  const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coinGeckoId)}&vs_currencies=${cgCurrency}`);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const json = await res.json();
+  if (!json[coinGeckoId] || json[coinGeckoId][cgCurrency]==null) throw new Error(`ID "${coinGeckoId}" non trovato su CoinGecko.`);
+  let price = json[coinGeckoId][cgCurrency];
+  if (cur==="all") price = price * data.settings.fxUsd; // convert USD->ALL using existing fx setting
+  return price;
+}
+function computeStockSummary() {
+  return data.portfolio.filter(p => isStockType(p.type, p.macro) && p.amount>0).map(p => {
+    const marketVal = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
+    const divReceived = data.income.filter(i=>i.linkedBondId===p.id && i.category==="Dividendo").reduce((s,i)=>s+Number(i.amount),0);
+    return {
+      id: p.id, ticker: p.stockTicker||p.type, name: p.stockName||'', exchange: p.stockExchange||'',
+      quantity: p.stockQuantity||0, purchaseValue: p.amount, marketValue: marketVal, currency: p.currency,
+      gainPct: p.amount>0 ? (marketVal-p.amount)/p.amount*100 : 0,
+      hasDividend: !!p.dividendAmount, dividendAmount: p.dividendAmount, dividendFrequency: p.dividendFrequency, divReceived
+    };
+  });
+}
+function computeDerivativeSummary() {
+  return data.portfolio.filter(p => isDerivativeType(p.type, p.macro) && p.amount>0).map(p => {
+    const marketVal = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
+    return {
+      id: p.id, derivativeType: p.derivativeType||p.type, underlying: p.derivativeUnderlying||'',
+      purchaseValue: p.amount, marketValue: marketVal, currency: p.currency,
+      gainPct: p.amount>0 ? (marketVal-p.amount)/p.amount*100 : 0, expiryDate: p.maturityDate
+    };
+  });
+}
+function solveLinearSystem(A, b) {
+  const n = A.length;
+  const M = A.map((row,i)=>[...row, b[i]]);
+  for (let i=0;i<n;i++) {
+    let maxRow = i;
+    for (let k=i+1;k<n;k++) if (Math.abs(M[k][i])>Math.abs(M[maxRow][i])) maxRow=k;
+    [M[i],M[maxRow]] = [M[maxRow],M[i]];
+    if (Math.abs(M[i][i]) < 1e-12) continue;
+    for (let k=i+1;k<n;k++) {
+      const factor = M[k][i]/M[i][i];
+      for (let j=i;j<=n;j++) M[k][j] -= factor*M[i][j];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let i=n-1;i>=0;i--) {
+    let sum = M[i][n];
+    for (let j=i+1;j<n;j++) sum -= M[i][j]*x[j];
+    x[i] = Math.abs(M[i][i])<1e-12 ? 0 : sum/M[i][i];
+  }
+  return x;
+}
+function olsFit(X, y) {
+  const n = X[0].length;
+  const XtX = Array.from({length:n}, (_,i)=>Array.from({length:n}, (_,j)=> X.reduce((s,row)=>s+row[i]*row[j],0)));
+  const Xty = Array.from({length:n}, (_,i)=> X.reduce((s,row,k)=>s+row[i]*y[k],0));
+  return solveLinearSystem(XtX, Xty);
+}
+function nelsonSiegelBasis(t, tau) {
+  const x = t/tau;
+  const term1 = x < 1e-6 ? 1 : (1-Math.exp(-x))/x;
+  const term2 = term1 - Math.exp(-x);
+  return [1, term1, term2];
+}
+function fitNelsonSiegel(points) {
+  if (points.length < 3) return null;
+  let best = null;
+  for (let tau=0.1; tau<=30; tau+=0.05) {
+    const X = points.map(p=>nelsonSiegelBasis(p.t, tau));
+    const yv = points.map(p=>p.y);
+    const beta = olsFit(X, yv);
+    let sse = 0;
+    points.forEach((p,i)=>{ const pred = beta[0]*X[i][0]+beta[1]*X[i][1]+beta[2]*X[i][2]; sse += (pred-p.y)**2; });
+    if (!best || sse < best.sse) best = { tau, beta, sse };
+  }
+  return { beta0: best.beta[0], beta1: best.beta[1], beta2: best.beta[2], tau: best.tau,
+    predict: (t) => { const b = nelsonSiegelBasis(t, best.tau); return best.beta[0]*b[0]+best.beta[1]*b[1]+best.beta[2]*b[2]; } };
+}
+function fitCubicLogPoly(points) {
+  if (points.length < 4) return null;
+  const X = points.map(p => { const l = Math.log(p.t); return [l**3, l**2, l, 1]; });
+  const yv = points.map(p=>p.y);
+  const beta = olsFit(X, yv);
+  return { a: beta[0], b: beta[1], c: beta[2], d: beta[3],
+    predict: (t) => { const l = Math.log(t); return beta[0]*l**3+beta[1]*l**2+beta[2]*l+beta[3]; } };
+}
+function buildYieldCurveModel(points) {
+  const sorted = [...points].sort((a,b)=>a.t-b.t);
+  const ns = fitNelsonSiegel(points);
+  const cubic = fitCubicLogPoly(points);
+  function blended(t) {
+    if (ns && cubic) return (ns.predict(t)+cubic.predict(t))/2;
+    if (ns) return ns.predict(t);
+    if (cubic) return cubic.predict(t);
+    return null;
+  }
+  function predict(t) {
+    if (sorted.length===0) return null;
+    if (t <= sorted[0].t) return sorted.length>1 ? sorted[0].y : sorted[0].y;
+    if (t >= sorted[sorted.length-1].t) { const b = blended(t); return b!=null ? b : sorted[sorted.length-1].y; }
+    for (let i=0;i<sorted.length-1;i++) {
+      if (t>=sorted[i].t && t<=sorted[i+1].t) {
+        const frac = (t-sorted[i].t)/(sorted[i+1].t-sorted[i].t);
+        return sorted[i].y + frac*(sorted[i+1].y-sorted[i].y);
+      }
+    }
+    return blended(t);
+  }
+  return { ns, cubic, predict, blended };
+}
+const STANDARD_MATURITIES = [0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20];
+function parseFlexibleDate(v) {
+  if (v instanceof Date && !isNaN(v)) return v;
+  if (typeof v === "number") return new Date(Math.round((v - 25569) * 86400 * 1000));
+  const s = String(v||"").trim();
+  let m = s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/);
+  if (m) return new Date(+m[3], +m[2]-1, +m[1]);
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return new Date(+m[1], +m[2]-1, +m[3]);
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+}
+async function parseMinistryAuctionsXLSX(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array", cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+  if (rows.length < 5) throw new Error("File troppo corto: non ha il formato atteso (header su 3 righe + dati).");
+  const dataRows = rows.slice(4);
+  const parsed = [];
+  dataRows.forEach(row => {
+    if (!row || row.length < 18) return;
+    const isin = row[0];
+    const auctionDate = parseFlexibleDate(row[1]);
+    const settlementDate = parseFlexibleDate(row[4]);
+    const maturityDate = parseFlexibleDate(row[5]);
+    if (!auctionDate || !settlementDate || !maturityDate) return;
+    const cutoffYieldRaw = row[17];
+    const cutoffYield = parseFloat(String(cutoffYieldRaw).replace(",", "."));
+    if (isNaN(cutoffYield)) return;
+    const tenorYears = (maturityDate - settlementDate) / (365.25*86400000);
+    if (tenorYears <= 0) return;
+    let bucket = STANDARD_MATURITIES[0], bestDist = Infinity;
+    STANDARD_MATURITIES.forEach(m => { const d = Math.abs(Math.log(tenorYears/m)); if (d<bestDist) { bestDist=d; bucket=m; } });
+    const couponRaw = row[29];
+    const couponRatePct = couponRaw!=="" ? parseFloat(String(couponRaw).replace(",",".")) * 100 : null;
+    parsed.push({ isin, auctionDate, settlementDate, maturityDate, tenorYears, bucket, cutoffYieldPct: cutoffYield*100, couponRatePct });
+  });
+  if (parsed.length === 0) throw new Error("Nessuna riga valida trovata (controlla che sia il file giusto).");
+  const byBucket = {};
+  parsed.forEach(p => { if (!byBucket[p.bucket] || p.auctionDate > byBucket[p.bucket].auctionDate) byBucket[p.bucket] = p; });
+  const points = Object.values(byBucket).map(p => ({
+    maturity: p.bucket, cutoffYield: p.cutoffYieldPct, isin: p.isin, couponRatePct: p.couponRatePct,
+    auctionDate: localDateStr(p.auctionDate), maturityDate: localDateStr(p.maturityDate), tenorYears: p.tenorYears
+  })).sort((a,b)=>a.maturity-b.maturity);
+  return { importedAt: todayISO, points, totalRowsParsed: parsed.length };
+}
+
+function bondCleanPrice(faceValue, annualCouponRate, marketYieldPct, semiPeriodsRemaining) {
+  const C2 = faceValue * annualCouponRate/100/2;
+  const y2 = marketYieldPct/100/2;
+  let price = 0;
+  for (let t=1; t<=semiPeriodsRemaining; t++) price += C2/Math.pow(1+y2, t);
+  price += faceValue/Math.pow(1+y2, semiPeriodsRemaining);
+  return price;
+}
+function accruedInterest(faceValue, annualCouponRate, daysSinceLastCoupon) {
+  return faceValue * (annualCouponRate/100) * (daysSinceLastCoupon/365);
+}
+function bondDuration(faceValue, annualCouponRate, marketYieldPct, semiPeriodsRemaining) {
+  const C2 = faceValue*annualCouponRate/100/2;
+  const y2 = marketYieldPct/100/2;
+  let price = 0, weightedSum = 0;
+  for (let t=1;t<=semiPeriodsRemaining;t++) { const pv = C2/Math.pow(1+y2,t); price += pv; weightedSum += (t/2)*pv; }
+  const pvFace = faceValue/Math.pow(1+y2,semiPeriodsRemaining);
+  price += pvFace; weightedSum += (semiPeriodsRemaining/2)*pvFace;
+  const macaulay = weightedSum/price;
+  const modified = macaulay/(1+y2);
+  return { macaulay, modified, price };
+}
+function daysSinceLastCoupon(anchorDate, freqMonths, asOf) {
+  const start = new Date(anchorDate);
+  let last = new Date(start);
+  const now2 = asOf || now;
+  while (true) {
+    const next = new Date(last); next.setMonth(next.getMonth()+freqMonths);
+    if (next > now2) break;
+    last = next;
+  }
+  return Math.max(0, Math.round((now2 - last)/86400000));
+}
+
+function bondYTM(price, redemption, couponRate, paymentsPerYear, periods) {
+  if (periods <= 0) return null;
+  const couponPerPeriod = couponRate/paymentsPerYear;
+  function priceAtYield(yPerPeriod) {
+    if (Math.abs(yPerPeriod) < 1e-9) return couponPerPeriod*periods + redemption;
+    return couponPerPeriod * (1-Math.pow(1+yPerPeriod,-periods))/yPerPeriod + redemption*Math.pow(1+yPerPeriod,-periods);
+  }
+  let lo = -0.5, hi = 2;
+  for (let i=0;i<100;i++) {
+    const mid = (lo+hi)/2;
+    const p = priceAtYield(mid);
+    if (p > price) lo = mid; else hi = mid;
+  }
+  const yPerPeriod = (lo+hi)/2;
+  return (Math.pow(1+yPerPeriod, paymentsPerYear) - 1) * 100;
+}
+function computeYieldCurveData() {
+  const bonds = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("obbligazione") && p.amount > 0 && p.maturityDate);
+  const perBond = bonds.map(p => {
+    const anchorDate = p.issueDate || p.date;
+    if (!anchorDate) return null;
+    const years = (new Date(p.maturityDate) - new Date(anchorDate)) / (365.25*86400000);
+    if (years <= 0) return null;
+    const freqObj = FREQUENCIES.find(f=>f.key===(p.couponFrequency||"annual")) || {months:12};
+    const paymentsPerYear = 12/freqObj.months;
+    const periods = years * paymentsPerYear;
+    const couponRate = Number(p.couponRate)||0;
+    const purchasePrice = (p.purchasePrice!=null) ? Number(p.purchasePrice) : 100;
+    const redemptionPrice = (p.redemptionPrice!=null) ? Number(p.redemptionPrice) : 100;
+    const ytm = bondYTM(purchasePrice, redemptionPrice, couponRate, paymentsPerYear, periods);
+    if (ytm==null || !isFinite(ytm)) return null;
+    return { id: p.id, name: p.type, note: p.note, years, ytm, issueDate: anchorDate, maturityDate: p.maturityDate, purchasePrice, couponRate, paymentsPerYear, freqMonths: freqObj.months, anchorDate };
+  }).filter(Boolean);
+
+  // Bucket: for each standard maturity, prefer the official Ministry auction (if imported), else the most recently issued own bond within 20%
+  const officialByMaturity = {};
+  if (data.marketYieldCurve && data.marketYieldCurve.points) {
+    data.marketYieldCurve.points.forEach(p => { officialByMaturity[p.maturity] = p; });
+  }
+  const buckets = STANDARD_MATURITIES.map(mat => {
+    if (officialByMaturity[mat]) return { maturity: mat, official: officialByMaturity[mat], observed: null };
+    let best = null, bestDist = Infinity;
+    perBond.forEach(b => {
+      const dist = Math.abs(b.years - mat) / mat;
+      if (dist <= 0.2 && (!best || new Date(b.issueDate) > new Date(best.issueDate) || (new Date(b.issueDate).getTime()===new Date(best.issueDate).getTime() && dist < bestDist))) {
+        best = b; bestDist = dist;
+      }
+    });
+    return { maturity: mat, official: null, observed: best };
+  });
+
+  const observedPoints = buckets.filter(b=>b.official||b.observed).map(b=> b.official ? { t: b.maturity, y: b.official.cutoffYield } : { t: b.maturity, y: b.observed.ytm });
+  const model = observedPoints.length>=2 ? buildYieldCurveModel(observedPoints) : null;
+
+  const curveTable = buckets.map(b => {
+    if (b.official) return { maturity: b.maturity, ytm: b.official.cutoffYield, source: 'ufficiale (asta '+b.official.auctionDate+')', bond: null, official: b.official };
+    if (b.observed) return { maturity: b.maturity, ytm: b.observed.ytm, source: 'osservato (tuo titolo)', bond: b.observed };
+    const predicted = model ? model.predict(b.maturity) : null;
+    return { maturity: b.maturity, ytm: predicted, source: 'previsto (NS+cubico)', bond: null };
+  }).filter(r => r.ytm != null);
+
+  return { perBond: perBond.sort((a,b)=>a.years-b.years), observedPoints, model, curveTable };
+}
 function computeBondsSummary() {
   const bonds = data.portfolio.filter(p => p.type && p.type.toLowerCase().includes("obbligazione") && p.amount > 0);
   const grouped = {};
@@ -2195,6 +2777,10 @@ function renderPortfolio() {
   const fundSaleOptions = fundPositions.map(p=>`<option value="${p.id}">${p.fundName||p.type}${p.note?' · '+p.note:''} — ${p.fundQuotaCount||0} quote</option>`).join('');
   const fundsSummary = computeFundsSummary();
   const bondsSummary = computeBondsSummary();
+  const yieldCurveData = computeYieldCurveData();
+  const realEstateSummary = computeRealEstateSummary();
+  const commoditySummary = computeCommoditySummary();
+  const cryptoSummary = computeCryptoSummary();
   const depositsSummary = computeDepositsSummary();
   const liquiditySummary = computeLiquiditySummary();
   const debtsSummary = computeDebtsSummary();
@@ -2223,13 +2809,13 @@ function renderPortfolio() {
   const macroFilterOptions = ["all", ...data.macroCategories.portfolio].map(m=>`<option value="${m}" ${portfolioMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
   let filteredPositions = data.portfolio.filter(p=> portfolioTypeFilter==="all" || p.type===portfolioTypeFilter);
   if (portfolioMacroFilter !== "all") filteredPositions = filteredPositions.filter(p=>p.macro===portfolioMacroFilter);
-  filteredPositions = filteredPositions.filter(p => !isDebtType(p.type, p.macro) && !isCreditCardType(p.type));
+  filteredPositions = filteredPositions.filter(p => !isDebtType(p.type, p.macro) && !isCreditCardType(p.type) && !isStockType(p.type, p.macro) && !isDerivativeType(p.type, p.macro));
 
   document.getElementById("main").innerHTML = `
     <div class="card">
       <h3>Nuova posizione</h3>
       <form class="entry" id="portForm">
-        <div><label>Tipo</label>${categorySelect("portfolio", null, c => !isDebtType(c) && !isCreditCardType(c))}</div>
+        <div><label>Tipo</label>${categorySelect("portfolio", null, c => !isDebtType(c) && !isCreditCardType(c) && !isStockType(c) && !isDerivativeType(c))}</div>
         <button class="secondary" type="button" id="toggleCatManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.portfolio ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div><label>Macro-categoria</label>${macroSelect("portfolio")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-portfolio" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.portfolio ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
@@ -2274,9 +2860,9 @@ function renderPortfolio() {
             <div><label>Tassazione cedola/rendimento (%)</label><input type="number" step="0.0001" name="bondTaxRate" value="15"></div>
             <div></div>
           </div>
-          <div class="row2" id="bondPriceRow" style="display:none;">
-            <div><label>Prezzo di collocamento</label><input type="number" step="0.0001" name="purchasePrice" placeholder="es. 97"></div>
-            <div><label>Prezzo di rimborso</label><input type="number" step="0.0001" name="redemptionPrice" value="100"></div>
+          <div class="row2" id="bondPriceRow">
+            <div><label>Prezzo di collocamento (% del nominale, 100 = alla pari)</label><input type="number" step="0.0001" name="purchasePrice" placeholder="es. 97" value="100"></div>
+            <div><label>Prezzo di rimborso (% del nominale)</label><input type="number" step="0.0001" name="redemptionPrice" value="100"></div>
           </div>
           <div class="row2">
             <div><label>Commissione collocamento</label><input type="number" step="0.0001" name="placementCommissionValue" placeholder="0"></div>
@@ -2310,6 +2896,64 @@ function renderPortfolio() {
             <div><label>Numero di quote</label><input type="number" step="0.0001" name="fundQuotaCount" id="fundQuotaCount" placeholder="es. 10"></div>
           </div>
           <div><label>Valore totale investito (auto)</label><input type="number" id="fundInvestedPreview" readonly style="opacity:0.7;"></div>
+        </div>
+
+        <div id="realEstateFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
+          <label style="color:#C9A227;">Dettagli immobile</label>
+          <div class="row2">
+            <div><label>Tipo immobile</label><input type="text" name="propertyType" placeholder="es. Appartamento, Terreno"></div>
+            <div><label>Valore di mercato attuale (vuoto = valore acquisto)</label><input type="number" step="0.0001" name="propertyMarketValue" placeholder=""></div>
+          </div>
+          <div class="row2">
+            <div><label>Tassa annuale (%)</label><input type="number" step="0.0001" name="propertyTaxPct" placeholder="es. 0.05"></div>
+            <div><label>Metodo pagamento tassa</label>${paymentTypeSelect("Banca")}</div>
+          </div>
+          <div><label><input type="checkbox" name="propertyRevalued" style="width:auto;"> Il valore di mercato viene rivalutato manualmente nel tempo</label></div>
+          <div><label><input type="checkbox" name="propertyIsRented" id="propertyIsRentedChk" style="width:auto;"> È affittato</label></div>
+          <div id="rentalSubFields" style="display:none; border:1px solid #24374F; border-radius:6px; padding:8px; margin-top:8px;">
+            <label style="color:#8FA3BF; font-size:11px;">Dettagli affitto</label>
+            <div class="row2">
+              <div><label>Canone mensile</label><input type="number" step="0.0001" name="rentalAmount" placeholder="es. 400"></div>
+              <div><label>Valuta affitto</label><select name="rentalCurrency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
+            </div>
+            <div class="row2">
+              <div><label>Data inizio contratto</label><input type="date" name="rentalStartDate" value="${todayISO}"></div>
+              <div><label>Durata (mesi)</label><input type="number" name="rentalDurationMonths" placeholder="es. 12"></div>
+            </div>
+            <div class="row2">
+              <div><label>Tassazione affitto (%)</label><input type="number" step="0.0001" name="rentalTaxPct" value="15"></div>
+              <div><label>Commissione agenzia (totale)</label><input type="number" step="0.0001" name="rentalAgencyFee" placeholder="0"></div>
+            </div>
+            <div><label>Rate commissione agenzia</label><input type="number" name="rentalAgencyFeeInstallments" value="1"></div>
+          </div>
+        </div>
+
+        <div id="commodityFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
+          <label style="color:#C9A227;">Dettagli materia prima</label>
+          <div class="row2">
+            <div><label>Nome (es. Oro, Argento, Petrolio)</label><input type="text" name="commodityName" placeholder="es. Oro"></div>
+            <div><label>Unità di misura</label><input type="text" name="commodityUnit" placeholder="es. grammi, once, barili"></div>
+          </div>
+          <div class="row2">
+            <div><label>Quantità</label><input type="number" step="0.0001" name="commodityQuantity" id="commodityQuantity" placeholder="es. 50"></div>
+            <div><label>Prezzo acquisto per unità</label><input type="number" step="0.0001" name="commodityPurchasePrice" id="commodityPurchasePrice" placeholder="es. 65"></div>
+          </div>
+          <div><label>Prezzo attuale per unità (vuoto = prezzo acquisto, aggiornabile a mano)</label><input type="number" step="0.0001" name="commodityCurrentPrice" placeholder=""></div>
+          <div><label>Valore totale investito (auto)</label><input type="number" id="commodityInvestedPreview" readonly style="opacity:0.7;"></div>
+        </div>
+
+        <div id="cryptoFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
+          <label style="color:#C9A227;">Dettagli crypto</label>
+          <div class="row2">
+            <div><label>ID CoinGecko (es. bitcoin, ethereum)</label><input type="text" name="cryptoId" placeholder="es. bitcoin"></div>
+            <div><label>Simbolo (es. BTC)</label><input type="text" name="cryptoSymbol" placeholder="es. BTC"></div>
+          </div>
+          <div class="row2">
+            <div><label>Quantità</label><input type="number" step="0.00000001" name="cryptoQuantity" id="cryptoQuantity" placeholder="es. 0.15"></div>
+            <div><label>Prezzo acquisto per unità</label><input type="number" step="0.0001" name="cryptoPurchasePrice" id="cryptoPurchasePrice" placeholder="es. 60000"></div>
+          </div>
+          <div><label>Prezzo attuale per unità (vuoto = prezzo acquisto, aggiornabile con "Aggiorna prezzo" dal Riepilogo crypto)</label><input type="number" step="0.0001" name="cryptoCurrentPrice" placeholder=""></div>
+          <div><label>Valore totale investito (auto)</label><input type="number" id="cryptoInvestedPreview" readonly style="opacity:0.7;"></div>
         </div>
 
         <div><label>Nota (es. banca)</label><input type="text" name="note" placeholder=""></div>
@@ -2399,8 +3043,13 @@ function renderPortfolio() {
     ${fundsSummary.length>0 ? `<div class="card">
       <h3>Riepilogo fondi</h3>
       <div class="subtle">Rendimento YTD calcolato dal primo aggiornamento prezzo registrato quest'anno (o dal prezzo di acquisto se la posizione è aperta quest'anno). "Proiettato" estrapola il ritmo attuale a fine anno — è una stima, non una previsione.</div>
+      ${fundsSummary.length>1 ? `<button class="primary" type="button" id="updateAllFundsBtn" style="margin:8px 0;">🔄 Aggiorna tutti i fondi (${fundsSummary.length})</button>
+      <div class="subtle" id="statusUpdateAll" style="margin-bottom:8px;"></div>` : ''}
       ${fundsSummary.map(g=>{
-        const preselect = RAIFFEISEN_FUNDS.find(f => g.name.toLowerCase().includes(f.replace("Raiffeisen ","").toLowerCase())) || RAIFFEISEN_FUNDS[0];
+        const preselect = ALL_SOURCE_FUNDS.find(f => g.name === f)
+          || ALL_SOURCE_FUNDS.find(f => g.name.toLowerCase() === f.toLowerCase())
+          || ALL_SOURCE_FUNDS.find(f => g.name.toLowerCase().includes(f.replace("Raiffeisen ","").toLowerCase()))
+          || ALL_SOURCE_FUNDS[0];
         return `
         <div style="border-bottom:1px solid #24374F; padding:10px 0;">
           <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.name}</div>
@@ -2412,10 +3061,10 @@ function renderPortfolio() {
           <div class="stat-row"><span class="label">Rendimento YTD</span><span class="val ${g.ytdPct===null?'':(g.ytdPct>=0?'up':'down')}">${g.ytdPct===null?'N/D — aggiorna il prezzo per iniziare a tracciarlo':(g.ytdPct>=0?'+':'')+g.ytdPct.toFixed(2)+'%'}</span></div>
           <div class="stat-row"><span class="label">Proiettato a fine anno</span><span class="val ${g.projectedPct===null?'':(g.projectedPct>=0?'up':'down')}">${g.projectedPct===null?'N/D':(g.projectedPct>=0?'+':'')+g.projectedPct.toFixed(2)+'%'}</span></div>
           <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-            <select class="raif-fund-select" data-fundname="${g.name}" style="width:auto; font-size:11px; padding:5px;">${RAIFFEISEN_FUNDS.map(f=>`<option ${f===preselect?'selected':''}>${f}</option>`).join('')}</select>
-            <button class="secondary" type="button" data-updatefundname="${g.name}" style="width:auto; padding:5px 10px; font-size:11px;">🔄 Aggiorna prezzo (Raiffeisen)</button>
+            <select class="raif-fund-select" data-fundname="${escAttr(g.name)}" style="width:auto; font-size:11px; padding:5px;">${ALL_SOURCE_FUNDS.map(f=>`<option ${f===preselect?'selected':''}>${f}</option>`).join('')}</select>
+            <button class="secondary" type="button" data-updatefundname="${escAttr(g.name)}" style="width:auto; padding:5px 10px; font-size:11px;">🔄 Aggiorna prezzo</button>
           </div>
-          <div class="subtle" data-statusforname="${g.name}" style="margin-top:4px;"></div>
+          <div class="subtle" data-statusforname="${escAttr(g.name)}" style="margin-top:4px;"></div>
         </div>`;
       }).join('')}
       ${fundsSummary.length>1 ? (()=>{
@@ -2437,6 +3086,117 @@ function renderPortfolio() {
           <div class="stat-row"><span class="label">Capitale investito</span><span class="val">${fmt(g.totalInvestedALL)} ALL</span></div>
           <div class="stat-row"><span class="label">Cedole/plusvalenze ricevute</span><span class="val ${g.couponsReceivedALL>=0?'up':'down'}">${fmt(g.couponsReceivedALL)} ALL (${g.rendPct.toFixed(2)}%)</span></div>
           ${g.nextMaturity ? `<div class="stat-row"><span class="label">Prossima scadenza</span><span class="val">${g.nextMaturity}</span></div>` : ''}
+        </div>`).join('')}
+    </div>` : ''}
+    ${(yieldCurveData.perBond.length>0 || (data.marketYieldCurve && data.marketYieldCurve.points && data.marketYieldCurve.points.length>0)) ? `<div class="card">
+      <h3>Curva dei tassi</h3>
+      <div class="subtle">Preferisce i dati ufficiali delle aste del Ministero delle Finanze (Cutoff Yield) quando importati; altrimenti usa i titoli che hai registrato. Dove mancano dati, la previsione usa la media di due modelli — Nelson-Siegel e polinomio cubico su log(scadenza) — fit sui punti disponibili.</div>
+      <div style="border:1px solid #2E4159; border-radius:6px; padding:10px; margin:8px 0;">
+        <label style="color:#C9A227; font-size:12px;">Importa risultati aste (Ministero delle Finanze)</label>
+        <div class="subtle" style="margin:4px 0;">Scarica il file da financa.gov.al/rezultatet-e-ankandeve-te-titujve-qeveritare/ e caricalo qui.</div>
+        <input type="file" id="ministryAuctionsInput" accept=".xlsx,.xls">
+        <div class="subtle" id="ministryAuctionsStatus" style="margin-top:6px;"></div>
+        ${data.marketYieldCurve ? `<div class="subtle" style="margin-top:4px;">Ultimo import: ${data.marketYieldCurve.importedAt} · ${data.marketYieldCurve.points.length} scadenze, ${data.marketYieldCurve.totalRowsParsed} righe lette. <button class="secondary" type="button" id="clearMinistryData" style="width:auto; padding:3px 8px; font-size:10px; margin-left:6px;">Rimuovi</button></div>` : ''}
+      </div>
+      <div class="chart-wrap"><canvas id="yieldCurveChart" height="220"></canvas></div>
+      <div style="margin-top:10px;">
+        ${yieldCurveData.curveTable.map(r=>`<div class="stat-row"><span class="label">${r.maturity}${r.maturity===1?' anno':' anni'}${r.bond?' · '+r.bond.name+' (coll. '+r.bond.issueDate+')':''}${r.official?' · ISIN '+r.official.isin:''}</span><span class="val ${r.source.startsWith('previsto')?'down':''}">${r.ytm.toFixed(2)}% <span style="opacity:0.6; font-size:10px;">(${r.source})</span></span></div>`).join('')}
+      </div>
+      ${yieldCurveData.model && yieldCurveData.model.ns ? `<div class="subtle" style="margin-top:8px;">Nelson-Siegel: β₀=${yieldCurveData.model.ns.beta0.toFixed(2)} β₁=${yieldCurveData.model.ns.beta1.toFixed(2)} β₂=${yieldCurveData.model.ns.beta2.toFixed(2)} τ=${yieldCurveData.model.ns.tau.toFixed(2)}</div>` : ''}
+    </div>
+    <div class="card">
+      <h3>Prezzo e duration per obbligazione</h3>
+      <div class="subtle">Prezzo clean/dirty e duration calcolati con DCF a cedola semestrale, usando il rendimento di mercato dal punto più vicino sulla curva (non il prezzo fisso di acquisto).</div>
+      ${yieldCurveData.perBond.map(b=>{
+        const yearsToMaturity = (new Date(b.maturityDate) - now) / (365.25*86400000);
+        if (yearsToMaturity <= 0) return `<div class="stat-row"><span class="label">${b.name}${b.note?' · '+b.note:''}</span><span class="val">scaduta</span></div>`;
+        const marketYield = yieldCurveData.model ? yieldCurveData.model.predict(yearsToMaturity) : b.ytm;
+        const semiPeriodsRemaining = Math.max(1, Math.round(yearsToMaturity * 2));
+        const clean = bondCleanPrice(100, b.couponRate, marketYield, semiPeriodsRemaining);
+        const daysAcc = daysSinceLastCoupon(b.anchorDate, b.freqMonths, now);
+        const accrued = accruedInterest(100, b.couponRate, daysAcc);
+        const dirty = clean + accrued;
+        const dur = bondDuration(100, b.couponRate, marketYield, semiPeriodsRemaining);
+        return `<div style="border-bottom:1px solid #24374F; padding:8px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:13px; margin-bottom:4px;">${b.name}${b.note?' · '+b.note:''}</div>
+          <div class="stat-row"><span class="label">Anni residui / rendimento mercato stimato</span><span class="val">${yearsToMaturity.toFixed(2)}a @ ${marketYield.toFixed(2)}%</span></div>
+          <div class="stat-row"><span class="label">Prezzo clean / dirty (rateo ${accrued.toFixed(3)})</span><span class="val">${clean.toFixed(3)} / ${dirty.toFixed(3)}</span></div>
+          <div class="stat-row"><span class="label">Macaulay / Modified duration</span><span class="val">${dur.macaulay.toFixed(2)}a / ${dur.modified.toFixed(2)}</span></div>
+        </div>`;
+      }).join('')}
+      ${(() => {
+        const withDur = yieldCurveData.perBond.map(b=>{
+          const yearsToMaturity = (new Date(b.maturityDate) - now) / (365.25*86400000);
+          if (yearsToMaturity <= 0) return null;
+          const marketYield = yieldCurveData.model ? yieldCurveData.model.predict(yearsToMaturity) : b.ytm;
+          const semiPeriodsRemaining = Math.max(1, Math.round(yearsToMaturity * 2));
+          const dur = bondDuration(100, b.couponRate, marketYield, semiPeriodsRemaining);
+          const pos = data.portfolio.find(p=>p.id===b.id);
+          const weight = pos ? toALL(pos.amount, pos.currency) : 0;
+          return { weight, modified: dur.modified };
+        }).filter(Boolean);
+        const totalWeight = withDur.reduce((s,x)=>s+x.weight,0);
+        if (totalWeight<=0 || withDur.length===0) return '';
+        const weightedDur = withDur.reduce((s,x)=>s+x.weight*x.modified,0)/totalWeight;
+        return `<div class="stat-row" style="font-weight:600; padding-top:8px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Modified duration ponderata di portafoglio</span><span class="val">${weightedDur.toFixed(2)} — se i tassi salgono dell'1%, il valore scende di circa ${weightedDur.toFixed(2)}%</span></div>`;
+      })()}
+    </div>` : ''}
+    ${realEstateSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo immobili</h3>
+      ${realEstateSummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.name} ${g.code?'<span class="pill">'+g.code+'</span>':''}</div>
+          <div class="stat-row"><span class="label">Valore acquisto</span><span class="val">${fmt(g.purchaseValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Valore di mercato attuale</span><span class="val">${fmt(g.marketValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Plus/minusvalenza non realizzata</span><span class="val ${g.gainPct>=0?'up':'down'}">${g.gainPct>=0?'+':''}${g.gainPct.toFixed(2)}%</span></div>
+          ${g.isRented ? `<div class="stat-row"><span class="label">Affittato — canone</span><span class="val">${fmt(g.rentalAmount)} ${g.rentalCurrency}/mese</span></div>
+          <div class="stat-row"><span class="label">Affitto incassato finora</span><span class="val up">${fmt(g.rentReceived)} ${g.rentalCurrency}</span></div>` : '<div class="subtle">Non affittato</div>'}
+          ${g.linkedDebts.length>0 ? `<div class="stat-row"><span class="label">Debito collegato (${g.linkedDebts.map(d=>d.type).join(', ')})</span><span class="val ${g.linkedDebtBalanceALL<0?'down':''}">${fmt(g.linkedDebtBalanceALL)} ALL</span></div>` : ''}
+        </div>`).join('')}
+    </div>
+    <div class="card">
+      <h3>Vendita immobile</h3>
+      <form class="entry" id="realEstateSaleForm">
+        <div><label>Immobile</label><select name="propertyId">${realEstateSummary.map(g=>`<option value="${g.id}">${g.name} ${g.code||''} — acq. ${fmt(g.purchaseValue)} ${g.currency}</option>`).join('')}</select></div>
+        <div class="row2">
+          <div><label>Valore di vendita</label><input type="number" step="0.0001" name="saleValue" placeholder="0" required></div>
+          <div><label>Data vendita</label><input type="date" name="saleDate" value="${todayISO}"></div>
+        </div>
+        <div class="row2">
+          <div><label>Tassazione plusvalenza (%)</label><input type="number" step="0.0001" name="saleTaxPct" value="15"></div>
+          <div><label>Commissione agenzia (%)</label><input type="number" step="0.0001" name="saleAgencyFeePct" value="0"></div>
+        </div>
+        <button class="secondary" type="submit">Registra vendita</button>
+      </form>
+    </div>` : ''}
+    ${commoditySummary.length>0 ? `<div class="card">
+      <h3>Riepilogo materie prime</h3>
+      ${commoditySummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.name}</div>
+          <div class="stat-row"><span class="label">Quantità totale</span><span class="val">${g.totalQty.toFixed(4)} ${g.unit}</span></div>
+          <div class="stat-row"><span class="label">Prezzo attuale/unità</span><span class="val">${fmt(g.currentPrice)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Valore attuale</span><span class="val">${fmt(g.currentValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Prezzo medio acquisto</span><span class="val">${fmt(g.avgPrice)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Rendimento</span><span class="val ${g.rendPct>=0?'up':'down'}">${g.rendPct>=0?'+':''}${g.rendPct.toFixed(2)}% (${g.rendValore>=0?'+':''}${fmt(g.rendValore)} ${g.currency})</span></div>
+          <div class="subtle" style="margin-top:4px;">Prezzo aggiornabile solo a mano (modifica la posizione in Patrimonio) — non c'è una fonte automatica gratuita affidabile per le materie prime.</div>
+        </div>`).join('')}
+    </div>` : ''}
+    ${cryptoSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo crypto</h3>
+      <div class="subtle">Prezzi da CoinGecko (pubblica, senza chiave). L'ID deve corrispondere a quello usato da CoinGecko (es. "bitcoin", "ethereum").</div>
+      ${cryptoSummary.length>1 ? `<button class="primary" type="button" id="updateAllCryptoBtn" style="margin:8px 0;">🔄 Aggiorna tutte le crypto (${cryptoSummary.length})</button>
+      <div class="subtle" id="statusUpdateAllCrypto" style="margin-bottom:8px;"></div>` : ''}
+      ${cryptoSummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.symbol||g.name} <span class="pill">${g.name}</span></div>
+          <div class="stat-row"><span class="label">Quantità totale</span><span class="val">${g.totalQty}</span></div>
+          <div class="stat-row"><span class="label">Prezzo attuale/unità</span><span class="val">${fmt(g.currentPrice)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Valore attuale</span><span class="val">${fmt(g.currentValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Prezzo medio acquisto</span><span class="val">${fmt(g.avgPrice)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Rendimento</span><span class="val ${g.rendPct>=0?'up':'down'}">${g.rendPct>=0?'+':''}${g.rendPct.toFixed(2)}% (${g.rendValore>=0?'+':''}${fmt(g.rendValore)} ${g.currency})</span></div>
+          <button class="secondary" type="button" data-updatecryptoname="${escAttr(g.name)}" data-cryptocurrency="${g.currency}" style="margin-top:6px; width:auto; padding:5px 10px; font-size:11px;">🔄 Aggiorna prezzo</button>
+          <div class="subtle" data-statusforcrypto="${escAttr(g.name)}" style="margin-top:4px;"></div>
         </div>`).join('')}
     </div>` : ''}
     ${depositsSummary.length>0 ? `<div class="card">
@@ -2522,21 +3282,25 @@ function renderPortfolio() {
     <div class="card">
       <h3>Posizioni attuali</h3>
       <div class="row2" style="margin-bottom:10px;">
-        <select id="bulkEditSelect">
-          <option value="">— scegli categoria o macro-categoria da modificare in blocco —</option>
-          <optgroup label="Categoria">${data.categories.portfolio.map(c=>`<option value="cat:${c}">${c}</option>`).join('')}</optgroup>
-          <optgroup label="Macro-categoria">${data.macroCategories.portfolio.map(m=>`<option value="macro:${m}">${m}</option>`).join('')}</optgroup>
-        </select>
-        <button class="secondary" type="button" id="bulkEditBtn" style="width:auto;">Modifica</button>
-      </div>
-      ${portfolioBulkEditFilter ? `<div class="alert-banner">✎ Modifica multipla attiva: ${portfolioBulkEditFilter.type==='cat'?'Categoria':'Macro-categoria'} "${portfolioBulkEditFilter.value}". <button class="secondary" type="button" id="bulkEditClose" style="width:auto; margin-top:6px;">Chiudi modifica multipla</button></div>` : ''}
-      <div class="row2" style="margin-bottom:10px;">
         <div><label>Filtra per tipo</label><select id="portFilterSelect">${filterOptions}</select></div>
         <div><label>Filtra per macro-categoria</label><select id="portMacroFilterSelect">${macroFilterOptions}</select></div>
       </div>
-      ${filteredPositions.length===0 ? '<div class="empty">Nessuna posizione con questo filtro.</div>' : filteredPositions.map(p=>{
-        const inBulkEdit = portfolioBulkEditFilter && ((portfolioBulkEditFilter.type==='cat' && p.type===portfolioBulkEditFilter.value) || (portfolioBulkEditFilter.type==='macro' && p.macro===portfolioBulkEditFilter.value));
-        if (editingPortfolioId === p.id || inBulkEdit) return renderPortfolioEditForm(p);
+      <div class="row2" style="margin-bottom:10px;">
+        <button class="secondary" type="button" id="bulkEditBtn" style="width:auto;">${portfolioEditModeActive ? "Chiudi modifica" : "✎ Modifica"}</button>
+        ${portfolioEditModeActive ? `<div class="subtle" style="align-self:center;">${portfolioTypeFilter!=="all"||portfolioMacroFilter!=="all" ? "Modificabili solo le voci del filtro attivo." : "Modificabili tutte le voci (nessun filtro attivo)."}</div>` : ''}
+      </div>
+      ${(() => {
+        const LIQUIDITY_TYPES = ["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD"];
+        const isAllLiquidity = filteredPositions.length>0 && filteredPositions.every(p=>LIQUIDITY_TYPES.includes(p.type));
+        if (isAllLiquidity) {
+          const grouped = {};
+          filteredPositions.forEach(p=>{ grouped[p.type] = (grouped[p.type]||0) + toALL(p.amount, p.currency); });
+          return `<div class="subtle" style="margin-bottom:8px;">Solo riepilogo — i singoli movimenti di liquidità si trovano nella sezione Spese/Reddito.</div>` +
+            Object.keys(grouped).map(t=>`<div class="stat-row"><span class="label">${t}</span><span class="val ${grouped[t]>=0?'':'down'}">${fmt(grouped[t])} ALL</span></div>`).join('');
+        }
+        return filteredPositions.length===0 ? '<div class="empty">Nessuna posizione con questo filtro.</div>' : filteredPositions.map(p=>{
+        const eligibleForPencil = portfolioEditModeActive && (portfolioTypeFilter==="all" || p.type===portfolioTypeFilter) && (portfolioMacroFilter==="all" || p.macro===portfolioMacroFilter);
+        if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
         let maturityTag = "";
         if (p.maturityDate) {
@@ -2552,19 +3316,52 @@ function renderPortfolio() {
             <div class="li-main"><span class="li-cat">${p.fundName || p.type}${p.securityCode?' <span class=\"pill\">'+p.securityCode+'</span>':''}${p.macro?' <span class=\"pill\">'+p.macro+'</span>':''}${p.note?' · '+p.note:''}${maturityTag}</span><span class="li-date">${p.date||''} · ${p.currency}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
             <div style="display:flex;align-items:center;">
               <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-              <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+              ${eligibleForPencil ? `<button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>` : ''}
               <button class="li-del" data-del-port="${p.id}">✕</button>
             </div>
           </div>
           ${autoNote}
         </div>`;
-      }).join('')}
+        }).join('');
+      })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
       <div class="section-total" style="font-size:11px; opacity:0.7;"><span></span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} € · ${fmt(totalALL/data.settings.fxUsd)} $</span></div>
     </div>
   `;
   bindCategorySelects();
   bindMacroSelects();
+
+  const realEstateSaleForm = document.getElementById("realEstateSaleForm");
+  if (realEstateSaleForm) realEstateSaleForm.addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const propertyId = f.get("propertyId");
+    const property = data.portfolio.find(p=>p.id===propertyId);
+    if (!property) return;
+    const saleValue = Number(f.get("saleValue"));
+    const saleDate = f.get("saleDate") || todayISO;
+    const saleTaxPct = Number(f.get("saleTaxPct"))||0;
+    const saleAgencyFeePct = Number(f.get("saleAgencyFeePct"))||0;
+    const capitalGain = Math.max(0, saleValue - property.amount);
+    const taxAmt = capitalGain * saleTaxPct/100;
+    const agencyFeeAmt = saleValue * saleAgencyFeePct/100;
+    const netProceeds = saleValue - taxAmt - agencyFeeAmt;
+    const code = property.securityCode || "";
+    const bankAccount = bankAccountForCurrency(property.currency);
+    const saleId = uid();
+    data.income.push({ id: uid(), date: saleDate, amount: saleValue, currency: property.currency, category: "Vendita immobile", macro: "Real Estate", note: `${code} · plusvalenza ${fmt(capitalGain)}`, securityCode: code||null });
+    if (taxAmt > 0) {
+      if (!data.categories.expenses.includes("Tassazione plusvalenza immobile")) data.categories.expenses.push("Tassazione plusvalenza immobile");
+      data.expenses.push({ id: uid(), date: saleDate, amount: taxAmt, category: "Tassazione plusvalenza immobile", macro: "Real Estate", note: code, securityCode: code||null });
+    }
+    if (agencyFeeAmt > 0) {
+      data.expenses.push({ id: uid(), date: saleDate, amount: agencyFeeAmt, category: "Commissione agenzia affitto", macro: "Real Estate", note: `${code} · vendita`, securityCode: code||null });
+    }
+    createLiquidityAdjustment(bankAccount, netProceeds, saleDate, `Vendita immobile ${code} (netto)`.trim(), saleId);
+    deletePortfolioPosition(propertyId);
+    saveData(); renderPortfolio();
+    alert(`Vendita registrata: ${fmt(netProceeds)} ${property.currency} netti accreditati su ${bankAccount}.`);
+  });
 
   function updatePortFieldsVisibility() {
     const catSel = document.getElementById("portForm").querySelector(".cat-select");
@@ -2574,18 +3371,48 @@ function renderPortfolio() {
     const bondFields = document.getElementById("bondFields");
     const depositFields = document.getElementById("depositFields");
     const fundFields = document.getElementById("fundFields");
+    const realEstateFields = document.getElementById("realEstateFields");
+    const commodityFields = document.getElementById("commodityFields");
+    const cryptoFields = document.getElementById("cryptoFields");
     const isBond = val.includes("obbligazione");
     const isFund = val.includes("fond") || macroVal.includes("fond");
+    const isRealEstate = val.includes("immobil") || val.includes("casa") || val.includes("appartamento") || macroVal.includes("real estate") || macroVal.includes("immobil");
+    const isCommodity = val.includes("commodit") || macroVal.includes("commodit");
+    const isCrypto = val.includes("crypto") || val.includes("cripto") || macroVal.includes("crypto");
+    const isQtyPriceAsset = isFund || isCommodity || isCrypto;
     const isSecurity = isBond || val.includes("deposito") || isFund;
     bondFields.style.display = isBond ? "block" : "none";
     depositFields.style.display = val.includes("deposito") ? "block" : "none";
     fundFields.style.display = isFund ? "block" : "none";
+    realEstateFields.style.display = isRealEstate ? "block" : "none";
+    commodityFields.style.display = isCommodity ? "block" : "none";
+    cryptoFields.style.display = isCrypto ? "block" : "none";
     document.getElementById("titleCodeField").style.display = isSecurity ? "block" : "none";
-    document.getElementById("marketValueField").style.display = isFund ? "none" : "block";
-    document.getElementById("maturityDateField").style.display = isFund ? "none" : "block";
-    document.getElementById("amountField").style.display = isFund ? "none" : "block";
+    document.getElementById("marketValueField").style.display = (isQtyPriceAsset || isRealEstate) ? "none" : "block";
+    document.getElementById("maturityDateField").style.display = (isQtyPriceAsset || isRealEstate) ? "none" : "block";
+    document.getElementById("amountField").style.display = isQtyPriceAsset ? "none" : "block";
     document.getElementById("issuerField").style.display = (isFund || isBond) ? "block" : "none";
   }
+  function updateCommodityInvestedPreview() {
+    const qty = Number(document.getElementById("commodityQuantity").value)||0;
+    const price = Number(document.getElementById("commodityPurchasePrice").value)||0;
+    const invested = qty*price;
+    document.getElementById("commodityInvestedPreview").value = invested ? invested.toFixed(4) : "";
+  }
+  document.getElementById("commodityQuantity").addEventListener("input", updateCommodityInvestedPreview);
+  document.getElementById("commodityPurchasePrice").addEventListener("input", updateCommodityInvestedPreview);
+  function updateCryptoInvestedPreview() {
+    const qty = Number(document.getElementById("cryptoQuantity").value)||0;
+    const price = Number(document.getElementById("cryptoPurchasePrice").value)||0;
+    const invested = qty*price;
+    document.getElementById("cryptoInvestedPreview").value = invested ? invested.toFixed(4) : "";
+  }
+  document.getElementById("cryptoQuantity").addEventListener("input", updateCryptoInvestedPreview);
+  document.getElementById("cryptoPurchasePrice").addEventListener("input", updateCryptoInvestedPreview);
+  const propertyIsRentedChk = document.getElementById("propertyIsRentedChk");
+  if (propertyIsRentedChk) propertyIsRentedChk.addEventListener("change", ()=>{
+    document.getElementById("rentalSubFields").style.display = propertyIsRentedChk.checked ? "block" : "none";
+  });
   function updateFundInvestedPreview() {
     const price = Number(document.getElementById("fundPurchaseQuotaPrice").value) || 0;
     const qty = Number(document.getElementById("fundQuotaCount").value) || 0;
@@ -2599,7 +3426,6 @@ function renderPortfolio() {
   function updateBondModeVisibility() {
     const mode = document.getElementById("bondModeSelect").value;
     document.getElementById("bondCouponRow").style.display = mode === "cedola" ? "flex" : "none";
-    document.getElementById("bondPriceRow").style.display = mode === "finale" ? "flex" : "none";
   }
   function updateBondDatesSync() {
     const chk = document.getElementById("purchasedAtIssueChk");
@@ -2656,16 +3482,55 @@ function renderPortfolio() {
       options:{ plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } }, scales:{ x:{ ticks:{ color:'#6B7E99', font:{size:9} }, grid:{ color:'#1E2E47' } }, y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M' }, grid:{ color:'#1E2E47' } } } }
     });
   }
+  if (yieldCurveData.observedPoints.length>0) {
+    const ycCtx = document.getElementById("yieldCurveChart");
+    if (window.yieldCurveChartInstance) window.yieldCurveChartInstance.destroy();
+    const modelLine = [];
+    if (yieldCurveData.model) {
+      for (let t=0.25; t<=20; t+=0.25) modelLine.push({x:t, y:yieldCurveData.model.predict(t)});
+    }
+    window.yieldCurveChartInstance = new Chart(ycCtx, {
+      data:{ datasets:[
+        ...(modelLine.length>0 ? [{ type:'line', label:'Curva stimata (NS+cubico)', data: modelLine, borderColor:'#3F6E5E', backgroundColor:'transparent', pointRadius:0, borderWidth:2, tension:0.3 }] : []),
+        { type:'scatter', label:'Punti osservati', data: yieldCurveData.observedPoints.map(p=>({x:p.t, y:p.y})), backgroundColor:'#C9A227', pointRadius:6 }
+      ] },
+      options:{
+        plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales:{
+          x:{ title:{ display:true, text:'Anni alla scadenza', color:'#6B7E99' }, ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+          y:{ title:{ display:true, text:'Rendimento a scadenza (%)', color:'#6B7E99' }, ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } }
+        }
+      }
+    });
+  }
 
-  document.getElementById("bulkEditBtn").addEventListener("click", ()=>{
-    const val = document.getElementById("bulkEditSelect").value;
-    if (!val) { alert("Scegli prima una categoria o macro-categoria."); return; }
-    const [t, ...rest] = val.split(":");
-    portfolioBulkEditFilter = { type: t, value: rest.join(":") };
+  const ministryAuctionsInput = document.getElementById("ministryAuctionsInput");
+  if (ministryAuctionsInput) ministryAuctionsInput.addEventListener("change", async ev=>{
+    const file = ev.target.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById("ministryAuctionsStatus");
+    statusEl.textContent = "Lettura del file in corso…";
+    try {
+      const result = await parseMinistryAuctionsXLSX(file);
+      data.marketYieldCurve = result;
+      saveData();
+      statusEl.textContent = `Importate ${result.points.length} scadenze da ${result.totalRowsParsed} righe.`;
+      renderPortfolio();
+    } catch (err) {
+      statusEl.textContent = "Errore: " + String(err.message||err).slice(0,150);
+    }
+  });
+  const clearMinistryDataBtn = document.getElementById("clearMinistryData");
+  if (clearMinistryDataBtn) clearMinistryDataBtn.addEventListener("click", ()=>{
+    data.marketYieldCurve = null;
+    saveData();
     renderPortfolio();
   });
-  const bulkEditCloseBtn = document.getElementById("bulkEditClose");
-  if (bulkEditCloseBtn) bulkEditCloseBtn.addEventListener("click", ()=>{ portfolioBulkEditFilter = null; renderPortfolio(); });
+
+  document.getElementById("bulkEditBtn").addEventListener("click", ()=>{
+    portfolioEditModeActive = !portfolioEditModeActive;
+    renderPortfolio();
+  });
   document.getElementById("portFilterSelect").addEventListener("change", ev=>{ portfolioTypeFilter = ev.target.value; renderPortfolio(); });
   document.getElementById("portMacroFilterSelect").addEventListener("change", ev=>{ portfolioMacroFilter = ev.target.value; renderPortfolio(); });
   document.getElementById("toggleCatManage-portfolio").addEventListener("click", ()=>{ catManagerOpen.portfolio = !catManagerOpen.portfolio; renderPortfolio(); });
@@ -2695,15 +3560,24 @@ function renderPortfolio() {
     const isBond = typeLower.includes("obbligazione");
     const isDeposit = typeLower.includes("deposito");
     const isFund = typeLower.includes("fond") || macroLower.includes("fond");
+    const isRealEstate = typeLower.includes("immobil") || typeLower.includes("casa") || typeLower.includes("appartamento") || macroLower.includes("real estate") || macroLower.includes("immobil");
+    const isCommodity = typeLower.includes("commodit") || macroLower.includes("commodit");
+    const isCrypto = typeLower.includes("crypto") || typeLower.includes("cripto") || macroLower.includes("crypto");
     const date = f.get("date") || todayISO;
     const fundQuotaCount = isFund ? (Number(f.get("fundQuotaCount"))||0) : 0;
     const fundPurchasePrice = isFund ? (Number(f.get("fundPurchaseQuotaPrice"))||0) : 0;
     const fundCurrentPrice = isFund ? (Number(f.get("fundCurrentQuotaPrice"))||fundPurchasePrice) : 0;
-    const nominal = isFund ? (fundQuotaCount*fundPurchasePrice) : Number(f.get("amount"));
+    const commodityQty = isCommodity ? (Number(f.get("commodityQuantity"))||0) : 0;
+    const commodityPPrice = isCommodity ? (Number(f.get("commodityPurchasePrice"))||0) : 0;
+    const commodityCPrice = isCommodity ? (f.get("commodityCurrentPrice")?Number(f.get("commodityCurrentPrice")):commodityPPrice) : 0;
+    const cryptoQty = isCrypto ? (Number(f.get("cryptoQuantity"))||0) : 0;
+    const cryptoPPrice = isCrypto ? (Number(f.get("cryptoPurchasePrice"))||0) : 0;
+    const cryptoCPrice = isCrypto ? (f.get("cryptoCurrentPrice")?Number(f.get("cryptoCurrentPrice")):cryptoPPrice) : 0;
+    const nominal = isFund ? (fundQuotaCount*fundPurchasePrice) : isCommodity ? (commodityQty*commodityPPrice) : isCrypto ? (cryptoQty*cryptoPPrice) : Number(f.get("amount"));
     const posId = uid();
     const posObj = {
       id:posId, type, macro:macro||null, amount:nominal, currency:f.get("currency"),
-      marketValue: isFund ? (fundQuotaCount*fundCurrentPrice) : (f.get("marketValue")? Number(f.get("marketValue")) : null),
+      marketValue: isFund ? (fundQuotaCount*fundCurrentPrice) : isCommodity ? (commodityQty*commodityCPrice) : isCrypto ? (cryptoQty*cryptoCPrice) : isRealEstate ? (f.get("propertyMarketValue")?Number(f.get("propertyMarketValue")):nominal) : (f.get("marketValue")? Number(f.get("marketValue")) : null),
       date, maturityDate: f.get("maturityDate")||null, note:f.get("note")||"", issuer: f.get("issuer")||null
     };
     let placementCommissionAmt = 0;
@@ -2738,6 +3612,36 @@ function renderPortfolio() {
       posObj.fundCurrentQuotaPrice = fundCurrentPrice;
       const existingFundLot = data.portfolio.find(p => p.fundName === posObj.fundName && p.securityCode);
       posObj.securityCode = (f.get("securityCode")||"").trim() || (existingFundLot ? existingFundLot.securityCode : consumeNextSecurityCode());
+    } else if (isRealEstate) {
+      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+      posObj.propertyType = f.get("propertyType") || "";
+      posObj.propertyTaxPct = f.get("propertyTaxPct") ? Number(f.get("propertyTaxPct")) : 0;
+      posObj.propertyTaxPaymentMethod = f.get("paymentType") || "Banca";
+      posObj.propertyRevalued = f.get("propertyRevalued") === "on";
+      posObj.isRented = f.get("propertyIsRented") === "on";
+      if (posObj.isRented) {
+        posObj.rentalAmount = Number(f.get("rentalAmount"))||0;
+        posObj.rentalCurrency = f.get("rentalCurrency")||"ALL";
+        posObj.rentalStartDate = f.get("rentalStartDate")||date;
+        posObj.rentalDurationMonths = Number(f.get("rentalDurationMonths"))||0;
+        posObj.rentalEndDate = posObj.rentalDurationMonths>0 ? addMonthsToDate(posObj.rentalStartDate, posObj.rentalDurationMonths) : null;
+        posObj.rentalTaxPct = f.get("rentalTaxPct") ? Number(f.get("rentalTaxPct")) : 15;
+        posObj.rentalAgencyFee = Number(f.get("rentalAgencyFee"))||0;
+        posObj.rentalAgencyFeeInstallments = Math.max(1, Number(f.get("rentalAgencyFeeInstallments"))||1);
+        posObj.rentalAgencyFeePaid = 0;
+      }
+    } else if (isCommodity) {
+      posObj.commodityName = f.get("commodityName") || "";
+      posObj.commodityUnit = f.get("commodityUnit") || "";
+      posObj.commodityQuantity = commodityQty;
+      posObj.commodityPurchasePrice = commodityPPrice;
+      posObj.commodityCurrentPrice = commodityCPrice;
+    } else if (isCrypto) {
+      posObj.cryptoId = (f.get("cryptoId")||"").trim().toLowerCase();
+      posObj.cryptoSymbol = (f.get("cryptoSymbol")||"").trim().toUpperCase();
+      posObj.cryptoQuantity = cryptoQty;
+      posObj.cryptoPurchasePrice = cryptoPPrice;
+      posObj.cryptoCurrentPrice = cryptoCPrice;
     }
     data.portfolio.push(posObj);
     if (isDebtType(posObj.type, posObj.macro)) {
@@ -2777,8 +3681,52 @@ function renderPortfolio() {
       if (f.has("couponRate")) { pos.couponRate = f.get("couponRate")?Number(f.get("couponRate")):null; pos.bondTaxRate = Number(f.get("bondTaxRate"))||15; pos.purchasePrice = Number(f.get("purchasePrice"))||100; pos.redemptionPrice = Number(f.get("redemptionPrice"))||100; pos.bondYears = f.get("bondYears")||null; pos.issueDate = f.get("issueDate")||null; pos.purchasedAtIssue = f.get("purchasedAtIssue")==="on"; }
       if (f.has("depositRate")) { pos.depositRate = f.get("depositRate")?Number(f.get("depositRate")):null; pos.depositTaxRate = Number(f.get("depositTaxRate"))||15; pos.depositYears = f.get("depositYears")||null; }
       if (f.has("fundQuotaCount")) { pos.fundQuotaCount = Number(f.get("fundQuotaCount"))||0; pos.fundPurchaseQuotaPrice = Number(f.get("fundPurchaseQuotaPrice"))||0; pos.amount = pos.fundQuotaCount*pos.fundPurchaseQuotaPrice; if (!pos.fundCurrentQuotaPrice) pos.fundCurrentQuotaPrice = pos.fundPurchaseQuotaPrice; pos.marketValue = pos.fundQuotaCount*pos.fundCurrentQuotaPrice; }
+      if (f.has("commodityQuantity")) {
+        pos.commodityName = f.get("commodityName") || "";
+        pos.commodityUnit = f.get("commodityUnit") || "";
+        pos.commodityQuantity = Number(f.get("commodityQuantity"))||0;
+        pos.commodityPurchasePrice = Number(f.get("commodityPurchasePrice"))||0;
+        pos.commodityCurrentPrice = f.get("commodityCurrentPrice") ? Number(f.get("commodityCurrentPrice")) : pos.commodityPurchasePrice;
+        pos.amount = pos.commodityQuantity*pos.commodityPurchasePrice;
+        pos.marketValue = pos.commodityQuantity*pos.commodityCurrentPrice;
+      }
+      if (f.has("cryptoQuantity")) {
+        pos.cryptoId = (f.get("cryptoId")||"").trim().toLowerCase();
+        pos.cryptoSymbol = (f.get("cryptoSymbol")||"").trim().toUpperCase();
+        pos.cryptoQuantity = Number(f.get("cryptoQuantity"))||0;
+        pos.cryptoPurchasePrice = Number(f.get("cryptoPurchasePrice"))||0;
+        pos.cryptoCurrentPrice = f.get("cryptoCurrentPrice") ? Number(f.get("cryptoCurrentPrice")) : pos.cryptoPurchasePrice;
+        pos.amount = pos.cryptoQuantity*pos.cryptoPurchasePrice;
+        pos.marketValue = pos.cryptoQuantity*pos.cryptoCurrentPrice;
+      }
+      if (f.has("propertyType")) {
+        pos.propertyType = f.get("propertyType") || "";
+        pos.propertyTaxPct = f.get("propertyTaxPct") ? Number(f.get("propertyTaxPct")) : 0;
+        pos.propertyTaxPaymentMethod = f.get("paymentType") || "Banca";
+        pos.propertyRevalued = f.get("propertyRevalued") === "on";
+        const wasRented = pos.isRented;
+        pos.isRented = f.get("propertyIsRented") === "on";
+        if (pos.isRented) {
+          pos.rentalAmount = Number(f.get("rentalAmount"))||0;
+          pos.rentalCurrency = f.get("rentalCurrency")||"ALL";
+          pos.rentalStartDate = f.get("rentalStartDate")||pos.date;
+          pos.rentalDurationMonths = Number(f.get("rentalDurationMonths"))||0;
+          pos.rentalEndDate = pos.rentalDurationMonths>0 ? addMonthsToDate(pos.rentalStartDate, pos.rentalDurationMonths) : null;
+          pos.rentalTaxPct = f.get("rentalTaxPct") ? Number(f.get("rentalTaxPct")) : 15;
+          pos.rentalAgencyFee = Number(f.get("rentalAgencyFee"))||0;
+          pos.rentalAgencyFeeInstallments = Math.max(1, Number(f.get("rentalAgencyFeeInstallments"))||1);
+          if (!wasRented) pos.rentalAgencyFeePaid = 0;
+        }
+      }
       editingPortfolioId = null;
       saveData(); renderPortfolio();
+    });
+  });
+  document.querySelectorAll('[id^="editPropertyIsRentedChk_"]').forEach(chk=>{
+    chk.addEventListener("change", ()=>{
+      const posId = chk.id.replace("editPropertyIsRentedChk_", "");
+      const sub = document.getElementById("editRentalSubFields_"+posId);
+      if (sub) sub.style.display = chk.checked ? "block" : "none";
     });
   });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
@@ -2788,33 +3736,98 @@ function renderPortfolio() {
       if (hadLinkedRule) alert("Eliminato anche il reddito ricorrente collegato a questo titolo.");
     });
   });
+  async function updateOneFund(fundName, raiffeisenName) {
+    const lots = data.portfolio.filter(p => (p.fundName||p.type)===fundName && isFundEntry(p));
+    if (lots.length===0) return { ok:false, error:"nessun lotto" };
+    const { price, currency } = await fetchFundPrice(raiffeisenName);
+    lots.forEach(pos => {
+      pos.fundCurrentQuotaPrice = price;
+      pos.marketValue = (pos.fundQuotaCount||0) * price;
+      if (!pos.priceHistory) pos.priceHistory = [];
+      const existingIdx = pos.priceHistory.findIndex(h=>h.date===todayISO);
+      if (existingIdx>=0) pos.priceHistory[existingIdx].price = price;
+      else pos.priceHistory.push({ date: todayISO, price });
+      pos.priceHistory.sort((a,b)=>a.date.localeCompare(b.date));
+    });
+    return { ok:true, price, currency, currencyMismatch: currency && currency !== lots[0].currency, lotCount: lots.length };
+  }
   document.querySelectorAll("[data-updatefundname]").forEach(btn=>{
     btn.addEventListener("click", async ()=>{
       const fundName = btn.dataset.updatefundname;
-      const select = document.querySelector(`.raif-fund-select[data-fundname="${fundName}"]`);
-      const statusEl = document.querySelector(`[data-statusforname="${fundName}"]`);
-      const lots = data.portfolio.filter(p => (p.fundName||p.type)===fundName && isFundEntry(p));
-      if (!select || lots.length===0) return;
-      statusEl.textContent = "Recupero prezzo da Raiffeisen Invest…";
+      const select = btn.parentElement.querySelector(".raif-fund-select");
+      const statusEl = btn.parentElement.nextElementSibling;
+      if (!select) return;
+      statusEl.textContent = "Recupero prezzo…";
       try {
-        const { price, currency } = await fetchRaiffeisenFundPrice(select.value);
-        lots.forEach(pos => {
-          pos.fundCurrentQuotaPrice = price;
-          pos.marketValue = (pos.fundQuotaCount||0) * price;
-          if (!pos.priceHistory) pos.priceHistory = [];
-          const existingIdx = pos.priceHistory.findIndex(h=>h.date===todayISO);
-          if (existingIdx>=0) pos.priceHistory[existingIdx].price = price;
-          else pos.priceHistory.push({ date: todayISO, price });
-          pos.priceHistory.sort((a,b)=>a.date.localeCompare(b.date));
-        });
-        if (currency && currency !== lots[0].currency) statusEl.textContent = `Attenzione: il fondo quota in ${currency}, la posizione è in ${lots[0].currency} — controlla manualmente.`;
+        const r = await updateOneFund(fundName, select.value);
         saveData();
-        statusEl.textContent = `Aggiornato su ${lots.length} lotti: ${fmt(price)} ${currency}/quota (${select.value}).`;
+        statusEl.textContent = r.currencyMismatch
+          ? `Attenzione: il fondo quota in ${r.currency}, la posizione è in valuta diversa — controlla manualmente.`
+          : `Aggiornato su ${r.lotCount} lotti: ${fmt(r.price)} ${r.currency}/quota (${select.value}).`;
         renderPortfolio();
       } catch (err) {
         statusEl.textContent = "Errore: " + String(err.message||err).slice(0,150);
       }
     });
+  });
+
+  const updateAllFundsBtn = document.getElementById("updateAllFundsBtn");
+  if (updateAllFundsBtn) updateAllFundsBtn.addEventListener("click", async ()=>{
+    const statusEl = document.getElementById("statusUpdateAll");
+    const selects = document.querySelectorAll(".raif-fund-select");
+    let okCount = 0, errCount = 0, mismatches = [];
+    for (const select of selects) {
+      const fundName = select.dataset.fundname;
+      statusEl.textContent = `Aggiorno ${fundName}… (${okCount+errCount+1}/${selects.length})`;
+      try {
+        const r = await updateOneFund(fundName, select.value);
+        if (r.currencyMismatch) mismatches.push(fundName);
+        okCount++;
+      } catch (err) {
+        errCount++;
+      }
+    }
+    saveData();
+    statusEl.textContent = `Fatto: ${okCount} aggiornati${errCount>0?', '+errCount+' falliti':''}${mismatches.length>0?' — attenzione valuta per: '+mismatches.join(', '):''}.`;
+    renderPortfolio();
+  });
+
+  async function updateOneCrypto(cryptoId, currency) {
+    const price = await fetchCryptoPrice(cryptoId, currency);
+    const lots = data.portfolio.filter(p => (p.cryptoId||p.type)===cryptoId && isCryptoType(p.type, p.macro));
+    lots.forEach(pos => { pos.cryptoCurrentPrice = price; pos.marketValue = (pos.cryptoQuantity||0)*price; });
+    return { price, lotCount: lots.length };
+  }
+  document.querySelectorAll("[data-updatecryptoname]").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const cryptoId = btn.dataset.updatecryptoname;
+      const currency = btn.dataset.cryptocurrency;
+      const statusEl = btn.nextElementSibling;
+      statusEl.textContent = "Recupero prezzo da CoinGecko…";
+      try {
+        const r = await updateOneCrypto(cryptoId, currency);
+        saveData();
+        statusEl.textContent = `Aggiornato su ${r.lotCount} lotti: ${fmt(r.price)} ${currency}/unità.`;
+        renderPortfolio();
+      } catch (err) {
+        statusEl.textContent = "Errore: " + String(err.message||err).slice(0,150);
+      }
+    });
+  });
+  const updateAllCryptoBtn = document.getElementById("updateAllCryptoBtn");
+  if (updateAllCryptoBtn) updateAllCryptoBtn.addEventListener("click", async ()=>{
+    const statusEl = document.getElementById("statusUpdateAllCrypto");
+    const buttons = document.querySelectorAll("[data-updatecryptoname]");
+    let okCount = 0, errCount = 0;
+    for (const b of buttons) {
+      const cryptoId = b.dataset.updatecryptoname;
+      const currency = b.dataset.cryptocurrency;
+      statusEl.textContent = `Aggiorno ${cryptoId}… (${okCount+errCount+1}/${buttons.length})`;
+      try { await updateOneCrypto(cryptoId, currency); okCount++; } catch (err) { errCount++; }
+    }
+    saveData();
+    statusEl.textContent = `Fatto: ${okCount} aggiornate${errCount>0?', '+errCount+' fallite':''}.`;
+    renderPortfolio();
   });
 
   const bondSaleSelectEl = document.getElementById("bondSaleSelect");
@@ -3124,8 +4137,8 @@ function avgStatsFor(entries, dayOfMonth) {
 function avgRowHtml(label, stats) {
   return `<div style="display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-bottom:1px dashed #24374F; gap:10px;">
     <span style="font-family:'Inter',sans-serif; font-size:12.5px; color:#EDE6D6; flex:1;">${label}</span>
-    <span style="text-align:right; font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#C9A227; white-space:nowrap;">${fmt(stats.total)} ALL
-      <div style="font-size:10px; color:#8FA3BF; font-family:'Inter',sans-serif; margin-top:2px;">semplice: ${fmt(stats.simple)}/gg · reale (${stats.distinctDays}gg): ${fmt(stats.effective)}/gg</div>
+    <span style="text-align:right; font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#C9A227; white-space:nowrap;">${fmtDisplay(stats.total)}
+      <div style="font-size:10px; color:#8FA3BF; font-family:'Inter',sans-serif; margin-top:2px;">semplice: ${fmtDisplay(stats.simple)}/gg · reale (${stats.distinctDays}gg): ${fmtDisplay(stats.effective)}/gg</div>
     </span>
   </div>`;
 }
@@ -3256,12 +4269,224 @@ function creditCardSettingsBlock() {
   }).join('');
 }
 
+function renderAssets() {
+  document.getElementById("headerTitle").textContent = "Assets";
+  const stockSummary = computeStockSummary();
+  const derivativeSummary = computeDerivativeSummary();
+  const assetOrDerivFilter = c => isStockType(c) || isDerivativeType(c);
+  const assetPositions = data.portfolio.filter(p => (isStockType(p.type, p.macro) || isDerivativeType(p.type, p.macro)) && p.amount>0);
+  const totalStockValueALL = stockSummary.reduce((s,g)=>s+toALL(g.marketValue, g.currency),0);
+  const totalDerivValueALL = derivativeSummary.reduce((s,g)=>s+toALL(g.marketValue, g.currency),0);
+
+  document.getElementById("main").innerHTML = `
+    <div class="card">
+      <h3>Nuova posizione (azione o derivato)</h3>
+      <form class="entry" id="assetForm">
+        <div><label>Tipo</label>${categorySelect("portfolio", null, assetOrDerivFilter)}</div>
+        <div id="stockAssetFields">
+          <div class="row2">
+            <div><label>Ticker/simbolo</label><input type="text" name="stockTicker" placeholder="es. AAPL"></div>
+            <div><label>Nome società (opz.)</label><input type="text" name="stockName" placeholder="es. Apple Inc."></div>
+          </div>
+          <div><label>Borsa/mercato (opz.)</label><input type="text" name="stockExchange" placeholder="es. NASDAQ"></div>
+          <div class="row2">
+            <div><label>Quantità</label><input type="number" step="0.0001" name="stockQuantity" id="assetQuantity" placeholder="es. 10"></div>
+            <div><label>Prezzo acquisto/azione</label><input type="number" step="0.0001" name="stockPurchasePrice" id="assetPurchasePrice" placeholder="es. 180"></div>
+          </div>
+          <div class="row2">
+            <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option selected>USD</option></select></div>
+            <div><label>Prezzo attuale/azione (vuoto = prezzo acquisto)</label><input type="number" step="0.0001" name="stockCurrentPrice" placeholder=""></div>
+          </div>
+          <div><label>Valore totale investito (auto)</label><input type="number" id="assetInvestedPreview" readonly style="opacity:0.7;"></div>
+          <div style="border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:8px;">
+            <label style="color:#8FA3BF; font-size:11px;">Dividendo (opzionale)</label>
+            <div class="row2">
+              <div><label>Dividendo per azione</label><input type="number" step="0.0001" name="dividendAmount" placeholder="es. 0.24"></div>
+              <div><label>Frequenza</label><select name="dividendFrequency"><option value="monthly">Mensile</option><option value="quarterly" selected>Trimestrale</option><option value="semiannual">Semestrale</option><option value="annual">Annuale</option></select></div>
+            </div>
+            <div class="row2">
+              <div><label>Data primo pagamento</label><input type="date" name="dividendStartDate" value="${todayISO}"></div>
+              <div><label>Tassazione (%)</label><input type="number" step="0.0001" name="dividendTaxPct" value="15"></div>
+            </div>
+          </div>
+        </div>
+        <div id="derivativeAssetFields" style="display:none;">
+          <div class="row2">
+            <div><label>Tipo derivato</label><input type="text" name="derivativeType" placeholder="es. Opzione call, Future"></div>
+            <div><label>Sottostante</label><input type="text" name="derivativeUnderlying" placeholder="es. S&P 500"></div>
+          </div>
+          <div class="row2">
+            <div><label>Valore/prezzo acquisto</label><input type="number" step="0.0001" name="amount" placeholder="0"></div>
+            <div><label>Valuta</label><select name="currencyDeriv"><option>ALL</option><option>EUR</option><option selected>USD</option></select></div>
+          </div>
+          <div class="row2">
+            <div><label>Valore attuale (vuoto = valore acquisto)</label><input type="number" step="0.0001" name="derivativeCurrentValue" placeholder=""></div>
+            <div><label>Data scadenza (opz.)</label><input type="date" name="maturityDate"></div>
+          </div>
+        </div>
+        <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
+        <div><label>Nota</label><input type="text" name="note" placeholder=""></div>
+        <button class="primary" type="submit">Aggiungi</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Posizioni registrate</h3>
+      ${assetPositions.length===0 ? '<div class="empty">Nessuna azione o derivato registrati.</div>' : assetPositions.map(p=>{
+        if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
+        const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
+        return `<div class="list-item">
+          <div class="li-main"><span class="li-cat">${p.stockTicker||p.derivativeType||p.type}${p.stockName?' · '+p.stockName:''}${p.derivativeUnderlying?' · '+p.derivativeUnderlying:''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}</span></div>
+          <div style="display:flex;align-items:center;">
+            <span class="li-amt">${fmt(mv)} ${p.currency}</span>
+            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    ${stockSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo azioni</h3>
+      ${stockSummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.ticker}${g.name?' · '+g.name:''}${g.exchange?' <span class="pill">'+g.exchange+'</span>':''}</div>
+          <div class="stat-row"><span class="label">Quantità</span><span class="val">${g.quantity}</span></div>
+          <div class="stat-row"><span class="label">Valore acquisto</span><span class="val">${fmt(g.purchaseValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Valore di mercato attuale</span><span class="val">${fmt(g.marketValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Plus/minusvalenza non realizzata</span><span class="val ${g.gainPct>=0?'up':'down'}">${g.gainPct>=0?'+':''}${g.gainPct.toFixed(2)}%</span></div>
+          ${g.hasDividend ? `<div class="stat-row"><span class="label">Dividendo (${g.dividendFrequency})</span><span class="val">${fmt(g.dividendAmount)} ${g.currency}/azione</span></div>
+          <div class="stat-row"><span class="label">Dividendi incassati finora</span><span class="val up">${fmt(g.divReceived)} ${g.currency}</span></div>` : '<div class="subtle">Nessun dividendo impostato</div>'}
+        </div>`).join('')}
+      <div class="stat-row" style="font-weight:600; padding-top:8px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Totale azioni</span><span class="val">${fmtDisplay(totalStockValueALL)}</span></div>
+    </div>` : ''}
+    ${derivativeSummary.length>0 ? `<div class="card">
+      <h3>Riepilogo derivati</h3>
+      ${derivativeSummary.map(g=>`
+        <div style="border-bottom:1px solid #24374F; padding:10px 0;">
+          <div style="font-family:'Fraunces',serif; color:#C9A227; font-size:14px; margin-bottom:6px;">${g.derivativeType}${g.underlying?' · '+g.underlying:''}</div>
+          <div class="stat-row"><span class="label">Valore acquisto</span><span class="val">${fmt(g.purchaseValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Valore attuale</span><span class="val">${fmt(g.marketValue)} ${g.currency}</span></div>
+          <div class="stat-row"><span class="label">Plus/minusvalenza</span><span class="val ${g.gainPct>=0?'up':'down'}">${g.gainPct>=0?'+':''}${g.gainPct.toFixed(2)}%</span></div>
+          ${g.expiryDate ? `<div class="stat-row"><span class="label">Scadenza</span><span class="val">${g.expiryDate}</span></div>` : ''}
+        </div>`).join('')}
+      <div class="stat-row" style="font-weight:600; padding-top:8px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Totale derivati</span><span class="val">${fmtDisplay(totalDerivValueALL)}</span></div>
+    </div>` : ''}
+  `;
+  bindCategorySelects();
+
+  const assetCatSelect = document.getElementById("assetForm").querySelector(".cat-select");
+  function updateAssetFieldsVisibility() {
+    const val = (assetCatSelect.value||"").toLowerCase();
+    const isDeriv = val.includes("derivat") || val.includes("opzione") || val.includes("future");
+    document.getElementById("stockAssetFields").style.display = isDeriv ? "none" : "block";
+    document.getElementById("derivativeAssetFields").style.display = isDeriv ? "block" : "none";
+  }
+  assetCatSelect.addEventListener("change", updateAssetFieldsVisibility);
+  updateAssetFieldsVisibility();
+  function updateAssetInvestedPreview() {
+    const qty = Number(document.getElementById("assetQuantity").value)||0;
+    const price = Number(document.getElementById("assetPurchasePrice").value)||0;
+    const invested = qty*price;
+    document.getElementById("assetInvestedPreview").value = invested ? invested.toFixed(4) : "";
+  }
+  document.getElementById("assetQuantity").addEventListener("input", updateAssetInvestedPreview);
+  document.getElementById("assetPurchasePrice").addEventListener("input", updateAssetInvestedPreview);
+
+  document.getElementById("assetForm").addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const type = ev.target.querySelector(".cat-select").value;
+    const macro = (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[type]) || null;
+    const typeLower = type.toLowerCase();
+    const isDeriv = typeLower.includes("derivat") || typeLower.includes("opzione") || typeLower.includes("future");
+    const date = f.get("date") || todayISO;
+    const posId = uid();
+    let posObj;
+    if (isDeriv) {
+      posObj = {
+        id: posId, type, macro, amount: Number(f.get("amount"))||0, currency: f.get("currencyDeriv")||"USD",
+        marketValue: f.get("derivativeCurrentValue") ? Number(f.get("derivativeCurrentValue")) : null,
+        date, maturityDate: f.get("maturityDate")||null, note: f.get("note")||"",
+        derivativeType: f.get("derivativeType")||"", derivativeUnderlying: f.get("derivativeUnderlying")||""
+      };
+    } else {
+      const qty = Number(f.get("stockQuantity"))||0;
+      const pPrice = Number(f.get("stockPurchasePrice"))||0;
+      const cPrice = f.get("stockCurrentPrice") ? Number(f.get("stockCurrentPrice")) : pPrice;
+      posObj = {
+        id: posId, type, macro, amount: qty*pPrice, currency: f.get("currency")||"USD",
+        marketValue: qty*cPrice, date, maturityDate: null, note: f.get("note")||"",
+        stockTicker: f.get("stockTicker")||"", stockName: f.get("stockName")||"", stockExchange: f.get("stockExchange")||"",
+        stockQuantity: qty, stockPurchasePrice: pPrice, stockCurrentPrice: cPrice
+      };
+      const divAmt = f.get("dividendAmount") ? Number(f.get("dividendAmount")) : 0;
+      if (divAmt > 0) {
+        posObj.dividendAmount = divAmt;
+        posObj.dividendFrequency = f.get("dividendFrequency")||"quarterly";
+        posObj.dividendStartDate = f.get("dividendStartDate")||date;
+        posObj.dividendTaxPct = f.get("dividendTaxPct") ? Number(f.get("dividendTaxPct")) : 15;
+      }
+    }
+    data.portfolio.push(posObj);
+    saveData(); renderAssets();
+  });
+  document.querySelectorAll("[data-editport]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingPortfolioId = btn.dataset.editport; renderAssets(); });
+  });
+  document.querySelectorAll("[data-editport-cancel]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editingPortfolioId = null; renderAssets(); });
+  });
+  document.querySelectorAll("[data-editportform]").forEach(form=>{
+    form.addEventListener("submit", ev=>{
+      ev.preventDefault();
+      const id = form.dataset.editportform;
+      const pos = data.portfolio.find(p=>p.id===id);
+      if (!pos) return;
+      const f = new FormData(ev.target);
+      pos.type = ev.target.querySelector(".cat-select").value;
+      pos.currency = f.get("currency");
+      pos.date = f.get("date") || pos.date;
+      if (f.has("maturityDate")) pos.maturityDate = f.get("maturityDate") || null;
+      pos.note = f.get("note") || "";
+      if (f.has("stockQuantity")) {
+        pos.stockTicker = f.get("stockTicker")||""; pos.stockName = f.get("stockName")||""; pos.stockExchange = f.get("stockExchange")||"";
+        pos.stockQuantity = Number(f.get("stockQuantity"))||0;
+        pos.stockPurchasePrice = Number(f.get("stockPurchasePrice"))||0;
+        pos.stockCurrentPrice = f.get("stockCurrentPrice") ? Number(f.get("stockCurrentPrice")) : pos.stockPurchasePrice;
+        pos.amount = pos.stockQuantity*pos.stockPurchasePrice;
+        pos.marketValue = pos.stockQuantity*pos.stockCurrentPrice;
+        const divAmt = f.get("dividendAmount") ? Number(f.get("dividendAmount")) : 0;
+        if (divAmt > 0) {
+          pos.dividendAmount = divAmt;
+          pos.dividendFrequency = f.get("dividendFrequency")||"quarterly";
+          pos.dividendStartDate = f.get("dividendStartDate")||pos.date;
+          pos.dividendTaxPct = f.get("dividendTaxPct") ? Number(f.get("dividendTaxPct")) : 15;
+        } else {
+          delete pos.dividendAmount; delete pos.dividendFrequency; delete pos.dividendStartDate; delete pos.dividendTaxPct;
+        }
+      } else if (f.has("derivativeType")) {
+        pos.derivativeType = f.get("derivativeType")||""; pos.derivativeUnderlying = f.get("derivativeUnderlying")||"";
+        if (f.has("amount")) pos.amount = Number(f.get("amount"));
+        if (f.has("marketValue")) pos.marketValue = f.get("marketValue") ? Number(f.get("marketValue")) : null;
+      }
+      editingPortfolioId = null;
+      saveData(); renderAssets();
+    });
+  });
+  document.querySelectorAll("[data-del-port]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      deletePortfolioPosition(btn.dataset.delPort);
+      saveData(); renderAssets();
+    });
+  });
+}
+
 function renderDebts() {
   document.getElementById("headerTitle").textContent = "Debiti";
   const debtsSummary = computeDebtsSummary();
   const ccSummary = computeCreditCardSummary();
   const debtOrCcFilter = c => isDebtType(c) || isCreditCardType(c);
   const debtPositions = data.portfolio.filter(p => (isDebtType(p.type, p.macro) || isCreditCardType(p.type)) && p.date);
+  const propertyOptions = data.portfolio.filter(p => isRealEstateType(p.type, p.macro) && p.amount>0);
 
   document.getElementById("main").innerHTML = `
     <div class="card">
@@ -3274,6 +4499,7 @@ function renderDebts() {
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
         </div>
         <div><label>Data di partenza</label><input type="date" name="date" value="${todayISO}"></div>
+        ${propertyOptions.length>0 ? `<div><label>Immobile collegato (opzionale, solo per report)</label><select name="linkedPropertyId"><option value="">— nessuno —</option>${propertyOptions.map(p=>`<option value="${p.id}">${p.propertyType||p.type} ${p.securityCode||''}</option>`).join('')}</select></div>` : ''}
         <div><label>Nota</label><input type="text" name="note" placeholder="es. prestito auto"></div>
         <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
           <label style="color:#C9A227;">Piano di ammortamento (se è un prestito/mutuo, non una carta)</label>
@@ -3305,9 +4531,10 @@ function renderDebts() {
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const nextInst = p.schedule ? p.schedule.find(i=>!i.processed) : null;
         const remaining = p.schedule ? p.schedule.filter(i=>!i.processed).reduce((s,i)=>s+i.capital,0) : null;
+        const linkedProp = p.linkedPropertyId ? data.portfolio.find(x=>x.id===p.linkedPropertyId) : null;
         return `<div class="list-item" style="flex-direction:column; align-items:stretch;">
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div class="li-main"><span class="li-cat">${p.type}${p.issuer?' · '+p.issuer:''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
+            <div class="li-main"><span class="li-cat">${p.type}${p.issuer?' · '+p.issuer:''}${linkedProp?' · immobile: '+(linkedProp.propertyType||linkedProp.type):''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
             <div style="display:flex;align-items:center;">
               <span class="li-amt ${p.amount<0?'down':''}">${fmt(p.amount)} ${p.currency}</span>
               <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
@@ -3354,7 +4581,7 @@ function renderDebts() {
     const date = f.get("date") || todayISO;
     const posId = uid();
     const isLoan = isDebtType(type, macro) && !isCreditCardType(type);
-    const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: f.get("issuer")||null };
+    const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: f.get("issuer")||null, linkedPropertyId: f.get("linkedPropertyId")||null };
 
     const termMonths = Number(f.get("termMonths"))||0;
     if (isLoan && termMonths > 0) {
@@ -3421,6 +4648,7 @@ function renderDebts() {
       if (f.has("amount")) pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
+      if (f.has("linkedPropertyId")) pos.linkedPropertyId = f.get("linkedPropertyId") || null;
       pos.note = f.get("note") || "";
       editingPortfolioId = null;
       saveData(); renderDebts();
@@ -3883,8 +5111,14 @@ async function downloadFromDrive(silent) {
         portfolio: (parsed.recurring&&parsed.recurring.portfolio)||[]
       },
       snapshots: parsed.snapshots||[],
-      fxHistory: parsed.fxHistory||[]
+      fxHistory: parsed.fxHistory||[],
+      fxDatabase: parsed.fxDatabase||{},
+      paymentTypes: (parsed.paymentTypes && parsed.paymentTypes.length) ? parsed.paymentTypes : DEFAULT_DATA.paymentTypes.slice(),
+      creditCardSettings: parsed.creditCardSettings||{},
+      creditCardDebts: parsed.creditCardDebts||[],
+      marketYieldCurve: parsed.marketYieldCurve||null
     };
+    ensureLiquidityCategories();
     persistLocalOnly();
     if (statusEl) statusEl.textContent = "Dati aggiornati da Google Drive.";
     updateSyncBadge();
@@ -3982,8 +5216,14 @@ function renderDrive() {
             portfolio: (parsed.recurring&&parsed.recurring.portfolio)||[]
           },
           snapshots: parsed.snapshots||[],
-          fxHistory: parsed.fxHistory||[]
+          fxHistory: parsed.fxHistory||[],
+          fxDatabase: parsed.fxDatabase||{},
+          paymentTypes: (parsed.paymentTypes && parsed.paymentTypes.length) ? parsed.paymentTypes : DEFAULT_DATA.paymentTypes.slice(),
+          creditCardSettings: parsed.creditCardSettings||{},
+          creditCardDebts: parsed.creditCardDebts||[],
+          marketYieldCurve: parsed.marketYieldCurve||null
         };
+        ensureLiquidityCategories();
         saveData(); alert("Backup importato."); renderDrive();
       } catch(err) { alert("File non valido: " + err.message); }
     };
@@ -4127,6 +5367,8 @@ function bindMacroAssign(group, refreshFn) {
 }
 
 const RAIFFEISEN_FUNDS = ["Raiffeisen Prestigj","Raiffeisen Vizion","Raiffeisen Invest Euro","Raiffeisen Miks","Raiffeisen Pension","Raiffeisen Solid"];
+const ALBSIG_FUNDS = ['Fondi I Pensionit Privat "Albsig"','Fondi I Pensionit Privat "Smart Pension"','Fondi Investimit "Albsig Standard"'];
+const ALL_SOURCE_FUNDS = [...RAIFFEISEN_FUNDS, ...ALBSIG_FUNDS];
 const CORS_PROXIES = [
   url => "https://api.allorigins.win/raw?url=" + encodeURIComponent(url),
   url => "https://corsproxy.io/?url=" + encodeURIComponent(url),
@@ -4160,6 +5402,22 @@ async function fetchRaiffeisenFundPrice(fundName) {
   return { price, currency };
 }
 
+async function fetchAlbsigFundPrice(fundName) {
+  const target = "https://www.albsiginvest.al/performanca-e-fondeve/";
+  const html = await fetchViaProxies(target);
+  const nameEscaped = fundName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(nameEscaped + "[\\s\\S]{1,200}?([\\d,]+\\.\\d{2})\\s+([\\d,]+\\.\\d{4})", "i");
+  const m = html.match(re);
+  if (!m) throw new Error(`Non ho trovato "${fundName}" nella pagina (nome diverso o formato cambiato?)`);
+  const price = parseFloat(m[2].replace(/,/g, ""));
+  return { price, currency: "ALL" };
+}
+
+async function fetchFundPrice(fundName) {
+  if (ALBSIG_FUNDS.includes(fundName)) return fetchAlbsigFundPrice(fundName);
+  return fetchRaiffeisenFundPrice(fundName);
+}
+
 async function fetchBoaRate() {
   const target = "https://www.bankofalbania.org/Markets/Official_exchange_rate/";
   const html = await fetchViaProxies(target);
@@ -4180,7 +5438,8 @@ function fxDbGet() {
 }
 function fxDbSetRate(dateStr, eur, usd) {
   const db = fxDbGet();
-  db[dateStr] = { eur: eur||null, usd: usd||null };
+  const existing = db[dateStr] || { eur: null, usd: null };
+  db[dateStr] = { eur: (eur!=null ? eur : existing.eur), usd: (usd!=null ? usd : existing.usd) };
 }
 function retroactiveFxCorrection() {
   let changed = 0;
@@ -4625,7 +5884,7 @@ function renderSettings() {
   });
 }
 
-const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, debts: renderDebts, budget: renderBudget, drive: renderDrive, settings: renderSettings };
+const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, assets: renderAssets, debts: renderDebts, budget: renderBudget, drive: renderDrive, settings: renderSettings };
 function switchTab(tab) {
   document.querySelectorAll("nav.tabs button").forEach(b=> b.classList.toggle("active", b.dataset.tab===tab));
   RENDERERS[tab]();
