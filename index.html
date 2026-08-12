@@ -53,11 +53,22 @@ button.secondary { background:none; border:1px solid #2E4159; color:#C9A227; pad
 .li-amt.exp { color:#C1725A; }
 .li-del { background:none; border:none; color:#6B7E99; font-size:16px; padding:0 0 0 12px; cursor:pointer; }
 .empty { color:#5C7089; font-size:13px; text-align:center; padding:18px 0; }
-nav.tabs { position:fixed; bottom:0; left:0; right:0; background:#0F1B2B; border-top:1px solid #2E4159; display:flex; max-width:520px; margin:0 auto; z-index:10; }
-nav.tabs button { flex:1; background:none; border:none; color:#6B7E99; padding:9px 2px 8px; font-family:'Inter',sans-serif; font-size:9px; letter-spacing:.01em; display:flex; flex-direction:column; align-items:center; gap:3px; cursor:pointer; }
+nav.tabs { position:fixed; bottom:0; left:0; right:0; background:#0F1B2B; border-top:1px solid #2E4159; display:flex; max-width:520px; margin:0 auto; z-index:10;
+  /* Con tutte le schede attive non entrano nello schermo: la barra deve scorrere
+     in orizzontale invece di tagliare le ultime voci. */
+  overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch;
+  scrollbar-width:none; -ms-overflow-style:none; scroll-behavior:smooth; }
+nav.tabs::-webkit-scrollbar { display:none; }
+/* Sfumature ai bordi: suggeriscono che c'è altro da scorrere. */
+.tabs-wrap { position:fixed; bottom:0; left:0; right:0; z-index:10; pointer-events:none; max-width:520px; margin:0 auto; }
+.tabs-fade { position:absolute; bottom:0; width:22px; height:100%; pointer-events:none; z-index:11; transition:opacity .2s; }
+.tabs-fade.left { left:0; background:linear-gradient(to right,#0F1B2B,rgba(15,27,43,0)); }
+.tabs-fade.right { right:0; background:linear-gradient(to left,#0F1B2B,rgba(15,27,43,0)); }
+nav.tabs button { flex:0 0 auto; min-width:62px; background:none; border:none; color:#6B7E99; padding:9px 6px 8px; font-family:'Inter',sans-serif; font-size:9px; letter-spacing:.01em; display:flex; flex-direction:column; align-items:center; gap:3px; cursor:pointer; white-space:nowrap; }
 nav.tabs button .ic { font-size:15px; }
 nav.tabs button.active { color:#C9A227; }
-nav.tabs.nav-edit-mode { max-height:70vh; overflow:hidden; border-top:1px solid #C9A227; }
+nav.tabs.nav-edit-mode { max-height:70vh; overflow-y:auto; overflow-x:hidden; border-top:1px solid #C9A227; }
+nav.tabs.nav-edit-mode button { min-width:0; }
 .chart-wrap { background:#0F1B2B; border-radius:6px; padding:8px 4px; }
 .subtle { font-size:12px; color:#8FA3BF; margin-bottom:12px; }
 .section-total { display:flex; justify-content:space-between; font-family:'IBM Plex Mono',monospace; font-size:14px; padding-top:8px; margin-top:4px; border-top:1px solid #2E4159; font-weight:600; }
@@ -88,7 +99,8 @@ nav.tabs.nav-edit-mode { max-height:70vh; overflow:hidden; border-top:1px solid 
 @media (min-width: 900px) {
   #app { display:flex; flex-direction:column; max-width:1200px; padding-bottom:24px; }
   header.top { order:1; position:static; padding:30px 40px 20px; }
-  nav.tabs { order:2; position:static; max-width:none; margin:0; border-top:none; border-bottom:1px solid #2E4159; padding:0 24px; justify-content:flex-start; gap:4px; }
+  nav.tabs { order:2; position:static; max-width:none; margin:0; border-top:none; border-bottom:1px solid #2E4159; padding:0 24px; justify-content:flex-start; gap:4px; overflow-x:auto; }
+  .tabs-wrap { display:none; }
   nav.tabs button { flex:none; flex-direction:row; gap:8px; font-size:13px; padding:14px 16px; }
   nav.tabs button .ic { font-size:16px; }
   main { order:3; padding:28px 40px 40px; display:grid; grid-template-columns: repeat(2, 1fr); gap:20px; align-content:start; }
@@ -109,7 +121,7 @@ nav.tabs.nav-edit-mode { max-height:70vh; overflow:hidden; border-top:1px solid 
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.02</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.18</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -125,7 +137,8 @@ nav.tabs.nav-edit-mode { max-height:70vh; overflow:hidden; border-top:1px solid 
     </select>
   </header>
   <main id="main"></main>
-  <nav class="tabs" id="navTabs"></nav>
+  <div class="tabs-wrap"><div class="tabs-fade left" id="tabsFadeL" style="opacity:0;"></div><div class="tabs-fade right" id="tabsFadeR"></div></div>
+<nav class="tabs" id="navTabs"></nav>
 </div>
 
 <script>
@@ -197,7 +210,7 @@ nav.tabs.nav-edit-mode { max-height:70vh; overflow:hidden; border-top:1px solid 
 // ---------- Constants ----------
 const thisYearNum = new Date().getFullYear();
 const STORE_KEY = "fiTrackerData_v1";
-const AUTO_MANAGED_INCOME_CATEGORIES = ["Cedola e le info", "Interesse deposito", "Capital gain obbligazioni", "Capital gain fondi", "Affitto immobile", "Vendita immobile", "Dividendo", "Capital gain azioni", "Capital gain materie prime", "Capital gain crypto"];
+const AUTO_MANAGED_INCOME_CATEGORIES = ["Cedola", "Interesse deposito", "Capital gain obbligazioni", "Capital gain fondi", "Affitto immobile", "Vendita immobile", "Dividendo", "Capital gain azioni", "Capital gain materie prime", "Capital gain crypto"];
 const AUTO_MANAGED_EXPENSE_CATEGORIES = ["Commissione collocamento titoli", "Commissione disbursement cedola", "Commissione vendita titoli", "Commissione titoli custodia", "Tassa immobile", "Commissione agenzia affitto", "Tassazione plusvalenza immobile", "Interessi carta di credito", "Interessi prestiti", "Commissione prestito", "Assicurazione prestito", "Tassazione capital gain fondi", "Tassazione dividendi", "Penale chiusura deposito", "Tassazione capital gain azioni", "Tassazione capital gain materie prime", "Tassazione capital gain crypto"];
 function isAutoManagedIncomeCategory(cat) {
   return AUTO_MANAGED_INCOME_CATEGORIES.includes(cat) || (data.taxDeductions||[]).some(d=>d.name===cat);
@@ -211,7 +224,22 @@ const DEFAULT_CATEGORIES = {
   portfolio: ["Banca","Cash","Fondo pensione","Obbligazione Governativa","Obbligazione Societa","Deposito","Fondo azionario","Prestito/Debito","Immobile","Commodity","Crypto","Azione","Derivato","ETF","Altro"]
 };
 const DEFAULT_DATA = {
-  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4, inflationPct: 3, targetAllocation: {}, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL", tabOrder: null, hiddenTabs: [] },
+  settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4, inflationPct: 3,
+    lavoroDipendente: {
+      attivo: false, startMonth: null, giornoPaga: 10,
+      stipendioLordo: 0, massimaleContributivo: 186416, tettoDeduzioneMensile: 50000,
+      // percentuali contributive
+      pctPensioneDatore: 15, pctSanitaDatore: 1.7, pctPensioneLavoratore: 9.5, pctSanitaLavoratore: 1.7,
+      // basi imponibili: null = calcolate dal lordo, un numero = valore imposto a mano
+      basePensioneDatore: null, baseSanitaDatore: null, basePensioneLavoratore: null, baseSanitaLavoratore: null, baseTassazione: null,
+      // scaglioni: soglia superiore, sottrazione dalla base, aliquota
+      scaglioni: [
+        { fino: 40000,  sottrai: 0,      aliquota: 0,    fisso: 0 },
+        { fino: 50000,  sottrai: 30000,  aliquota: 6.5,  fisso: 0 },
+        { fino: 200000, sottrai: 30000,  aliquota: 13,   fisso: 0 },
+        { fino: null,   sottrai: 200000, aliquota: 23,   fisso: 22100 }
+      ]
+    }, targetAllocation: {}, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL", tabOrder: null, hiddenTabs: [] },
   income: [],
   expenses: [],
   portfolio: [],
@@ -604,6 +632,16 @@ function shouldGenerateThisMonth(rule) {
   return shouldGenerateForMonth(rule, thisYearNum, now.getMonth()+1);
 }
 
+// Regola anti-duplicati per i carichi: se esiste già un movimento con la stessa
+// data, lo stesso importo e lo stesso codice, quella riga non va ricaricata.
+function esisteGiaMovimento(paymentType, signedAmount, date, code) {
+  return data.portfolio.some(p =>
+    p.type === paymentType &&
+    p.date === date &&
+    Math.abs(Number(p.amount) - signedAmount) < 0.005 &&
+    (code ? String(p.note||"").includes(code) : true));
+}
+
 function createLiquidityAdjustment(paymentType, signedAmount, date, note, linkedTxnId) {
   if (!paymentType) return null;
   const id = uid();
@@ -668,7 +706,7 @@ function resyncLiquidityAdjustment(txnId, paymentType, signedAmount, date, note)
 function ensureBondDepositCategories() {
   let changed = false;
   const ensureCat = (group, cat) => { if (!data.categories[group].includes(cat)) { data.categories[group].push(cat); changed = true; } };
-  ensureCat("income", "Cedola e le info");
+  ensureCat("income", "Cedola");
   ensureCat("income", "Capital gain obbligazioni");
   ensureCat("income", "Interesse deposito");
   ensureCat("expenses", "Commissione collocamento titoli");
@@ -683,7 +721,7 @@ function ensureBondDepositCategories() {
   if (!data.macroCategories.income.includes("Interessi da Titoli - Standard")) { data.macroCategories.income.push("Interessi da Titoli - Standard"); changed = true; }
   if (!data.macroCategories.expenses.includes("Tassazione da Titoli - Standard")) { data.macroCategories.expenses.push("Tassazione da Titoli - Standard"); changed = true; }
   if (!data.categoryMacroMap.income) data.categoryMacroMap.income = {};
-  ["Cedola e le info","Capital gain obbligazioni","Interesse deposito"].forEach(c=>{
+  ["Cedola","Capital gain obbligazioni","Interesse deposito"].forEach(c=>{
     if (data.categoryMacroMap.income[c] !== "Interessi da Titoli - Standard") { data.categoryMacroMap.income[c] = "Interessi da Titoli - Standard"; changed = true; }
   });
   if (changed) saveData();
@@ -933,8 +971,88 @@ function bookAssetSale(o) {
   createLiquidityAdjustment(bankAccount, c.capitalGainNetto, o.saleDate, `Plusvalenza netta vendita: ${o.name}`, saleId+"-gain");
   return saleId;
 }
-function peekNextSecurityCode() {
-  const seq = data.settings.nextSecurityCodeSeq || 1;
+// Assegna il codice a una nuova voce. La casella è precompilata col prossimo
+// codice: se l'utente lo accetta, il contatore deve avanzare, altrimenti ogni
+// nuova posizione riceverebbe sempre lo stesso codice.
+// Costruisce dal modulo i dati che identificano lo strumento.
+function datiIdentitaDaForm(f, tipo, macro) {
+  const g = k => (f && typeof f.get === "function") ? (f.get(k) || "") : "";
+  return { type: tipo || g("type"), macro: macro || null, issuerName: g("issuerName"),
+    fundName: g("fundName"), stockTicker: g("stockTicker"), cryptoSymbol: g("cryptoSymbol"),
+    cryptoId: g("cryptoId"), commodityName: g("commodityName"), issueDate: g("issueDate"),
+    bondYears: g("bondYears"), depositYears: g("depositYears") };
+}
+
+function assegnaCodiceTitolo(valore, dati) {
+  // Se lo strumento esiste già in portafoglio (stesso nome/ticker ed ente, e per
+  // obbligazioni e depositi anche la stessa data di collocamento) si riusa il codice
+  // assegnato al primo acquisto, invece di crearne un altro per lo stesso titolo.
+  if (dati) {
+    const esistente = codiceEsistentePerStrumento(dati);
+    if (esistente) return esistente;
+  }
+  const v = String(valore == null ? "" : valore).trim();
+  if (!v) return consumeNextSecurityCode();
+  if (v === peekNextSecurityCode()) return consumeNextSecurityCode();
+  const m = /^T(\d{7})$/.exec(v);
+  if (m) {
+    const n = Number(m[1]);
+    if (n >= (data.settings.nextSecurityCodeSeq || 1)) data.settings.nextSecurityCodeSeq = n + 1;
+  }
+  return v;
+}
+// Lo scostamento serve quando più moduli sono mostrati insieme (le carte):
+// ciascuno deve proporre un codice diverso.
+// Chiave d'identità di uno strumento: due posizioni con la stessa chiave sono lo
+// stesso titolo e devono condividere il codice, assegnato al primo acquisto.
+// Per obbligazioni e depositi entra anche la data di collocamento: due emissioni
+// dello stesso ente con la stessa durata sono titoli diversi.
+function chiaveIdentitaStrumento(dati) {
+  const norm = v => String(v || "").trim().toLowerCase();
+  const tipo = norm(dati.type);
+  const ente = norm(dati.issuerName);
+  if (tipo.includes("fond") || (typeof isFundEntry === "function" && isFundEntry(dati))) {
+    return dati.fundName ? "fondo|" + norm(dati.fundName) + "|" + ente : null;
+  }
+  if (tipo.includes("obbligazione") || tipo.includes("deposito")) {
+    const collocamento = norm(dati.issueDate);
+    if (!ente && !collocamento) return null;
+    return "titolo|" + tipo + "|" + ente + "|" + norm(dati.bondYears || dati.depositYears) + "|" + collocamento;
+  }
+  if (isCryptoType(dati.type, dati.macro)) {
+    const s = norm(dati.cryptoSymbol) || norm(dati.cryptoId);
+    return s ? "crypto|" + s + "|" + ente : null;
+  }
+  if (isCommodityType(dati.type, dati.macro)) {
+    return dati.commodityName ? "commodity|" + norm(dati.commodityName) + "|" + ente : null;
+  }
+  if (isStockType(dati.type, dati.macro) || isETFType(dati.type, dati.macro)) {
+    return dati.stockTicker ? "titoloquotato|" + norm(dati.stockTicker) + "|" + ente : null;
+  }
+  // Immobili e tutto il resto: ogni posizione è unica, nessun riuso di codice.
+  return null;
+}
+
+// Codice già assegnato a uno strumento con la stessa identità, se esiste.
+function codiceEsistentePerStrumento(dati) {
+  const chiave = chiaveIdentitaStrumento(dati);
+  if (!chiave) return null;
+  const trovato = data.portfolio.find(p => p.securityCode && chiaveIdentitaStrumento(p) === chiave);
+  return trovato ? trovato.securityCode : null;
+}
+
+// Codice da usare al salvataggio: quello dello strumento se già esiste, altrimenti
+// quello scritto a mano (se diverso dal precompilato), altrimenti uno nuovo.
+function codicePerNuovaPosizione(dati, codiceScritto) {
+  const esistente = codiceEsistentePerStrumento(dati);
+  if (esistente) return esistente;
+  const scritto = String(codiceScritto || "").trim();
+  if (scritto && scritto !== peekNextSecurityCode()) return scritto;
+  return consumeNextSecurityCode();
+}
+
+function peekNextSecurityCode(scostamento) {
+  const seq = (data.settings.nextSecurityCodeSeq || 1) + (Number(scostamento) || 0);
   return "T" + String(seq).padStart(7, "0");
 }
 function consumeNextSecurityCode() {
@@ -955,15 +1073,44 @@ function autoGenerateSecurityIncome() {
     const freqKey = p.couponFrequency || "annual";
     const freqObj = FREQUENCIES.find(f => f.key === freqKey) || FREQUENCIES.find(f => f.key === "annual");
     const scheduleAnchorDate = p.issueDate || p.date;
-    const rule = { frequency: freqKey, startMonth: p.startMonth || localMonthStr(new Date(scheduleAnchorDate)), dayOfMonth: new Date(scheduleAnchorDate).getDate() };
-    if (!shouldGenerateThisMonth(rule)) return;
-    const already = data.income.some(i => i.linkedBondId === p.id && i.date.slice(0,7) === thisMonth);
-    if (already) return;
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
-    const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
-    const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
-    if (dateStr < p.date) return;
-    if (!canGenerateOnDate(dateStr)) return;
+    // Tutte le scadenze cedolari maturate finora, non solo quella del mese in cui
+    // si apre l'app: prima, se l'anniversario cadeva in un mese in cui non aprivi,
+    // quella cedola non veniva generata mai più, e gli arretrati degli anni
+    // precedenti non venivano mai recuperati.
+    const scadenze = scadenzeCedolariMaturate(scheduleAnchorDate, freqObj.months, p.maturityDate, p.date);
+    scadenze.forEach(dateStr => {
+      if (data.income.some(i => i.linkedBondId === p.id && i.date === dateStr)) return;
+      if (!canGenerateOnDate(dateStr)) return;
+      emettiCedola(p, dateStr, isBondCoupon, freqObj);
+      changed = true;
+    });
+  });
+  if (changed) saveData();
+}
+
+// Elenca le date in cui una cedola è già maturata: anniversari successivi
+// all'emissione, fino a oggi e non oltre la scadenza del titolo.
+function scadenzeCedolariMaturate(anchorDate, mesiPasso, maturityDate, minDate) {
+  const out = [];
+  if (!anchorDate || !mesiPasso) return out;
+  const start = new Date(anchorDate);
+  if (isNaN(start)) return out;
+  const giorno = start.getDate();
+  const limite = maturityDate ? new Date(Math.min(new Date(maturityDate).getTime(), now.getTime())) : now;
+  for (let k = 1; k <= 600; k++) {
+    const d = new Date(start.getFullYear(), start.getMonth() + k*mesiPasso, 1);
+    const ultimoGiorno = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+    d.setDate(Math.min(giorno, ultimoGiorno));
+    if (d > limite) break;
+    const s = localDateStr(d);
+    if (minDate && s < minDate) continue;
+    out.push(s);
+  }
+  return out;
+}
+
+// Registra una singola cedola/interesse alla data indicata.
+function emettiCedola(p, dateStr, isBondCoupon, freqObj) {
     const nominal = p.amount;
     const rate = isBondCoupon ? (Number(p.couponRate)||0) : (Number(p.depositRate)||0);
     const paymentsPerYear = 12 / freqObj.months;
@@ -971,7 +1118,7 @@ function autoGenerateSecurityIncome() {
     const taxRate = isBondCoupon ? (Number(p.bondTaxRate)||15) : (Number(p.depositTaxRate)||15);
     const taxAmt = grossAmt * taxRate/100;
     const commAmt = isBondCoupon ? computeCommissionAmount(p.couponCommissionType, p.couponCommissionValue, grossAmt) : 0;
-    const cat = isBondCoupon ? "Cedola e le info" : "Interesse deposito";
+    const cat = isBondCoupon ? "Cedola" : "Interesse deposito";
     const taxCat = isBondCoupon ? ensureBondTaxCategory(p.bondYears, p.type) : ensureDepositTaxCategory(p.depositYears);
     const code = p.securityCode || "";
     const incId = uid();
@@ -996,9 +1143,6 @@ function autoGenerateSecurityIncome() {
       createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione ${cat} ${code}`.trim(), taxExpId);
     }
     if (commAmt > 0) data.expenses.push({ id: uid(), date: dateStr, amount: commAmt, currency: p.currency, category: "Commissione disbursement cedola", note: code, securityCode: code||null });
-    changed = true;
-  });
-  if (changed) saveData();
 }
 
 function addMonthsToDate(dateStr, n) {
@@ -1246,6 +1390,8 @@ function autoGenerateDividends() {
 function autoGenerateTaxDeductions() {
   let changed = false;
   data.taxDeductions.forEach(rule => {
+    // Regole sostituite dal Sistema Lavoro Dipendente: non devono più generare nulla.
+    if (rule.disattivataDaRLD) return;
     if (!rule.linkedMacro || !rule.globalLimit) return;
     if (rule.startDate && todayISO < rule.startDate) return;
     if (rule.endDate && todayISO > rule.endDate) return;
@@ -1289,7 +1435,7 @@ function autoGenerateTaxDeductions() {
           const nextMonth = new Date(p.date);
           nextMonth.setMonth(nextMonth.getMonth()+1);
           const nextMonthKey = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth()+1).padStart(2,"0")}`;
-          const principaleEntry = data.income.filter(i => i.category === "Reddito principale" && i.date.slice(0,7) === nextMonthKey).sort((a,b)=>a.date.localeCompare(b.date))[0];
+          const principaleEntry = data.income.filter(i => (i.category === CAT_RLD || i.category === "Reddito principale") && i.date.slice(0,7) === nextMonthKey).sort((a,b)=>a.date.localeCompare(b.date))[0];
           if (principaleEntry) payDate = principaleEntry.date;
           else { const fb = new Date(p.date); fb.setDate(fb.getDate()+1); payDate = localDateStr(fb); }
         } else {
@@ -1534,7 +1680,9 @@ function backfillMacroFromMapping() {
 function generateSnapshot() {
   const exists = data.snapshots.some(s => s.date.slice(0,7) === thisMonth);
   if (!exists) {
-    data.snapshots.push({ id: uid(), date: todayISO, wealth: portfolioTotalALL() });
+    const rischioOggi = computeRischioPortafoglio({ includiLiquidita: false });
+    data.snapshots.push({ id: uid(), date: todayISO, wealth: portfolioTotalALL(),
+      rischioMedio: rischioOggi.media });
     recordPositionSnapshots();
     saveData();
   }
@@ -1542,6 +1690,315 @@ function generateSnapshot() {
 // Registra una volta al mese il valore di ogni posizione, così l'andamento per
 // singolo asset si costruisce da solo invece di dipendere dal pulsante manuale.
 // I fondi sono esclusi: il loro storico arriva già dagli aggiornamenti di prezzo.
+// ===== Fattore di Rischiosità (scala SRRI 1-7) =====
+// Indicatore di rischio per una singola scheda: media ponderata e ripartizione.
+function riquadroRischioScheda(posizioni, titolo) {
+  const r = computeRischioPortafoglio({ posizioni });
+  if (!r.totale || r.media === null) return "";
+  const barre = r.distribuzione.filter(d => d.quota > 0).map(d =>
+    `<div style="display:flex;align-items:center;gap:6px;margin-top:3px;">
+       <span style="width:22px;font-size:10px;color:${RISCHIO_COLORI[d.livello]};">R${d.livello}</span>
+       <div style="flex:1;height:6px;background:#1E2E47;border-radius:3px;overflow:hidden;">
+         <div style="height:100%;width:${d.quota.toFixed(1)}%;background:${RISCHIO_COLORI[d.livello]};"></div>
+       </div>
+       <span style="width:44px;text-align:right;font-size:10px;color:#8FA3BF;">${d.quota.toFixed(1)}%</span>
+     </div>`).join('');
+  const m = r.media;
+  // Rendimento della sezione, per unità di rischio: dice se il rischio di questa
+  // categoria di strumenti sta producendo qualcosa in più del non rischiare.
+  const rf = tassoPrivoDiRischio();
+  let peso = 0, somma = 0;
+  posizioni.forEach(p => {
+    const r = rendimentoAnnuoPosizione(p);
+    const v = valoreDiRischio(p);
+    if (r === null || v <= 0) return;
+    peso += v; somma += v * r;
+  });
+  const rendSez = peso > 0 ? somma / peso : null;
+  const perUnita = rendSez !== null ? (rendSez - rf) / m : null;
+
+  return `<div class="card">
+      <h3>${titolo || "Rischio della sezione"}</h3>
+      <div class="stat-row"><span class="label">Rischio medio ponderato</span><span class="val" style="color:${RISCHIO_COLORI[Math.round(m)]};">${m.toFixed(2)} — ${RISCHIO_ETICHETTE[Math.round(m)]}</span></div>
+      ${rendSez !== null ? `<div class="stat-row"><span class="label">Rendimento medio della sezione</span><span class="val ${rendSez>=0?'up':'down'}">${rendSez.toFixed(2)}%</span></div>
+      <div class="stat-row"><span class="label">· per unità di rischio</span><span class="val ${perUnita>=0?'up':'down'}">${perUnita.toFixed(2)}</span></div>` : ''}
+      <div class="subtle" style="margin-top:8px;">Ripartizione del valore per livello di rischio</div>
+      ${barre}
+    </div>`;
+}
+
+// Riquadro complessivo in Panoramica: le due letture, la ripartizione, lo scostamento
+// dall'obiettivo, l'andamento nel tempo e gli strumenti che non ripagano il rischio.
+// Riquadro del rendimento corretto per il rischio.
+function riquadroRendimentoRischio() {
+  const cplx = rendimentoCorrettoPortafoglio();
+  const righe = classificaRendimentoRischio();
+  if (!cplx && !righe.length) return "";
+  const rf = tassoPrivoDiRischio();
+  const migliori = righe.slice(0, 4);
+  const peggiori = righe.filter(r => r.perUnita < 0).slice(-3).reverse();
+
+  const riga = r => `<div class="stat-row">
+      <span class="label">${pallinoRischio(r.pos)} ${r.nome}</span>
+      <span class="val ${r.perUnita>=0?'up':'down'}">${r.rendimento.toFixed(1)}% → ${r.perUnita.toFixed(2)}</span>
+    </div>`;
+
+  return `<div class="card">
+      <h3>Rendimento corretto per il rischio</h3>
+      <div class="subtle">Quanto rende ogni punto di rischio che ti prendi. Si sottrae il rendimento
+        privo di rischio (${rf.toFixed(2)}%), così si misura solo ciò che il rischio ha prodotto in più.
+        Un numero negativo significa che quello strumento rende meno del non rischiare nulla.</div>
+      ${cplx ? `
+      <div class="stat-row"><span class="label">Rendimento del portafoglio</span><span class="val ${cplx.irr>=0?'up':'down'}">${cplx.irr.toFixed(2)}%</span></div>
+      <div class="stat-row"><span class="label">· al netto del privo di rischio</span><span class="val ${cplx.extra>=0?'up':'down'}">${cplx.extra>=0?'+':''}${cplx.extra.toFixed(2)}%</span></div>
+      <div class="stat-row"><span class="label">Rischio medio</span><span class="val">${cplx.rischioMedio.toFixed(2)}</span></div>
+      <div class="section-total"><span>Rendimento per unità di rischio</span><span style="font-weight:600; color:${cplx.perUnita>=0?'#3F6E5E':'#8B3A2F'};">${cplx.perUnita.toFixed(2)}</span></div>` : ''}
+      ${migliori.length ? `<div class="subtle" style="margin-top:10px;">Chi ripaga meglio il rischio</div>${migliori.map(riga).join('')}` : ''}
+      ${peggiori.length ? `<div class="subtle" style="margin-top:10px; color:#C08432;">Rischio non ripagato</div>${peggiori.map(riga).join('')}` : ''}
+    </div>`;
+}
+
+function riquadroRischioPanoramica() {
+  const conLiq = computeRischioPortafoglio({ includiLiquidita: true });
+  const senzaLiq = computeRischioPortafoglio({ includiLiquidita: false });
+  if (!conLiq.totale) return "";
+  const obiettivo = Number(data.settings.rischioObiettivo) || null;
+  const m = senzaLiq.media;
+  const barre = senzaLiq.distribuzione.filter(d => d.quota > 0).map(d =>
+    `<div style="display:flex;align-items:center;gap:6px;margin-top:3px;">
+       <span style="width:22px;font-size:10px;color:${RISCHIO_COLORI[d.livello]};">R${d.livello}</span>
+       <div style="flex:1;height:7px;background:#1E2E47;border-radius:3px;overflow:hidden;">
+         <div style="height:100%;width:${d.quota.toFixed(1)}%;background:${RISCHIO_COLORI[d.livello]};"></div>
+       </div>
+       <span style="width:78px;text-align:right;font-size:10px;color:#8FA3BF;">${d.quota.toFixed(1)}% · ${fmt(d.valore)}</span>
+     </div>`).join('');
+
+  // andamento: rischio medio salvato nelle istantanee mensili
+  const storico = (data.snapshots||[]).filter(s => s.rischioMedio != null).slice(-6);
+  const andamento = storico.length >= 2
+    ? `<div class="stat-row"><span class="label">Andamento (ultime ${storico.length} istantanee)</span><span class="val">${storico.map(s=>s.rischioMedio.toFixed(1)).join(" → ")}</span></div>`
+    : "";
+
+  const nonRipagati = strumentiRischioNonRipagato(5, 3).slice(0, 4);
+  const avviso = nonRipagati.length
+    ? `<div class="subtle" style="margin-top:10px; color:#C08432;">Rischio alto non ripagato dal rendimento:</div>` +
+      nonRipagati.map(x => `<div class="stat-row"><span class="label">${pallinoRischio(x.pos)} ${x.pos.fundName||x.pos.stockTicker||x.pos.commodityName||x.pos.cryptoSymbol||x.pos.type}</span><span class="val down">${x.rendPct.toFixed(1)}%</span></div>`).join('')
+    : "";
+
+  const scostamento = obiettivo
+    ? `<div class="stat-row"><span class="label">Obiettivo</span><span class="val">${obiettivo.toFixed(1)}</span></div>
+       <div class="stat-row"><span class="label">· scostamento</span><span class="val ${Math.abs(m-obiettivo)<=0.3?'up':'down'}">${(m-obiettivo>=0?'+':'')}${(m-obiettivo).toFixed(2)}</span></div>`
+    : `<div class="subtle" style="margin-top:6px;">Puoi fissare un rischio obiettivo in Assunzioni per vedere lo scostamento.</div>`;
+
+  return `<div class="card">
+      <h3>Fattore di rischiosità del patrimonio</h3>
+      <div class="subtle">Scala 1-7. La media da sola non basta: la ripartizione mostra se il rischio è concentrato o distribuito.</div>
+      <div class="stat-row"><span class="label">Solo investimenti</span><span class="val" style="color:${RISCHIO_COLORI[Math.round(m||1)]};">${m!==null?m.toFixed(2)+" — "+RISCHIO_ETICHETTE[Math.round(m)]:"n/d"}</span></div>
+      <div class="stat-row"><span class="label">Compresa la liquidità</span><span class="val">${conLiq.media!==null?conLiq.media.toFixed(2):"n/d"}</span></div>
+      ${scostamento}
+      ${andamento}
+      <div class="subtle" style="margin-top:10px;">Ripartizione del valore investito</div>
+      ${barre}
+      ${avviso}
+    </div>`;
+}
+
+// Selettore del fattore di rischiosità, con il valore proposto in base al tipo.
+function selettoreRischio(valore, dati) {
+  const v = normalizzaRischio(valore, dati || {});
+  const opz = [];
+  for (let i = RISCHIO_MIN; i <= RISCHIO_MAX; i++) {
+    opz.push(`<option value="${i}" ${i===v?'selected':''}>${i} — ${RISCHIO_ETICHETTE[i]}</option>`);
+  }
+  return `<select name="riskFactor" class="risk-select" required>${opz.join('')}</select>`;
+}
+// Pallino colorato con il livello, per le liste.
+function pallinoRischio(p) {
+  const r = normalizzaRischio(p && p.riskFactor, p || {});
+  return `<span class="pill" style="background:${RISCHIO_COLORI[r]}22; color:${RISCHIO_COLORI[r]}; border-color:${RISCHIO_COLORI[r]};" title="Rischio ${r} — ${RISCHIO_ETICHETTE[r]}">R${r}</span>`;
+}
+
+// ===== Rendimento corretto per il rischio =====
+// Mette insieme due dati che l'app calcola già ma teneva separati: quanto rende una
+// posizione e quanto rischia. Serve a confrontare strumenti diversi con onestà — un
+// deposito al 4% può battere un'obbligazione al 6,5% una volta pesato il rischio.
+
+// Rendimento annualizzato di una posizione, dai flussi che la riguardano.
+function rendimentoAnnuoPosizione(p) {
+  const investito = toALL(Number(p.amount) || 0, p.currency);
+  if (investito <= 0) return null;
+  const valore = valoreDiRischio(p);
+  // proventi già incassati e collegati a questa posizione (cedole, dividendi, affitti)
+  const proventi = (data.income || [])
+    .filter(i => i.linkedBondId === p.id)
+    .reduce((s,i) => s + toALL(Number(i.amount) || 0, i.currency || "ALL"), 0);
+  const totale = valore + proventi;
+  const anni = p.date ? Math.max((Date.now() - new Date(p.date).getTime()) / (365.25*86400000), 0.08) : null;
+  if (!anni || !isFinite(totale) || totale <= 0) return null;
+  const complessivo = totale / investito;
+  if (complessivo <= 0) return null;
+  return (Math.pow(complessivo, 1/anni) - 1) * 100;
+}
+
+// Rendimento per unità di rischio: il numero che rende confrontabili gli strumenti.
+// Si sottrae il rendimento privo di rischio, così si misura solo ciò che il rischio
+// ha davvero prodotto in più.
+function rendimentoCorrettoPerRischio(p, rendimentoPrivoRischio) {
+  const rend = rendimentoAnnuoPosizione(p);
+  if (rend === null) return null;
+  const rischio = normalizzaRischio(p.riskFactor, p);
+  const rf = rendimentoPrivoRischio == null ? tassoPrivoDiRischio() : rendimentoPrivoRischio;
+  return { rendimento: rend, rischio, extra: rend - rf, perUnita: (rend - rf) / rischio };
+}
+
+// Rendimento privo di rischio: si usa il rendimento di un titolo di Stato breve,
+// preso dalla curva importata se disponibile, altrimenti dai depositi in essere.
+function tassoPrivoDiRischio() {
+  const impostato = Number(data.settings.tassoPrivoRischio);
+  if (isFinite(impostato) && impostato > 0) return impostato;
+  const curva = data.marketYieldCurve && data.marketYieldCurve.points;
+  if (curva && curva.length) {
+    const breve = curva.slice().sort((a,b) => a.maturity - b.maturity)[0];
+    if (breve && isFinite(breve.cutoffYield)) return breve.cutoffYield;
+  }
+  const dep = data.portfolio.filter(p => String(p.type||"").toLowerCase().includes("deposito") && p.depositRate > 0);
+  if (dep.length) return dep.reduce((s,p) => s + Number(p.depositRate), 0) / dep.length;
+  return 2;
+}
+
+// Classifica delle posizioni per rendimento per unità di rischio.
+function classificaRendimentoRischio() {
+  const rf = tassoPrivoDiRischio();
+  return posizioniRischiose(false).map(p => {
+    const r = rendimentoCorrettoPerRischio(p, rf);
+    if (!r) return null;
+    return Object.assign({ pos: p, valore: valoreDiRischio(p),
+      nome: p.fundName || p.stockTicker || p.commodityName || p.cryptoSymbol || p.propertyType || p.type }, r);
+  }).filter(Boolean).sort((a,b) => b.perUnita - a.perUnita);
+}
+
+// Lo stesso indicatore per l'intero portafoglio.
+function rendimentoCorrettoPortafoglio() {
+  const res = computePortfolioIRR();
+  const rischio = computeRischioPortafoglio({ includiLiquidita:false });
+  // computePortfolioIRR restituisce un oggetto: il rendimento in percentuale è irrPct.
+  const irr = res && isFinite(res.irrPct) ? res.irrPct : null;
+  if (irr === null || rischio.media === null) return null;
+  const rf = tassoPrivoDiRischio();
+  return { irr, rischioMedio: rischio.media, tassoPrivoRischio: rf,
+    extra: irr - rf, perUnita: (irr - rf) / rischio.media };
+}
+
+const RISCHIO_MIN = 1, RISCHIO_MAX = 7;
+const RISCHIO_ETICHETTE = { 1:"molto basso", 2:"basso", 3:"medio-basso", 4:"medio", 5:"medio-alto", 6:"alto", 7:"molto alto" };
+const RISCHIO_COLORI = { 1:"#3F6E5E", 2:"#4F7E5E", 3:"#7E8E4E", 4:"#C9A227", 5:"#C08432", 6:"#A65A30", 7:"#8B3A2F" };
+
+// Valore proposto per tipo di strumento. Per le obbligazioni cresce con la durata:
+// un titolo a 20 anni è molto più sensibile ai tassi di uno a 2, ed è la duration
+// (che già calcoliamo) a misurare esattamente questa differenza.
+function rischioPredefinito(dati) {
+  const tipo = String(dati && dati.type || "").toLowerCase();
+  const macro = String(dati && dati.macro || "").toLowerCase();
+  if (data.paymentTypes && data.paymentTypes.includes(dati && dati.type)) return 1;
+  if (tipo.includes("deposito")) return 1;
+  if (tipo.includes("obbligazione")) {
+    const anni = Number(dati.bondYears) || 0;
+    const societaria = /societ/i.test(tipo);
+    let base = anni <= 1 ? 1 : anni <= 3 ? 2 : anni <= 7 ? 3 : anni <= 15 ? 4 : 5;
+    if (societaria) base = Math.min(RISCHIO_MAX, base + 1);
+    return base;
+  }
+  if (isCryptoType(dati.type, dati.macro)) return 7;
+  if (isCommodityType(dati.type, dati.macro)) return 6;
+  if (isStockType(dati.type, dati.macro) || isETFType(dati.type, dati.macro)) return 5;
+  if (isRealEstateType(dati.type, dati.macro)) return 4;
+  if (tipo.includes("fond") || macro.includes("fond")) return 4;
+  return 4;
+}
+
+function normalizzaRischio(v, dati) {
+  const n = Math.round(Number(v));
+  if (isFinite(n) && n >= RISCHIO_MIN && n <= RISCHIO_MAX) return n;
+  return rischioPredefinito(dati || {});
+}
+
+// Come per il codice titolo: se lo strumento è già in portafoglio si riprende il
+// fattore assegnato la prima volta, invece di riproporre il predefinito.
+function rischioPerNuovaPosizione(dati, valoreScritto) {
+  const chiave = chiaveIdentitaStrumento(dati);
+  if (chiave) {
+    const gia = data.portfolio.find(p => p.riskFactor && chiaveIdentitaStrumento(p) === chiave);
+    if (gia) return normalizzaRischio(gia.riskFactor, dati);
+  }
+  return normalizzaRischio(valoreScritto, dati);
+}
+
+// Le posizioni che entrano nel calcolo del rischio: valore positivo, niente debiti.
+function posizioniRischiose(includiLiquidita) {
+  return data.portfolio.filter(p => {
+    if (!p.amount || p.amount <= 0) return false;
+    if (isDebtType(p.type, p.macro) || isCreditCardType(p.type)) return false;
+    if (!includiLiquidita && data.paymentTypes.includes(p.type)) return false;
+    return true;
+  });
+}
+
+function valoreDiRischio(p) {
+  const v = (p.marketValue !== undefined && p.marketValue !== null && p.marketValue !== "")
+    ? Number(p.marketValue) : Number(p.amount);
+  return toALL(isFinite(v) ? v : 0, p.currency);
+}
+
+// Media ponderata sul valore, più la ripartizione per fascia: la sola media
+// nasconde la differenza fra "tutto a 4" e "metà a 1 e metà a 7".
+function computeRischioPortafoglio(opts) {
+  opts = opts || {};
+  const posizioni = (opts.posizioni || posizioniRischiose(!!opts.includiLiquidita));
+  let totale = 0, somma = 0;
+  const perFascia = {};
+  for (let i = RISCHIO_MIN; i <= RISCHIO_MAX; i++) perFascia[i] = 0;
+  posizioni.forEach(p => {
+    const v = valoreDiRischio(p);
+    if (v <= 0) return;
+    const r = normalizzaRischio(p.riskFactor, p);
+    totale += v; somma += v * r;
+    perFascia[r] += v;
+  });
+  const media = totale > 0 ? somma / totale : null;
+  const distribuzione = Object.keys(perFascia).map(k => ({
+    livello: Number(k), valore: perFascia[k],
+    quota: totale > 0 ? perFascia[k] / totale * 100 : 0
+  }));
+  return { media, totale, conteggio: posizioni.length, distribuzione, perFascia };
+}
+
+// Strumenti dove il rischio è alto ma il rendimento non lo giustifica.
+function strumentiRischioNonRipagato(sogliaRischio, sogliaRendimento) {
+  const sr = sogliaRischio || 5, sred = sogliaRendimento == null ? 3 : sogliaRendimento;
+  return posizioniRischiose(false).map(p => {
+    const investito = Number(p.amount) || 0;
+    const attuale = valoreDiRischio(p);
+    const rendPct = investito > 0 ? (toALL(attuale, "ALL") / toALL(investito, p.currency) - 1) * 100 : null;
+    return { pos: p, rischio: normalizzaRischio(p.riskFactor, p), rendPct, valore: attuale };
+  }).filter(x => x.rischio >= sr && x.rendPct !== null && x.rendPct < sred)
+    .sort((a,b) => b.valore - a.valore);
+}
+
+// Il rischio del reddito misura la stabilità della fonte, non il rischio di mercato:
+// mediarlo con quello degli investimenti darebbe un numero senza significato.
+function computeRischioReddito(anno) {
+  const voci = (data.income||[]).filter(i => i.date && i.date.slice(0,4) === String(anno || thisYear) && Number(i.amount) > 0);
+  let tot = 0, somma = 0;
+  const perFascia = {};
+  for (let i = RISCHIO_MIN; i <= RISCHIO_MAX; i++) perFascia[i] = 0;
+  voci.forEach(i => {
+    const v = toALL(Number(i.amount), i.currency || "ALL");
+    const r = normalizzaRischio(i.riskFactor, { type: "reddito" });
+    tot += v; somma += v * r; perFascia[r] += v;
+  });
+  return { media: tot > 0 ? somma / tot : null, totale: tot, perFascia };
+}
+
 function recordPositionSnapshots() {
   data.portfolio.forEach(p => {
     if (!p.amount || p.amount <= 0) return;
@@ -1593,7 +2050,12 @@ function generateRecurring() {
           const mappedMacro = (data.categoryMacroMap[group] && data.categoryMacroMap[group][rule.category]) || null;
           const genId = uid();
           const paymentType = rule.paymentType !== undefined ? rule.paymentType : "Banca";
-          data[group].push({ id: genId, date: dateStr, amount: rule.amount, category: rule.category, macro: mappedMacro, paymentType: paymentType||null, note: rule.note||"", recurringId: rule.id, linkedBondId: rule.linkedBondId||null });
+          // La regola porta con sé macro, codice ed ente: le voci generate devono
+          // riportarli, altrimenti il collegamento con la fonte del flusso si perde.
+          data[group].push({ id: genId, date: dateStr, amount: rule.amount, category: rule.category,
+            macro: rule.macro || mappedMacro, paymentType: paymentType||null, note: rule.note||"",
+            recurringId: rule.id, linkedBondId: rule.linkedBondId||null,
+            securityCode: rule.securityCode || null, issuerName: rule.issuerName || "" });
           if (paymentType) {
             const sign = group === "income" ? 1 : -1;
             createLiquidityAdjustment(paymentType, sign*rule.amount, dateStr, `${group==='income'?'Reddito':'Spesa'} ricorrente: ${rule.category}`, genId);
@@ -1612,7 +2074,8 @@ function generateRecurring() {
       const dateStr = `${thisMonth}-${String(day).padStart(2,"0")}`;
       if (canGenerateOnDate(dateStr)) {
         const mappedMacro = rule.macro || (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[rule.type]) || null;
-        const entry = { id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id };
+        const entry = { id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id,
+          securityCode: rule.securityCode || null, issuerName: rule.issuerName || "" };
         if (rule.fundName) {
           entry.fundName = rule.fundName;
           if (rule.fundRefPrice) {
@@ -1808,7 +2271,67 @@ function macroSelect(groupKey, selected) {
   const opts = `<option value="">— nessuna —</option>` + macros.map(m => `<option ${m===selected?'selected':''}>${m}</option>`).join('');
   return `<select class="macro-select" data-group="${groupKey}">${opts}<option value="__new__">+ Nuova macro-categoria...</option></select>`;
 }
+// Tiene aggiornata la casella del codice mentre si compila il modulo: se i dati
+// inseriti corrispondono a uno strumento già in portafoglio mostra subito il codice
+// di quello, altrimenti il prossimo libero. Così il valore che vedi è quello che
+// verrà salvato, invece di cambiare di nascosto al salvataggio.
+const CAMPI_IDENTITA = ["issuerName","fundName","stockTicker","cryptoSymbol","cryptoId",
+  "commodityName","issueDate","bondYears","depositYears"];
+function bindCodiceAutomatico() {
+  document.querySelectorAll('form.entry').forEach(form => {
+    const campoCodice = form.querySelector('[name="securityCode"]');
+    if (!campoCodice || form.dataset.codiceBound) return;
+    form.dataset.codiceBound = "1";
+    const aggiorna = () => {
+      // Se l'utente ha scritto un codice suo, non glielo si tocca.
+      if (campoCodice.dataset.modificatoAMano === "1") return;
+      const f = new FormData(form);
+      const catSel = form.querySelector(".cat-select");
+      const macroSel = form.querySelector(".macro-select");
+      const dati = datiIdentitaDaForm(f, catSel ? catSel.value : "", macroSel ? macroSel.value : null);
+      const esistente = codiceEsistentePerStrumento(dati);
+      const nuovo = esistente || peekNextSecurityCode();
+      if (campoCodice.value !== nuovo) campoCodice.value = nuovo;
+      campoCodice.title = esistente
+        ? "Strumento già in portafoglio: si riusa il codice del primo acquisto."
+        : "Nuovo strumento: codice assegnato automaticamente.";
+    };
+    campoCodice.addEventListener("input", () => {
+      campoCodice.dataset.modificatoAMano =
+        (campoCodice.value.trim() && campoCodice.value.trim() !== peekNextSecurityCode()) ? "1" : "0";
+    });
+    const campoRischio = form.querySelector('[name="riskFactor"]');
+    const aggiornaRischio = () => {
+      if (!campoRischio || campoRischio.dataset.modificatoAMano === "1") return;
+      const f2 = new FormData(form);
+      const cs = form.querySelector(".cat-select"), ms = form.querySelector(".macro-select");
+      const dati = Object.assign(datiIdentitaDaForm(f2, cs ? cs.value : "", ms ? ms.value : null),
+        { bondYears: f2.get("bondYears"), depositYears: f2.get("depositYears") });
+      const proposto = rischioPerNuovaPosizione(dati, null);
+      if (String(campoRischio.value) !== String(proposto)) campoRischio.value = String(proposto);
+    };
+    if (campoRischio) {
+      campoRischio.addEventListener("change", () => { campoRischio.dataset.modificatoAMano = "1"; });
+      ["bondYears","depositYears"].forEach(nome => {
+        const el = form.querySelector(`[name="${nome}"]`);
+        if (el) { el.addEventListener("input", aggiornaRischio); el.addEventListener("change", aggiornaRischio); }
+      });
+      const cs2 = form.querySelector(".cat-select");
+      if (cs2) cs2.addEventListener("change", aggiornaRischio);
+      aggiornaRischio();
+    }
+    CAMPI_IDENTITA.forEach(nome => {
+      const el = form.querySelector(`[name="${nome}"]`);
+      if (el) { el.addEventListener("input", aggiorna); el.addEventListener("change", aggiorna); }
+    });
+    const catSel = form.querySelector(".cat-select");
+    if (catSel) catSel.addEventListener("change", aggiorna);
+    aggiorna();
+  });
+}
+
 function bindMacroSelects() {
+  try { bindCodiceAutomatico(); } catch (e) {}
   document.querySelectorAll(".macro-select").forEach(sel => {
     sel.addEventListener("change", () => {
       if (sel.value === "__new__") {
@@ -1850,6 +2373,8 @@ function renderDashboard() {
   ensureLiquidityCategories();
   migrateFireRatesDefault();
   ensureBondDepositCategories();
+  migraLavoroDipendente();
+  autoGenerateLavoroDipendente();
   autoGenerateSecurityIncome();
   autoMatureBondsAndDeposits();
   autoChargeCustodyFees();
@@ -2087,6 +2612,8 @@ function renderDashboard() {
     </div>` : ''}
     ${allocationDriftCard()}
     ${portfolioReturnCard()}
+    ${riquadroRischioPanoramica()}
+    ${riquadroRendimentoRischio()}
     ${multiYearTaxCard()}
     ${runwayAndCoverageCard()}
   `;
@@ -2200,19 +2727,23 @@ function renderIncome() {
   const bondOptions = data.portfolio.filter(p=>p.type && p.type.toLowerCase().includes("obbligazione")).map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''}</option>`).join('');
   const dividendSecurityOptions = data.portfolio.filter(p => (isStockType(p.type,p.macro) || isETFType(p.type,p.macro) || isFundEntry(p)) && p.amount>0)
     .map(p=>`<option value="${p.id}">${p.stockTicker || p.fundName || p.type}${p.stockName?' · '+p.stockName:''}</option>`).join('');
-  const incomeFilterOptions = ["all", ...data.categories.income].map(c=>`<option value="${c}" ${incomeCategoryFilter===c?'selected':''}>${c==='all'?'Tutte le categorie':c}</option>`).join('');
+  const incomeFilterOptions = ["all", ...categorieDelFiltro("income", incomeMacroFilter)].map(c=>`<option value="${c}" ${incomeCategoryFilter===c?'selected':''}>${c==='all'?'Tutte le categorie':c}</option>`).join('');
   const incomeMacroFilterOptions = ["all", ...data.macroCategories.income].map(m=>`<option value="${m}" ${incomeMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
   document.getElementById("main").innerHTML = `
+    ${riquadroRedditoLavoro(thisYear)}
     <div class="card">
       <h3>Nuova voce</h3>
       <form class="entry" id="incomeForm">
+        <div><label>Categoria</label>${categorySelect("income", null, c => !isAutoManagedIncomeCategory(c) || c === "Dividendo")}</div>
+        <button class="secondary" type="button" id="toggleCatManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.income ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
+        <div><label>Macro-categoria</label>${macroSelect("income")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Stabilità della fonte (1-7, 1 = molto stabile)</label>${selettoreRischio(2, { type: "reddito" })}</div>
         <div class="row2">
           <div><label>Data</label><input type="date" name="date" value="${todayISO}" required></div>
           <div><label>Importo (ALL)</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
         </div>
-        <div><label>Categoria</label>${categorySelect("income", null, c => !isAutoManagedIncomeCategory(c) || c === "Dividendo")}</div>
-        <button class="secondary" type="button" id="toggleCatManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.income ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
-        <div><label>Macro-categoria</label>${macroSelect("income")}</div>
         <button class="secondary" type="button" id="toggleMacroManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.income ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <button class="secondary" type="button" id="toggleMacroAssign-income" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.income ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         ${bondOptions ? `<div><label>Bond collegato (opzionale, per cedole)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptions}</select></div>` : ''}
@@ -2256,13 +2787,25 @@ function renderIncome() {
             <button class="li-del" data-del-income="${e.id}">✕</button>
           </div>
         </div>`).join('')}
+      ${storicoTotalsBlock("income", incomeCategoryFilter, incomeMacroFilter, thisYear)}
+      ${(() => { const r = computeRischioReddito(thisYear);
+        if (r.media === null) return "";
+        return `<div class="stat-row"><span class="label">Stabilità media delle fonti di reddito</span><span class="val" style="color:${RISCHIO_COLORI[Math.round(r.media)]};">${r.media.toFixed(2)} — ${RISCHIO_ETICHETTE[Math.round(r.media)]}</span></div>
+          <div class="subtle" style="font-size:10px;">Misura a sé: la stabilità del reddito non si media con il rischio degli investimenti.</div>`; })()}
       <div class="section-total"><span>Totale ${thisYear}</span><span>${fmtDisplay(total)}</span></div>
     </div>
   `;
   bindCategorySelects();
   bindMacroSelects();
   document.getElementById("incomeFilterSelect").addEventListener("change", ev=>{ incomeCategoryFilter = ev.target.value; renderIncome(); });
-  document.getElementById("incomeMacroFilterSelect").addEventListener("change", ev=>{ incomeMacroFilter = ev.target.value; renderIncome(); });
+  document.getElementById("incomeMacroFilterSelect").addEventListener("change", ev=>{
+    incomeMacroFilter = ev.target.value;
+    if (incomeMacroFilter !== "all" && incomeCategoryFilter !== "all") {
+      const ammesse = categorieDelFiltro("income", incomeMacroFilter);
+      if (!ammesse.includes(incomeCategoryFilter)) incomeCategoryFilter = "all";
+    }
+    renderIncome();
+  });
   document.getElementById("toggleCatManage-income").addEventListener("click", ()=>{ catManagerOpen.income = !catManagerOpen.income; renderIncome(); });
   if (catManagerOpen.income) bindCategoryManagement("income", renderIncome);
   document.getElementById("toggleMacroManage-income").addEventListener("click", ()=>{ macroManagerOpen.income = !macroManagerOpen.income; renderIncome(); });
@@ -2298,7 +2841,14 @@ function renderIncome() {
     const date = f.get("date");
     const incId = uid();
     const linkedId = (cat === "Dividendo" && f.get("linkedDividendId")) ? f.get("linkedDividendId") : (f.get("linkedBondId")||null);
-    data.income.push({id:incId, date, amount:net, grossAmount: applyTax?gross:null, taxApplied: applyTax, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||"", linkedBondId: linkedId});
+    // Un codice per ogni fonte di reddito ricorrente: se una voce con la stessa
+    // categoria ed ente esiste già, riusa il suo codice invece di generarne un altro.
+    const enteRed = (f.get("issuerName")||"").trim();
+    const precedente = data.income.find(i => i.category === cat && (i.issuerName||"") === enteRed && i.securityCode);
+    const codiceRed = (f.get("securityCode")||"").trim()
+      || (precedente ? precedente.securityCode : consumeNextSecurityCode());
+    data.income.push({id:incId, date, amount:net, grossAmount: applyTax?gross:null, taxApplied: applyTax, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||"", linkedBondId: linkedId, securityCode: codiceRed, issuerName: enteRed,
+      riskFactor: normalizzaRischio(f.get("riskFactor"), { type: "reddito" })});
     if (paymentType) createLiquidityAdjustment(paymentType, net, date, `Reddito: ${cat}`, incId);
     saveData(); renderIncome();
   });
@@ -2530,13 +3080,63 @@ function renderExpenseEditForm(e) {
   </form>`;
 }
 
+// Totali e percentuali dello Storico secondo i filtri attivi.
+// Regole: solo categoria -> totale categoria e sua quota sul totale.
+// Categoria + la sua macro -> anche totale macro, quota sulla macro, quota macro sul totale.
+// Solo macro -> totale macro e sua quota sul totale.
+function storicoTotalsBlock(group, catFilter, macroFilter, year) {
+  const voci = (data[group]||[]).filter(e => e.date && e.date.slice(0,4) === String(year));
+  const somma = arr => arr.reduce((s,e) => s + toALL(Number(e.amount), e.currency||"ALL"), 0);
+  const totale = somma(voci);
+  const etichetta = group === "income" ? "entrate" : "costi";
+  const righe = [];
+  const pct = (x, base) => base > 0 ? (x/base*100) : null;
+  const riga = (label, valore, cls) =>
+    `<div class="stat-row"><span class="label">${label}</span><span class="val ${cls||''}">${valore}</span></div>`;
+
+  const catAttiva = catFilter && catFilter !== "all";
+  const macroAttiva = macroFilter && macroFilter !== "all";
+  const totCat = catAttiva ? somma(voci.filter(e => e.category === catFilter)) : 0;
+  const totMacro = macroAttiva ? somma(voci.filter(e => e.macro === macroFilter)) : 0;
+
+  if (catAttiva) {
+    righe.push(riga(`Totale categoria "${catFilter}"`, fmtDisplay(totCat)));
+    const p = pct(totCat, totale);
+    if (p !== null) righe.push(riga(`· quota sul totale ${etichetta} ${year}`, p.toFixed(1) + "%"));
+  }
+  if (macroAttiva) {
+    righe.push(riga(`Totale macro-categoria "${macroFilter}"`, fmtDisplay(totMacro)));
+    if (catAttiva) {
+      const pm = pct(totCat, totMacro);
+      if (pm !== null) righe.push(riga(`· quota della categoria sulla macro-categoria`, pm.toFixed(1) + "%"));
+    }
+    const pt = pct(totMacro, totale);
+    if (pt !== null) righe.push(riga(`· quota della macro-categoria sul totale`, pt.toFixed(1) + "%"));
+  }
+  if (!righe.length) return "";
+  return `<div style="border:1px solid #2E4159; border-radius:6px; padding:10px; margin-bottom:10px;">
+      ${righe.join('')}
+    </div>`;
+}
+
+// Le categorie mostrate nel filtro dipendono dalla macro scelta: se una macro è
+// attiva si vedono solo le sue categorie.
+function categorieDelFiltro(group, macroFilter) {
+  const tutte = data.categories[group] || [];
+  if (!macroFilter || macroFilter === "all") return tutte;
+  const map = (data.categoryMacroMap[group]) || {};
+  return tutte.filter(c => map[c] === macroFilter);
+}
+
+function storicoTotalsBlockEnd() { return ""; }
+
 function renderExpenses() {
   document.getElementById("headerTitle").textContent = "Spese";
   const total = yearTotal(data.expenses, thisYear);
   const sorted = [...data.expenses].sort((a,b)=> new Date(b.date)-new Date(a.date));
   let filtered = expenseCategoryFilter==="all" ? sorted : sorted.filter(e=>e.category===expenseCategoryFilter);
   if (expenseMacroFilter !== "all") filtered = filtered.filter(e=>e.macro===expenseMacroFilter);
-  const expenseFilterOptions = ["all", ...data.categories.expenses].map(c=>`<option value="${c}" ${expenseCategoryFilter===c?'selected':''}>${c==='all'?'Tutte le categorie':c}</option>`).join('');
+  const expenseFilterOptions = ["all", ...categorieDelFiltro("expenses", expenseMacroFilter)].map(c=>`<option value="${c}" ${expenseCategoryFilter===c?'selected':''}>${c==='all'?'Tutte le categorie':c}</option>`).join('');
   const expenseMacroFilterOptions = ["all", ...data.macroCategories.expenses].map(m=>`<option value="${m}" ${expenseMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
 
   const catsThisMonth = {}; const catsLastMonth = {};
@@ -2644,13 +3244,23 @@ function renderExpenses() {
             <button class="li-del" data-del-expense="${e.id}">✕</button>
           </div>
         </div>`).join('')}
+      ${storicoTotalsBlock("expenses", expenseCategoryFilter, expenseMacroFilter, thisYear)}
       <div class="section-total"><span>Totale ${thisYear}</span><span>${fmtDisplay(total)}</span></div>
     </div>
   `;
   bindCategorySelects();
   bindMacroSelects();
   document.getElementById("expenseFilterSelect").addEventListener("change", ev=>{ expenseCategoryFilter = ev.target.value; renderExpenses(); });
-  document.getElementById("expenseMacroFilterSelect").addEventListener("change", ev=>{ expenseMacroFilter = ev.target.value; renderExpenses(); });
+  document.getElementById("expenseMacroFilterSelect").addEventListener("change", ev=>{
+    expenseMacroFilter = ev.target.value;
+    // Se la categoria filtrata non appartiene alla nuova macro, la selezione si
+    // azzera: tenerla darebbe una lista vuota e due filtri che si contraddicono.
+    if (expenseMacroFilter !== "all" && expenseCategoryFilter !== "all") {
+      const ammesse = categorieDelFiltro("expenses", expenseMacroFilter);
+      if (!ammesse.includes(expenseCategoryFilter)) expenseCategoryFilter = "all";
+    }
+    renderExpenses();
+  });
   document.getElementById("toggleCatManage-expenses").addEventListener("click", ()=>{ catManagerOpen.expenses = !catManagerOpen.expenses; renderExpenses(); });
   if (catManagerOpen.expenses) bindCategoryManagement("expenses", renderExpenses);
   document.getElementById("toggleMacroManage-expenses").addEventListener("click", ()=>{ macroManagerOpen.expenses = !macroManagerOpen.expenses; renderExpenses(); });
@@ -2911,7 +3521,7 @@ function registerBondCoupon(bondId) {
   const msg = `Cedola lorda: ${fmt(grossCoupon)} ALL\nTassazione (${taxRate}%): -${fmt(taxAmt)} ALL\nCommissione: -${fmt(commAmt)} ALL\nNetto accreditato in Banca: ${fmt(netCoupon)} ALL\n\nConfermi?`;
   if (!confirm(msg)) return;
   const incId = uid();
-  data.income.push({id:incId, date:dateStr, amount:grossCoupon, category:"Cedola e le info", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Cedola ${bond.type}`, linkedBondId:bond.id});
+  data.income.push({id:incId, date:dateStr, amount:grossCoupon, category:"Cedola", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Cedola ${bond.type}`, linkedBondId:bond.id});
   data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione cedola"});
   if (commAmt > 0) data.expenses.push({id:uid(), date:dateStr, amount:commAmt, category:"Commissione disbursement cedola", note:"Commissione cedola"});
   createLiquidityAdjustment("Banca", netCoupon, dateStr, `Cedola netta: ${bond.type}`, incId);
@@ -2976,7 +3586,9 @@ function renderPortfolioEditForm(p) {
     <div><label>Tipo</label>${categorySelect("portfolio", p.type)}</div>
     ${isFund ? `<div><label>Nome fondo</label><input type="text" name="fundName" value="${p.fundName||''}"></div>` : ''}
     ${(isFund || isBond) ? `<div><label>Società/Ente (di proprietà/gestione)</label><input type="text" name="issuer" value="${p.issuer||''}"></div>` : ''}
-    <div><label>Codice titolo</label><input type="text" name="securityCode" maxlength="8" value="${p.securityCode||''}"></div>
+    <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${p.securityCode||peekNextSecurityCode()}" required></div>
+    <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" value="${escAttr(p.issuerName||'')}" ${isDebtType(p.type,p.macro)||isCreditCardType(p.type)?'':'required'}></div>
+    <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(p.riskFactor, p)}</div>
     <div class="row2">
       ${!isQtyPriceAsset && !isDerivative ? `<div><label>Importo nominale</label><input type="number" min="0" step="0.0001" name="amount" value="${p.amount}"></div>` : ''}
       ${isDerivative ? `<div><label>Valore acquisto</label><input type="number" min="0" step="0.0001" name="amount" value="${p.amount}"></div>` : ''}
@@ -3683,7 +4295,7 @@ function renderPortfolio() {
         </div>
 
         <div id="titleCodeField" style="display:none;">
-          <label>Codice titolo</label><input type="text" name="securityCode" id="securityCodeInput" maxlength="8" value="${peekNextSecurityCode()}">
+          <label>Codice titolo</label><input type="text" name="securityCode" id="securityCodeInput" maxlength="8" value="${peekNextSecurityCode()}" required>
         </div>
 
         <div id="bondFields" style="display:none; border:1px solid #2E4159; border-radius:6px; padding:10px; margin-top:4px;">
@@ -4000,7 +4612,7 @@ function renderPortfolio() {
           : (p.depositMode==="finale"||p.bondMode==="finale") ? '<div class="subtle" style="margin-top:4px;">Liquidazione automatica alla scadenza.</div>' : '';
         return `<div class="list-item" style="flex-direction:column; align-items:stretch;">
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div class="li-main"><span class="li-cat">${p.fundName || p.type}${p.securityCode?' <span class=\"pill\">'+p.securityCode+'</span>':''}${p.macro?' <span class=\"pill\">'+p.macro+'</span>':''}${p.note?' · '+p.note:''}${maturityTag}</span><span class="li-date">${p.date||''} · ${p.currency}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
+            <div class="li-main"><span class="li-cat">${pallinoRischio(p)} ${p.fundName || p.type}${p.securityCode?' <span class=\"pill\">'+p.securityCode+'</span>':''}${p.macro?' <span class=\"pill\">'+p.macro+'</span>':''}${p.note?' · '+p.note:''}${maturityTag}</span><span class="li-date">${p.date||''} · ${p.currency}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
             <div style="display:flex;align-items:center;">
               <span class="li-amt">${fmt(mv)} ${p.currency}</span>
               ${eligibleForPencil ? `<button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>` : ''}
@@ -4251,7 +4863,7 @@ function renderPortfolio() {
       posObj.couponCommissionType = f.get("couponCommissionType") || "percent";
       posObj.couponCommissionValue = f.get("couponCommissionValue") ? Number(f.get("couponCommissionValue")) : 0;
       posObj.custodyFeeRate = f.get("custodyFeeRate") ? Number(f.get("custodyFeeRate")) : 0;
-      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+      posObj.securityCode = assegnaCodiceTitolo(f.get("securityCode"));
       placementCommissionAmt = computeCommissionAmount(posObj.placementCommissionType, posObj.placementCommissionValue, nominal);
     } else if (isDeposit) {
       posObj.depositMode = f.get("depositMode") || "cedola";
@@ -4259,16 +4871,16 @@ function renderPortfolio() {
       posObj.couponFrequency = f.get("couponFrequency") || "annual";
       posObj.depositTaxRate = f.get("depositTaxRate") ? Number(f.get("depositTaxRate")) : 15;
       posObj.depositYears = f.get("depositYears") || null;
-      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+      posObj.securityCode = assegnaCodiceTitolo(f.get("securityCode"));
     } else if (isFund) {
       posObj.fundName = f.get("fundName") || "";
       posObj.fundQuotaCount = fundQuotaCount;
       posObj.fundPurchaseQuotaPrice = fundPurchasePrice;
       posObj.fundCurrentQuotaPrice = fundCurrentPrice;
       const existingFundLot = data.portfolio.find(p => p.fundName === posObj.fundName && p.securityCode);
-      posObj.securityCode = (f.get("securityCode")||"").trim() || (existingFundLot ? existingFundLot.securityCode : consumeNextSecurityCode());
+      posObj.securityCode = assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, posObj.type, posObj.macro));
     } else if (isRealEstate) {
-      posObj.securityCode = (f.get("securityCode")||"").trim() || consumeNextSecurityCode();
+      posObj.securityCode = assegnaCodiceTitolo(f.get("securityCode"));
       posObj.propertyType = f.get("propertyType") || "";
       posObj.propertyTaxPct = f.get("propertyTaxPct") ? Number(f.get("propertyTaxPct")) : 0;
       posObj.propertyTaxPaymentMethod = f.get("paymentType") || "Banca";
@@ -4324,7 +4936,9 @@ function renderPortfolio() {
       const f = new FormData(ev.target);
       const type = ev.target.querySelector(".cat-select").value;
       pos.type = type;
-      pos.securityCode = f.get("securityCode") || pos.securityCode || null;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       if (f.has("amount")) pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
       if (f.has("issuer")) pos.issuer = f.get("issuer") || null;
@@ -4702,15 +5316,16 @@ function categoryManageBlock(groupKey, title) {
 }
 
 function creditCardSettingsBlock() {
-  return data.paymentTypes.filter(t=>!["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD"].includes(t)).map(t=>{
+  return data.paymentTypes.filter(t=>!["Banca","Banca EUR","Banca USD","Cash","Cash EUR","Cash USD"].includes(t)).map((t, idxCarta)=>{
     const cc = data.creditCardSettings[t] || {};
     return `<div style="border:1px solid #2E4159; border-radius:6px; padding:12px; margin-bottom:10px;">
-      <label style="color:#C9A227;">${t}</label>
+      <label style="color:#C9A227;">${t}${cc.securityCode?' <span class="pill">'+cc.securityCode+'</span>':''}</label>
       <form class="entry" data-ccform="${t}">
         <div class="row2">
-          <div><label>Banca emittente</label><input type="text" name="bank" value="${cc.bank||''}" placeholder="es. Raiffeisen Bank"></div>
+          <div><label>${LABEL_ENTE}</label><input type="text" name="bank" value="${cc.bank||''}" placeholder="es. Raiffeisen Bank"></div>
           <div><label>Valuta</label><select name="currency"><option ${(cc.currency||'ALL')==='ALL'?'selected':''}>ALL</option><option ${cc.currency==='EUR'?'selected':''}>EUR</option><option ${cc.currency==='USD'?'selected':''}>USD</option></select></div>
         </div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${cc.securityCode||peekNextSecurityCode(idxCarta)}" required placeholder="precompilato, puoi cambiarlo"></div>
         <div class="row2">
           <div><label>Limite di credito</label><input type="number" step="0.0001" name="limit" value="${cc.limit||''}"></div>
           <div><label>Data di scadenza carta</label><input type="date" name="expiryDate" value="${cc.expiryDate||''}"></div>
@@ -4749,6 +5364,9 @@ function renderAssets() {
       <form class="entry" id="assetForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, assetOrDerivFilter)}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Stocks")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div id="stockAssetFields">
           <div class="row2">
             <div><label>Ticker/simbolo</label><input type="text" name="stockTicker" placeholder="es. AAPL"></div>
@@ -4796,7 +5414,7 @@ function renderAssets() {
       </form>
     </div>
     <div class="card">
-      <h3>Posizioni registrate</h3>
+      ${listEditHeader("Posizioni registrate", "stocks")}
       ${assetPositions.length===0 ? '<div class="empty">Nessuna azione o derivato registrati.</div>' : assetPositions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
@@ -4804,8 +5422,8 @@ function renderAssets() {
           <div class="li-main"><span class="li-cat">${p.stockTicker||p.derivativeType||p.type}${p.stockName?' · '+p.stockName:''}${p.derivativeUnderlying?' · '+p.derivativeUnderlying:''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["stocks"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -4858,6 +5476,7 @@ function renderAssets() {
         </div>`).join('')}
       <div class="stat-row" style="font-weight:600; padding-top:8px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Totale derivati</span><span class="val">${fmtDisplay(totalDerivValueALL)}</span></div>
     </div>` : ''}
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && (isStockType(p.type,p.macro)||isDerivativeType(p.type,p.macro))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -4905,7 +5524,10 @@ function renderAssets() {
         id: posId, type, macro, amount: qty*pPrice, currency: f.get("currency")||"USD",
         marketValue: qty*cPrice, date, maturityDate: null, note: f.get("note")||"",
         stockTicker: f.get("stockTicker")||"", stockName: f.get("stockName")||"", stockExchange: f.get("stockExchange")||"",
-        stockQuantity: qty, stockPurchasePrice: pPrice, stockCurrentPrice: cPrice
+        stockQuantity: qty, stockPurchasePrice: pPrice, stockCurrentPrice: cPrice,
+        securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
+        issuerName: (f.get("issuerName")||"").trim()
       };
       const divAmt = f.get("dividendAmount") ? Number(f.get("dividendAmount")) : 0;
       if (divAmt > 0) {
@@ -4971,6 +5593,9 @@ function renderAssets() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
       if (f.has("maturityDate")) pos.maturityDate = f.get("maturityDate") || null;
@@ -5021,6 +5646,8 @@ function renderLiquidityTab() {
       <form class="entry" id="liquidityForm">
         <div><label>Conto</label>${paymentTypeSelect("Banca")}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Liquidità")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="facoltativo"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" placeholder="facoltativo"></div>
         <div class="row2">
           <div><label>Importo</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
@@ -5031,13 +5658,13 @@ function renderLiquidityTab() {
       </form>
     </div>
     <div class="card">
-      <h3>Movimenti registrati</h3>
+      ${listEditHeader("Movimenti registrati", "liquidita")}
       ${positions.length===0 ? '<div class="empty">Nessun movimento registrato.</div>' : positions.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(p=>`
         <div class="list-item">
           <div class="li-main"><span class="li-cat">${p.type}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt ${p.amount<0?'down':''}">${fmt(p.amount)} ${p.currency}</span>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["liquidita"] ? `<button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`).join('')}
     </div>
@@ -5076,7 +5703,12 @@ function renderLiquidityTab() {
     const macro = ev.target.querySelector(".macro-select").value || null;
     const newId = createLiquidityAdjustment(type, Number(f.get("amount")), f.get("date")||todayISO, f.get("note")||"", null);
     const pos = data.portfolio.find(p=>p.id===newId);
-    if (pos) pos.macro = macro;
+    if (pos) {
+      pos.macro = macro;
+      pos.securityCode = assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro));
+      pos.riskFactor = rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor"));
+      pos.issuerName = (f.get("issuerName")||"").trim();
+    }
     saveData(); renderLiquidityTab();
   });
   document.getElementById("liquidityTransferForm").addEventListener("submit", ev=>{
@@ -5140,6 +5772,9 @@ function renderFundsTab() {
       <form class="entry" id="fundForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, c => c.toLowerCase().includes("fond") || (data.categoryMacroMap.portfolio[c]||"").toLowerCase().includes("fond"))}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Fondi")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="es. Raiffeisen Invest" required></div>
+          <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div><label>Nome fondo</label><input type="text" name="fundName" placeholder="es. Raiffeisen Prestigj" required></div>
         <div class="row2">
           <div><label>Prezzo per quota (acquisto)</label><input type="number" min="0" step="0.0001" name="fundPurchaseQuotaPrice" id="fundPurchaseQuotaPriceNew" placeholder="es. 1780.65"></div>
@@ -5147,10 +5782,9 @@ function renderFundsTab() {
         </div>
         <div class="row2">
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
-          <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" placeholder="opzionale"></div>
         </div>
-        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="es. Raiffeisen Invest"></div>
         <div><label>Valore totale investito (auto)</label><input type="number" id="fundInvestedPreviewNew" readonly style="opacity:0.7;"></div>
+        <div><label>Pagato con</label><select name="paymentType"><option value="">— nessun addebito —</option>${data.paymentTypes.map(t=>`<option ${t==="Banca"?'selected':''}>${t}</option>`).join('')}</select></div>
         <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
         <div><label>Nota</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
@@ -5162,7 +5796,7 @@ function renderFundsTab() {
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
-          <div class="li-main"><span class="li-cat">${p.fundName || p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}${p.macro?' · '+p.macro:''}${p.issuerName?' · '+p.issuerName:''}</span></div>
+          <div class="li-main"><span class="li-cat">${pallinoRischio(p)} ${p.fundName || p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}${p.macro?' · '+p.macro:''}${p.issuerName?' · '+p.issuerName:''}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
             ${listEditMode["fondi"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
@@ -5246,11 +5880,10 @@ function renderFundsTab() {
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
         </div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Fondi")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
         <div><label>Nome fondo</label><input type="text" name="fundName" placeholder="es. Raiffeisen Pension"></div>
-        <div class="row2">
-          <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" placeholder="lasciare vuoto per generarlo"></div>
-          <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="es. Raiffeisen Invest"></div>
-        </div>
+        <div><label>Pagato con (genera l'uscita di cassa per ogni versamento)</label>${paymentTypeSelect("Banca")}</div>
         <div class="row2">
           <div><label>Prezzo inizio anno (opzionale, per YTD) — data</label><input type="date" name="baselineDate"></div>
           <div><label>Prezzo inizio anno</label><input type="number" step="0.0001" name="baselinePrice" placeholder="es. 2346.2956"></div>
@@ -5277,6 +5910,7 @@ function renderFundsTab() {
       </div>
       `}
     </div>
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && (isFundEntry(p))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -5303,10 +5937,18 @@ function renderFundsTab() {
       id: uid(), type, macro, amount: qty*pPrice, currency: f.get("currency")||"ALL", marketValue: qty*pPrice,
       date: f.get("date")||todayISO, maturityDate: null, note: f.get("note")||"",
       fundName, fundQuotaCount: qty, fundPurchaseQuotaPrice: pPrice, fundCurrentQuotaPrice: pPrice,
-      securityCode: (f.get("securityCode")||"").trim() || (existingFundLot ? existingFundLot.securityCode : consumeNextSecurityCode()),
+      securityCode: existingFundLot ? existingFundLot.securityCode : assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
       issuerName: (f.get("issuerName")||"").trim() || (existingFundLot ? (existingFundLot.issuerName||"") : "")
     };
     data.portfolio.push(posObj);
+    // L'acquisto fa uscire il denaro dal conto scelto, come già avviene per le
+    // ricorrenze. Con "nessun addebito" si registra solo la posizione.
+    const metodo = f.get("paymentType") || "";
+    if (metodo && posObj.amount > 0) {
+      createLiquidityAdjustment(metodo, -posObj.amount, posObj.date,
+        `Acquisto quote ${fundName} ${posObj.securityCode||''}`.trim(), posObj.id);
+    }
     saveData(); renderFundsTab();
   });
   document.querySelectorAll("[data-editport]").forEach(btn=>{
@@ -5323,6 +5965,9 @@ function renderFundsTab() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
       pos.note = f.get("note") || "";
@@ -5566,6 +6211,7 @@ function renderFundsTab() {
       macro: macroSel ? (macroSel.value || null) : null,
       securityCode: (f.get("securityCode")||"").trim(),
       issuerName: (f.get("issuerName")||"").trim(),
+      paymentType: f.get("paymentType") || "Banca",
       baselineDate: baselineDate||null, baselinePrice: baselinePrice?Number(baselinePrice):null };
     renderFundsTab();
   });
@@ -5573,7 +6219,7 @@ function renderFundsTab() {
   if (fundImportCancelBtn) fundImportCancelBtn.addEventListener("click", ()=>{ fundImportPreview = null; renderFundsTab(); });
   const fundImportConfirmBtn = document.getElementById("fundImportConfirm");
   if (fundImportConfirmBtn) fundImportConfirmBtn.addEventListener("click", ()=>{
-    const { type, currency, fundName, rows, baselineDate, baselinePrice, macro, issuerName } = fundImportPreview;
+    const { type, currency, fundName, rows, baselineDate, baselinePrice, macro, issuerName, paymentType } = fundImportPreview;
     const existingFundCode = (() => {
       const anyLot = data.portfolio.find(p => (p.fundName===fundName) && p.securityCode);
       return anyLot ? anyLot.securityCode : null;
@@ -5615,6 +6261,17 @@ function renderFundsTab() {
       });
       added++;
     });
+    // Ogni versamento è un'uscita dal conto: senza questo il denaro risultava
+    // investito senza essere mai uscito da nessuna parte.
+    let uscite = 0, uscitegia = 0;
+    if (paymentType) {
+      rows.forEach(r => {
+        const nota = `Acquisto quote ${fundName} ${sharedCode}`.trim();
+        if (esisteGiaMovimento(paymentType, -r.amount, r.date, sharedCode)) { uscitegia++; return; }
+        createLiquidityAdjustment(paymentType, -r.amount, r.date, nota, null);
+        uscite++;
+      });
+    }
     if (baselineDate && baselinePrice && firstId) {
       const target = data.portfolio.find(p=>p.id===firstId);
       if (target) {
@@ -5625,7 +6282,10 @@ function renderFundsTab() {
     }
     fundImportPreview = null;
     saveData();
-    alert(`Importazione completata per "${fundName}": ${added} nuove righe, ${updated} righe già esistenti aggiornate.`);
+    alert(`Importazione completata per "${fundName}": ${added} nuove righe, ${updated} righe già esistenti aggiornate.` +
+      (paymentType ? `
+
+Uscite di cassa da "${paymentType}": ${uscite} registrate` + (uscitegia ? `, ${uscitegia} già presenti e saltate.` : ".") : ""));
     renderFundsTab();
   });
 }
@@ -5676,8 +6336,10 @@ function renderBondsTab() {
       <form class="entry" id="bondForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, c => c.toLowerCase().includes("obbligazione"))}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Bonds")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="es. Ministria e Financave" required></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div><label>Ente emittente</label><input type="text" name="issuer" placeholder="es. Ministria e Financave"></div>
-        <div><label>Codice titolo</label><input type="text" name="securityCode" maxlength="8" placeholder="opzionale"></div>
         <div class="row2">
           <div><label>Capitale nominale</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
@@ -5727,17 +6389,17 @@ function renderBondsTab() {
       </form>
     </div>
     <div class="card">
-      <h3>Posizioni registrate</h3>
+      ${listEditHeader("Posizioni registrate", "bonds")}
       ${bondPositions.length===0 ? '<div class="empty">Nessuna obbligazione registrata.</div>' : bondPositions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
         return `<div class="list-item">
-          <div class="li-main"><span class="li-cat">${p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}${p.maturityDate?' · scad. '+p.maturityDate:''}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}</span></div>
+          <div class="li-main"><span class="li-cat">${pallinoRischio(p)} ${p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}${p.maturityDate?' · scad. '+p.maturityDate:''}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.bondYears?' · '+p.bondYears+'a':''}${p.macro?' · '+p.macro:''}${p.issuerName?' · '+p.issuerName:''}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["bonds"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -5748,6 +6410,10 @@ function renderBondsTab() {
       <div class="subtle">Registra la vendita (o il rimborso a scadenza) di un'obbligazione: calcola capital gain, tassazione e commissione, e aggiorna Patrimonio, Reddito e Costi.</div>
       <form class="entry" id="bondSaleForm">
         <div><label>Obbligazione</label><select id="bondSaleSelect" name="bondId">${bondSaleOptions}</select></div>
+        <div class="row2">
+          <div><label>${LABEL_CODICE}</label><input type="text" id="bondSaleCode" readonly style="opacity:0.7;"></div>
+          <div><label>${LABEL_ENTE}</label><input type="text" id="bondSaleIssuer" readonly style="opacity:0.7;"></div>
+        </div>
         <div class="row2">
           <div><label>Capitale investito (nominale)</label><input type="number" min="0" id="bondSaleNominal" name="nominal" required></div>
           <div><label>Prezzo di collocamento</label><input type="number" min="0" step="0.0001" id="bondSalePurchasePrice" name="purchasePrice" value="100"></div>
@@ -5830,6 +6496,7 @@ function renderBondsTab() {
         return `<div class="stat-row" style="font-weight:600; padding-top:8px; border-top:1px solid #24374F; margin-top:6px;"><span class="label">Modified duration ponderata di portafoglio</span><span class="val">${weightedDur.toFixed(2)} — se i tassi salgono dell'1%, il valore scende di circa ${weightedDur.toFixed(2)}%</span></div>`;
       })()}
     </div>` : ''}
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && ((p.type||"").toLowerCase().includes("obbligazione"))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -5863,7 +6530,9 @@ function renderBondsTab() {
       couponCommissionType: f.get("couponCommissionType") || "percent",
       couponCommissionValue: f.get("couponCommissionValue") ? Number(f.get("couponCommissionValue")) : 0,
       custodyFeeRate: f.get("custodyFeeRate") ? Number(f.get("custodyFeeRate")) : 0,
-      securityCode: (f.get("securityCode")||"").trim() || consumeNextSecurityCode()
+      securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
+      issuerName: (f.get("issuerName")||"").trim()
     };
     const placementCommissionAmt = computeCommissionAmount(posObj.placementCommissionType, posObj.placementCommissionValue, nominal);
     data.portfolio.push(posObj);
@@ -5888,6 +6557,9 @@ function renderBondsTab() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       if (f.has("amount")) pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
@@ -5956,6 +6628,15 @@ function renderBondsTab() {
         <div style="margin-top:8px; color:#8FA3BF; font-size:11px;">Banca riceverà: ${fmt(c.nominal)} ALL (capitale) + ${fmt(c.capitalGainNetto)} ALL (plusvalenza netta)</div>
       `;
     }
+    const fillBondInfo = () => {
+      const b = data.portfolio.find(x => x.id === bondSaleSelectEl.value) || {};
+      const codeEl = document.getElementById("bondSaleCode");
+      const issEl = document.getElementById("bondSaleIssuer");
+      if (codeEl) codeEl.value = b.securityCode || "";
+      if (issEl) issEl.value = b.issuerName || "";
+    };
+    bondSaleSelectEl.addEventListener("change", fillBondInfo);
+    fillBondInfo();
     bondSaleSelectEl.addEventListener("change", fillFromBond);
     document.getElementById("bondSaleForm").querySelectorAll("input, select").forEach(el=>{
       el.addEventListener("input", updateBondSalePreview);
@@ -6046,7 +6727,9 @@ function renderRealEstateTab() {
       <form class="entry" id="realEstateForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, c => isRealEstateType(c))}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Real Estate")}</div>
-        <div><label>Codice</label><input type="text" name="securityCode" maxlength="8" placeholder="opzionale"></div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="chi emette/gestisce" required></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div class="row2">
           <div><label>Valore di acquisto</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
@@ -6086,7 +6769,7 @@ function renderRealEstateTab() {
       </form>
     </div>
     <div class="card">
-      <h3>Posizioni registrate</h3>
+      ${listEditHeader("Posizioni registrate", "realestate")}
       ${positions.length===0 ? '<div class="empty">Nessun immobile registrato.</div>' : positions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
@@ -6094,8 +6777,8 @@ function renderRealEstateTab() {
           <div class="li-main"><span class="li-cat">${p.propertyType||p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["realestate"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -6129,6 +6812,7 @@ function renderRealEstateTab() {
         <button class="secondary" type="submit">Registra vendita</button>
       </form>
     </div>` : ''}
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && (isRealEstateType(p.type,p.macro))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -6149,7 +6833,9 @@ function renderRealEstateTab() {
       id: uid(), type, macro, amount: nominal, currency: f.get("currency")||"ALL",
       marketValue: f.get("propertyMarketValue") ? Number(f.get("propertyMarketValue")) : nominal,
       date, maturityDate: null, note: f.get("note")||"", issuer: null,
-      securityCode: (f.get("securityCode")||"").trim() || consumeNextSecurityCode(),
+      securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
+      issuerName: (f.get("issuerName")||"").trim(),
       propertyType: f.get("propertyType") || "",
       propertyTaxPct: f.get("propertyTaxPct") ? Number(f.get("propertyTaxPct")) : 0,
       propertyTaxPaymentMethod: f.get("paymentType") || "Banca",
@@ -6184,6 +6870,9 @@ function renderRealEstateTab() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       if (f.has("amount")) pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
@@ -6272,6 +6961,9 @@ function renderCommoditiesTab() {
       <form class="entry" id="commodityForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, c => isCommodityType(c))}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Commodities")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div class="row2">
           <div><label>Nome (es. Oro, Argento, Petrolio)</label><input type="text" name="commodityName" placeholder="es. Oro"></div>
           <div><label>Unità di misura</label><input type="text" name="commodityUnit" placeholder="es. grammi, once, barili"></div>
@@ -6291,7 +6983,7 @@ function renderCommoditiesTab() {
       </form>
     </div>
     <div class="card">
-      <h3>Posizioni registrate</h3>
+      ${listEditHeader("Posizioni registrate", "commodities")}
       ${positions.length===0 ? '<div class="empty">Nessuna materia prima registrata.</div>' : positions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
@@ -6299,8 +6991,8 @@ function renderCommoditiesTab() {
           <div class="li-main"><span class="li-cat">${p.commodityName||p.type}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["commodities"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -6341,6 +7033,7 @@ function renderCommoditiesTab() {
           <div class="subtle" style="margin-top:4px;">Prezzo aggiornabile solo a mano (modifica la posizione) — non c'è una fonte automatica gratuita affidabile per le materie prime.</div>
         </div>`).join('')}
     </div>` : ''}
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && (isCommodityType(p.type,p.macro))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -6363,6 +7056,9 @@ function renderCommoditiesTab() {
     const pPrice = Number(f.get("commodityPurchasePrice"))||0;
     const cPrice = f.get("commodityCurrentPrice") ? Number(f.get("commodityCurrentPrice")) : pPrice;
     const posObj = {
+      securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
+      issuerName: (f.get("issuerName")||"").trim(),
       id: uid(), type, macro, amount: qty*pPrice, currency: f.get("currency")||"ALL", marketValue: qty*cPrice,
       date: f.get("date")||todayISO, maturityDate: null, note: f.get("note")||"",
       commodityName: f.get("commodityName")||"", commodityUnit: f.get("commodityUnit")||"",
@@ -6423,6 +7119,9 @@ function renderCommoditiesTab() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
       pos.note = f.get("note") || "";
@@ -6456,6 +7155,9 @@ function renderCryptoTab() {
       <form class="entry" id="cryptoForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, c => isCryptoType(c))}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Crypto")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div class="row2">
           <div><label>ID CoinGecko (es. bitcoin, ethereum)</label><input type="text" name="cryptoId" placeholder="es. bitcoin"></div>
           <div><label>Simbolo (es. BTC)</label><input type="text" name="cryptoSymbol" placeholder="es. BTC"></div>
@@ -6475,7 +7177,7 @@ function renderCryptoTab() {
       </form>
     </div>
     <div class="card">
-      <h3>Posizioni registrate</h3>
+      ${listEditHeader("Posizioni registrate", "crypto")}
       ${positions.length===0 ? '<div class="empty">Nessuna crypto registrata.</div>' : positions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
@@ -6483,8 +7185,8 @@ function renderCryptoTab() {
           <div class="li-main"><span class="li-cat">${p.cryptoSymbol||p.type}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["crypto"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -6529,6 +7231,7 @@ function renderCryptoTab() {
           <div class="subtle" data-statusforcrypto="${escAttr(g.name)}" style="margin-top:4px;"></div>
         </div>`).join('')}
     </div>` : ''}
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && (isCryptoType(p.type,p.macro))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -6551,6 +7254,9 @@ function renderCryptoTab() {
     const pPrice = Number(f.get("cryptoPurchasePrice"))||0;
     const cPrice = f.get("cryptoCurrentPrice") ? Number(f.get("cryptoCurrentPrice")) : pPrice;
     const posObj = {
+      securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
+      issuerName: (f.get("issuerName")||"").trim(),
       id: uid(), type, macro, amount: qty*pPrice, currency: f.get("currency")||"USD", marketValue: qty*cPrice,
       date: f.get("date")||todayISO, maturityDate: null, note: f.get("note")||"",
       cryptoId: (f.get("cryptoId")||"").trim().toLowerCase(), cryptoSymbol: (f.get("cryptoSymbol")||"").trim().toUpperCase(),
@@ -6611,6 +7317,9 @@ function renderCryptoTab() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
       pos.note = f.get("note") || "";
@@ -6682,6 +7391,9 @@ function renderETFTab() {
       <form class="entry" id="etfForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, c => isETFType(c))}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "ETF")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div class="row2">
           <div><label>Ticker/simbolo</label><input type="text" name="stockTicker" placeholder="es. VWCE"></div>
           <div><label>Nome (opz.)</label><input type="text" name="stockName" placeholder="es. Vanguard FTSE All-World"></div>
@@ -6713,7 +7425,7 @@ function renderETFTab() {
       </form>
     </div>
     <div class="card">
-      <h3>Posizioni registrate</h3>
+      ${listEditHeader("Posizioni registrate", "etf")}
       ${positions.length===0 ? '<div class="empty">Nessun ETF registrato.</div>' : positions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
@@ -6721,8 +7433,8 @@ function renderETFTab() {
           <div class="li-main"><span class="li-cat">${p.stockTicker||p.type}${p.stockName?' · '+p.stockName:''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''} · ${p.currency}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["etf"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -6763,6 +7475,7 @@ function renderETFTab() {
           ${g.divReceived>0 ? `<div class="stat-row"><span class="label">Dividendi incassati finora</span><span class="val up">${fmt(g.divReceived)} ${g.currency}</span></div>` : ''}
         </div>`).join('')}
     </div>` : ''}
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && (isETFType(p.type,p.macro))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -6786,6 +7499,9 @@ function renderETFTab() {
     const pPrice = Number(f.get("stockPurchasePrice"))||0;
     const cPrice = f.get("stockCurrentPrice") ? Number(f.get("stockCurrentPrice")) : pPrice;
     const posObj = {
+      securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
+      issuerName: (f.get("issuerName")||"").trim(),
       id: uid(), type, macro, amount: qty*pPrice, currency: f.get("currency")||"EUR",
       marketValue: qty*cPrice, date, maturityDate: null, note: f.get("note")||"",
       stockTicker: f.get("stockTicker")||"", stockName: f.get("stockName")||"", stockExchange: f.get("stockExchange")||"",
@@ -6815,6 +7531,9 @@ function renderETFTab() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
       pos.note = f.get("note") || "";
@@ -6896,7 +7615,9 @@ function renderDepositsTab() {
       <form class="entry" id="depositForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, c => c.toLowerCase().includes("deposito"))}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio", "Depositi")}</div>
-        <div><label>Codice</label><input type="text" name="securityCode" maxlength="8" placeholder="opzionale"></div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="es. Banca Kombetare" required></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
         <div class="row2">
           <div><label>Importo depositato</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
@@ -6921,16 +7642,16 @@ function renderDepositsTab() {
       </form>
     </div>
     <div class="card">
-      <h3>Posizioni registrate</h3>
+      ${listEditHeader("Posizioni registrate", "depositi")}
       ${positions.length===0 ? '<div class="empty">Nessun deposito registrato.</div>' : positions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
-          <div class="li-main"><span class="li-cat">${p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
+          <div class="li-main"><span class="li-cat">${pallinoRischio(p)} ${p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}${p.maturityDate?' · scad. '+p.maturityDate:''}${p.macro?' · '+p.macro:''}${p.issuerName?' · '+p.issuerName:''}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-            <button class="li-del" data-del-port="${p.id}">✕</button>
+            ${listEditMode["depositi"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+            <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -6940,7 +7661,11 @@ function renderDepositsTab() {
       <h3>Chiusura anticipata</h3>
       <div class="subtle">Chiude un deposito prima della scadenza naturale: restituisce il capitale (meno un'eventuale penale) e rimuove la posizione. Se il deposito arriva a scadenza naturale, si chiude già da solo — usa questo solo per chiusure anticipate.</div>
       <form class="entry" id="depositCloseForm">
-        <div><label>Deposito</label><select name="depositId">${positions.map(p=>`<option value="${p.id}">${p.type}${p.note?' · '+p.note:''} — ${fmt(p.amount)} ${p.currency}</option>`).join('')}</select></div>
+        <div><label>Deposito</label><select name="depositId">${positions.map(p=>`<option value="${p.id}">${p.type}${p.securityCode?' ['+p.securityCode+']':''}${p.note?' · '+p.note:''} — ${fmt(p.amount)} ${p.currency}</option>`).join('')}</select></div>
+        <div class="row2">
+          <div><label>${LABEL_CODICE}</label><input type="text" id="depositCloseCode" readonly style="opacity:0.7;"></div>
+          <div><label>${LABEL_ENTE}</label><input type="text" id="depositCloseIssuer" readonly style="opacity:0.7;"></div>
+        </div>
         <div class="row2">
           <div><label>Capitale rimborsato</label><input type="number" step="0.0001" name="refundAmount" required></div>
           <div><label>Data chiusura</label><input type="date" name="closeDate" value="${todayISO}"></div>
@@ -6959,6 +7684,7 @@ function renderDepositsTab() {
           ${g.nextMaturity ? `<div class="stat-row"><span class="label">Prossima scadenza</span><span class="val">${g.nextMaturity}</span></div>` : ''}
         </div>`).join('')}
     </div>` : ''}
+    ${riquadroRischioScheda(data.portfolio.filter(p => p.amount>0 && ((p.type||"").toLowerCase().includes("deposito"))), "Rischio di questa sezione")}
   `;
   bindCategorySelects();
   bindMacroSelects();
@@ -6974,10 +7700,11 @@ function renderDepositsTab() {
     if (years) { const md = new Date(date); md.setFullYear(md.getFullYear()+years); maturityDate = localDateStr(md); }
     const posObj = {
       id: uid(), type, macro, amount: nominal, currency: f.get("currency")||"ALL", marketValue: null,
-      date, maturityDate, note: f.get("note")||"", issuer: null,
+      date, maturityDate, note: f.get("note")||"", issuerName: (f.get("issuerName")||"").trim(),
       depositMode: f.get("depositMode")||"cedola", depositRate: f.get("depositRate")?Number(f.get("depositRate")):null,
       couponFrequency: f.get("couponFrequency")||"annual", depositTaxRate: f.get("depositTaxRate")?Number(f.get("depositTaxRate")):15,
-      depositYears: years, securityCode: (f.get("securityCode")||"").trim() || consumeNextSecurityCode()
+      depositYears: years, securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor"))
     };
     data.portfolio.push(posObj);
     saveData(); renderDepositsTab();
@@ -6985,6 +7712,15 @@ function renderDepositsTab() {
   const depositCloseForm = document.getElementById("depositCloseForm");
   if (depositCloseForm) {
     const depositIdSelect = depositCloseForm.querySelector('[name="depositId"]');
+    const fillDepositInfo = () => {
+      const dep = data.portfolio.find(x => x.id === depositIdSelect.value) || {};
+      const codeEl = document.getElementById("depositCloseCode");
+      const issEl = document.getElementById("depositCloseIssuer");
+      if (codeEl) codeEl.value = dep.securityCode || "";
+      if (issEl) issEl.value = dep.issuerName || "";
+    };
+    depositIdSelect.addEventListener("change", fillDepositInfo);
+    fillDepositInfo();
     const refundInput = depositCloseForm.querySelector('[name="refundAmount"]');
     const fillRefund = () => {
       const dep = data.portfolio.find(p=>p.id===depositIdSelect.value);
@@ -7027,6 +7763,9 @@ function renderDepositsTab() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       if (f.has("amount")) pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
@@ -7058,6 +7797,9 @@ function renderDebts() {
       <div class="subtle">Solo passività: debiti/prestiti e carte di credito. Per asset (fondi, obbligazioni, depositi, Banca/Cash) usa la scheda Patrimonio.</div>
       <form class="entry" id="debtForm">
         <div><label>Tipo</label>${categorySelect("portfolio", null, debtOrCcFilter)}</div>
+        <div><label>Macro-categoria</label>${macroSelect("portfolio", "Debiti")}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
         <div class="row2">
           <div><label>Importo del debito</label><input type="number" min="0" step="0.0001" name="amount" placeholder="es. 100000" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
@@ -7068,7 +7810,7 @@ function renderDebts() {
         <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
           <label style="color:#C9A227;">Piano di ammortamento (se è un prestito/mutuo, non una carta)</label>
           <div class="row2">
-            <div><label>Banca emittente</label><input type="text" name="issuer" placeholder="es. Raiffeisen Bank"></div>
+            <div><label>Ente finanziatore (per il piano)</label><input type="text" name="issuer" placeholder="es. Raiffeisen Bank"></div>
             <div><label>Tipo pagamento</label><select name="amortizationType"><option value="francese">Alla francese (rata costante)</option><option value="italiana">All'italiana (capitale costante)</option></select></div>
           </div>
           <div class="row2">
@@ -7090,7 +7832,7 @@ function renderDebts() {
       </form>
     </div>
     <div class="card">
-      <h3>Voci registrate</h3>
+      ${listEditHeader("Voci registrate", "debiti")}
       ${debtPositions.length===0 ? '<div class="empty">Nessun debito o carta registrati.</div>' : debtPositions.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const nextInst = p.schedule ? p.schedule.find(i=>!i.processed) : null;
@@ -7101,8 +7843,8 @@ function renderDebts() {
             <div class="li-main"><span class="li-cat">${p.type}${p.issuer?' · '+p.issuer:''}${linkedProp?' · immobile: '+(linkedProp.propertyType||linkedProp.type):''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
             <div style="display:flex;align-items:center;">
               <span class="li-amt ${p.amount<0?'down':''}">${fmt(p.amount)} ${p.currency}</span>
-              <button data-editport="${p.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
-              <button class="li-del" data-del-port="${p.id}">✕</button>
+              ${listEditMode["debiti"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+              <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
             </div>
           </div>
           ${p.schedule ? `<div class="subtle" style="margin-top:4px;">${p.amortizationType==='italiana'?"All'italiana":'Alla francese'} · ${p.termMonths} mesi · capitale residuo: ${fmt(remaining)} ${p.currency}${nextInst?' · prossima rata '+nextInst.dueDate+': '+fmt(nextInst.capital+nextInst.interest)+' '+p.currency:' · piano completato'}</div>` : ''}
@@ -7145,7 +7887,10 @@ function renderDebts() {
     const date = f.get("date") || todayISO;
     const posId = uid();
     const isLoan = isDebtType(type, macro) && !isCreditCardType(type);
-    const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: f.get("issuer")||null, linkedPropertyId: f.get("linkedPropertyId")||null };
+    const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: f.get("issuer")||null, linkedPropertyId: f.get("linkedPropertyId")||null,
+      securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
+      riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
+      issuerName: (f.get("issuerName")||"").trim() };
 
     const termMonths = Number(f.get("termMonths"))||0;
     if (isLoan && termMonths > 0) {
@@ -7209,6 +7954,9 @@ function renderDebts() {
       if (!pos) return;
       const f = new FormData(ev.target);
       pos.type = ev.target.querySelector(".cat-select").value;
+      if (f.has("riskFactor")) pos.riskFactor = normalizzaRischio(f.get("riskFactor"), pos);
+      if (f.has("securityCode")) pos.securityCode = (f.get("securityCode")||"").trim() || pos.securityCode || null;
+      if (f.has("issuerName")) pos.issuerName = (f.get("issuerName")||"").trim();
       if (f.has("amount")) pos.amount = Number(f.get("amount"));
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
@@ -7229,7 +7977,11 @@ function renderDebts() {
       ev.preventDefault();
       const t = form.dataset.ccform;
       const f = new FormData(ev.target);
+      const precedente = data.creditCardSettings[t] || {};
+      // Ogni carta ha il suo codice: due carte, due codici distinti.
+      const codiceCarta = precedente.securityCode || assegnaCodiceTitolo(f.get("securityCode"));
       data.creditCardSettings[t] = {
+        securityCode: codiceCarta,
         bank: f.get("bank")||"", currency: f.get("currency")||"ALL", limit: Number(f.get("limit"))||0,
         expiryDate: f.get("expiryDate")||null, interestRate: Number(f.get("interestRate"))||0,
         installments: Number(f.get("installments"))||3, dueDay: Number(f.get("dueDay"))||15,
@@ -7271,6 +8023,9 @@ function recurringBlock(groupKey, title) {
           <div><label>Categoria</label>${categorySelect(groupKey, r.category)}</div>
           <div><label>Importo</label><input type="number" min="0" step="0.0001" name="amount" value="${r.amount}" required></div>
         </div>
+        <div><label>Macro-categoria</label>${macroSelect(groupKey, r.macro||null)}</div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
         ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${data.portfolio.filter(p=>p.maturityDate).map(p=>`<option value="${p.id}" ${r.linkedBondId===p.id?'selected':''}>${p.type}${p.note?' · '+p.note:''} (scad. ${p.maturityDate})</option>`).join('')}</select></div>` : ''}
         <div class="row2">
           <div><label>Frequenza</label>${freqSelect(r.frequency)}</div>
@@ -7289,7 +8044,7 @@ function recurringBlock(groupKey, title) {
     }
     const bondNote = r.linkedBondId ? (()=>{ const b = data.portfolio.find(p=>p.id===r.linkedBondId); return b ? ` · scad. ${b.maturityDate}` : ''; })() : '';
     return `<div class="recurring-row">
-      <span class="rn">${r.category} · ${fmt(r.amount)} ALL · ${freqLabel(r.frequency)} · giorno ${r.dayOfMonth} · ${r.paymentType||'Banca'}${bondNote}${r.note?' · '+r.note:''}</span>
+      <span class="rn">${r.category}${r.securityCode?' ['+r.securityCode+']':''} · ${fmt(r.amount)} ALL · ${freqLabel(r.frequency)} · giorno ${r.dayOfMonth} · ${r.paymentType||'Banca'}${r.macro?' · '+r.macro:''}${r.issuerName?' · '+r.issuerName:''}${bondNote}${r.note?' · '+r.note:''}</span>
       <button data-recedit-open="${groupKey}|${r.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;">✎</button>
       <button data-recdel="${groupKey}|${r.id}" style="background:none;border:none;color:#8B3A2F;cursor:pointer;">✕</button>
     </div>`;
@@ -7303,6 +8058,9 @@ function recurringBlock(groupKey, title) {
         <div><label>Categoria</label>${categorySelect(groupKey)}</div>
         <div><label>Importo</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
       </div>
+      <div><label>Macro-categoria</label>${macroSelect(groupKey)}</div>
+      <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+      <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
       ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptionsRec}</select></div>` : ''}
       <div class="row2">
         <div><label>Frequenza</label><select name="frequency">${freqOpts}</select></div>
@@ -7421,6 +8179,10 @@ function recurringBlockPortfolio(title) {
       <div class="row2">
         <div><label>Tipo</label>${categorySelect("portfolio", null, investmentOnlyFilter)}</div>
         <div><label>Macro-categoria</label>${macroSelect("portfolio")}</div>
+      </div>
+      <div class="row2">
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
       </div>
       <div class="row2">
         <div><label>Importo</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
@@ -7773,7 +8535,8 @@ async function downloadFromDrive(silent) {
   const statusEl = document.getElementById("driveStatus");
   if (statusEl) statusEl.textContent = "Scaricamento in corso...";
   try {
-    const fileId = await findDriveFileId();
+    const remoteFile = await findDriveFile();
+    const fileId = remoteFile ? remoteFile.id : null;
     if (!fileId) { if (statusEl) statusEl.textContent = "Nessun backup trovato su Drive. Carica prima una volta."; return; }
     const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
       headers: { Authorization: `Bearer ${gDriveToken}` }
@@ -7818,6 +8581,19 @@ async function downloadFromDrive(silent) {
       taxDeductions: parsed.taxDeductions||[],
       trash: parsed.trash||[]
     };
+    // L'orario di sincronizzazione NON va preso dal file: il file viene caricato
+    // prima che il mittente aggiorni il proprio orario, quindi contiene sempre un
+    // valore vecchio. La verità è l'ora di modifica del file su Drive: senza questa
+    // correzione il confronto continuava a vedere Drive come più recente e l'avviso
+    // di conflitto si ripresentava all'infinito.
+    if (remoteFile && remoteFile.modifiedTime) {
+      data.settings.lastDriveSync = remoteFile.modifiedTime;
+    } else {
+      data.settings.lastDriveSync = new Date().toISOString();
+    }
+    // Appena scaricato, il locale coincide con il remoto: non c'è nulla in sospeso.
+    data.settings.lastLocalChange = null;
+    data.settings.driveConflictPending = null;
     ensureLiquidityCategories();
     persistLocalOnly();
     if (statusEl) statusEl.textContent = "Dati aggiornati da Google Drive.";
@@ -8241,9 +9017,34 @@ async function fetchRaiffeisenFundPrice(fundName) {
   const target = "https://www.raiffeisen-invest.al/sq/performanca-e-fondeve.html";
   const { text, format } = normalizeFetchedPage(await fetchViaProxies(target));
   const nameEscaped = fundName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const idx = text.search(new RegExp(nameEscaped, "i"));
-  if (idx === -1) throw new Error(`Non ho trovato "${fundName}" nella pagina (nome diverso o formato cambiato?)`);
+  // Il nome può comparire più volte (menu, testi descrittivi, legende) prima della
+  // riga vera della tabella: si provano tutte le occorrenze e si tiene la prima che
+  // porta a un prezzo valido, invece di fermarsi ciecamente alla prima.
+  const occorrenze = tutteLeOccorrenze(text, nameEscaped);
+  if (!occorrenze.length) throw new Error(`Non ho trovato "${fundName}" nella pagina (nome diverso o formato cambiato?)`);
+  let ultimoErrore = null;
+  for (const idx of occorrenze) {
+    try {
+      return estraiPrezzoRaiffeisen(text, idx, fundName, format);
+    } catch (e) { ultimoErrore = e; }
+  }
+  throw ultimoErrore;
+}
 
+// Posizioni di tutte le occorrenze di un nome dentro il testo.
+function tutteLeOccorrenze(text, nameEscaped) {
+  const out = [];
+  const re = new RegExp(nameEscaped, "gi");
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    out.push(m.index);
+    if (m.index === re.lastIndex) re.lastIndex++;
+    if (out.length > 50) break;
+  }
+  return out;
+}
+
+function estraiPrezzoRaiffeisen(text, idx, fundName, format) {
   // Finestra di testo che appartiene a questa riga della tabella.
   const window = sliceFundRow(text, idx, fundName, RAIFFEISEN_FUNDS, 400);
 
@@ -8287,9 +9088,18 @@ async function fetchAlbsigFundPrice(fundName) {
   const target = "https://www.albsiginvest.al/performanca-e-fondeve/";
   const { text, format } = normalizeFetchedPage(await fetchViaProxies(target));
   const nameEscaped = fundName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const idx = text.search(new RegExp(nameEscaped, "i"));
-  if (idx === -1) throw new Error(`Non ho trovato "${fundName}" nella pagina (nome diverso o formato cambiato?)`);
+  const occorrenze = tutteLeOccorrenze(text, nameEscaped);
+  if (!occorrenze.length) throw new Error(`Non ho trovato "${fundName}" nella pagina (nome diverso o formato cambiato?)`);
+  let ultimoErrore = null;
+  for (const idx of occorrenze) {
+    try {
+      return estraiPrezzoAlbsig(text, idx, fundName, format);
+    } catch (e) { ultimoErrore = e; }
+  }
+  throw ultimoErrore;
+}
 
+function estraiPrezzoAlbsig(text, idx, fundName, format) {
   const window = sliceFundRow(text, idx, fundName, ALBSIG_FUNDS, 300);
   // Struttura AlbSig: ... VNA (2 decimali) PREZZO (4 decimali) ... percentuali ... Datë Vlerësim
   const pairs = [...window.matchAll(/([\d,]+\.\d{2})\s+([\d,]+\.\d{4})/g)];
@@ -8497,14 +9307,16 @@ function renderSettings() {
     <div class="card">
       <h3>Parametri di proiezione FI</h3>
       <form class="entry" id="settingsForm">
-        <div><label>Cambio EUR/ALL</label><input type="number" step="0.1" name="fx" value="${s.fx}"></div>
-        <div><label>Cambio USD/ALL</label><input type="number" step="0.1" name="fxUsd" value="${s.fxUsd||82}"></div>
+        <div><label>Cambio EUR/ALL</label><input type="number" step="0.01" min="0" name="fx" value="${Number(s.fx).toFixed(2)}"></div>
+        <div><label>Cambio USD/ALL</label><input type="number" step="0.01" min="0" name="fxUsd" value="${Number(s.fxUsd||82).toFixed(2)}"></div>
         <button class="secondary" type="button" id="fetchBoaBtn" style="width:auto; padding:8px 12px; font-size:12px;">🔄 Aggiorna cambio da Banka e Shqipërisë</button>
         <div id="boaFetchStatus" class="subtle"></div>
         <div><label>Tasso di risparmio target (%)</label><input type="number" name="savingsRateTarget" value="${s.savingsRateTarget}"></div>
         <div><label>Crescita reddito ogni 2 anni (ALL)</label><input type="number" name="incomeGrowth2y" value="${s.incomeGrowth2y}"></div>
         <div><label>Rendimento reale centrale (%)</label><input type="number" name="centralRet" value="${s.centralRet}"></div>
         <div><label>Tasso di prelievo (regola del %) — usato per il target FI principale</label><input type="number" step="0.1" name="withdrawalRate" value="${s.withdrawalRate||4}"></div>
+        <div><label>Rendimento privo di rischio (%/anno, vuoto = dedotto dai dati)</label><input type="number" step="0.01" min="0" name="tassoPrivoRischio" value="${s.tassoPrivoRischio||''}"></div>
+        <div><label>Rischio obiettivo del patrimonio (1-7, vuoto = nessun obiettivo)</label><input type="number" step="0.1" min="1" max="7" name="rischioObiettivo" value="${s.rischioObiettivo||''}"></div>
         <div><label>Inflazione attesa (%/anno) — usata per il rendimento reale</label><input type="number" step="0.1" min="0" max="100" name="inflationPct" value="${s.inflationPct!=null?s.inflationPct:3}"></div>
         <div><label>Allocazione obiettivo per macro-categoria (%)</label>
           <div class="subtle" style="font-size:10px; margin-bottom:4px;">Lascia 0 dove non vuoi un obiettivo. Esempio: Bonds 65, ETF 35.</div>
@@ -8517,7 +9329,7 @@ function renderSettings() {
     ${data.fxHistory.length>0 ? `<div class="card">
       <h3>Storico cambio EUR/ALL (modifiche manuali)</h3>
       <div class="subtle">Si registra automaticamente ogni volta che modifichi il cambio nelle Assunzioni.</div>
-      ${[...data.fxHistory].reverse().slice(0,12).map(h=>`<div class="stat-row"><span class="label">${h.date}</span><span class="val">${h.rate}</span></div>`).join('')}
+      ${[...data.fxHistory].reverse().slice(0,12).map(h=>`<div class="stat-row"><span class="label">${h.date}</span><span class="val">${fmt2(h.rate)}</span></div>`).join('')}
     </div>` : ''}
     <div class="card">
       <h3>Database storico cambio (per data)</h3>
@@ -8547,6 +9359,7 @@ function renderSettings() {
       <h3>Voci ricorrenti</h3>
       <div class="subtle">Si generano automaticamente ogni mese, così non devi reinserirle ogni volta.</div>
       ${recurringBlock("expenses", "Spese ricorrenti")}
+      ${pannelloLavoroDipendente()}
       ${recurringBlock("income", "Reddito ricorrente")}
       ${recurringBlockPortfolio("Investimenti ricorrenti (es. fondo pensione)")}
     </div>
@@ -8593,7 +9406,7 @@ function renderSettings() {
         </div>
         <div class="row2">
           <div><label>Pagamento (conto)</label>${paymentTypeSelect("Banca")}</div>
-          <div><label>Tipo pagamento</label><select name="paymentTiming"><option value="posticipato">Posticipato (col giorno di Reddito principale)</option></select></div>
+          <div><label>Tipo pagamento</label><select name="paymentTiming"><option value="posticipato">Posticipato (col giorno dello stipendio)</option></select></div>
         </div>
         <div><label>Macro-categoria collegata (strumento bridge, es. Fondi)</label>${macroSelect("portfolio")}</div>
         <div><label>Risparmio fiscale (%)</label><input type="number" min="0" max="100" step="0.0001" name="taxSavingsPct" placeholder="es. 23" required></div>
@@ -8613,6 +9426,7 @@ function renderSettings() {
   `;
 
   bindCategorySelects();
+  bindPannelloLavoroDipendente();
   bindMacroSelects();
 
   document.getElementById("hfForm").addEventListener("submit", ev=>{
@@ -8782,6 +9596,8 @@ function renderSettings() {
     data.settings.centralRet = Number(f.get("centralRet"));
     data.settings.withdrawalRate = Number(f.get("withdrawalRate")) || 4;
     data.settings.inflationPct = f.get("inflationPct")!==null && f.get("inflationPct")!=="" ? Number(f.get("inflationPct")) : 3;
+    data.settings.rischioObiettivo = f.get("rischioObiettivo") ? Number(f.get("rischioObiettivo")) : null;
+    data.settings.tassoPrivoRischio = f.get("tassoPrivoRischio") ? Number(f.get("tassoPrivoRischio")) : null;
     const _targets = {};
     ev.target.querySelectorAll("[data-target-macro]").forEach(inp=>{
       const v = Number(inp.value)||0;
@@ -8815,9 +9631,14 @@ function renderSettings() {
           propertyType: f.get("propertyType")||"", propertyTaxPct: f.get("propertyTaxPct")?Number(f.get("propertyTaxPct")):null,
           commodityName: f.get("commodityName")||"", commodityUnit: f.get("commodityUnit")||"", commodityRefPrice: f.get("commodityRefPrice")?Number(f.get("commodityRefPrice")):null,
           cryptoId: f.get("cryptoId")||"", cryptoSymbol: f.get("cryptoSymbol")||"", cryptoRefPrice: f.get("cryptoRefPrice")?Number(f.get("cryptoRefPrice")):null,
+          securityCode: (f.get("securityCode")||"").trim() || consumeNextSecurityCode(),
+          issuerName: (f.get("issuerName")||"").trim(),
           paymentType: f.get("paymentType")||"" };
       } else {
-        rule = { id: uid(), category: catValue, amount: Number(f.get("amount")), frequency: f.get("frequency")||"monthly", startMonth: displayToMonth(f.get("startMonth"))||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, paymentType: f.get("paymentType")||"", linkedBondId: f.get("linkedBondId")||null, note: f.get("note")||"" };
+        const macroRec = form.querySelector(".macro-select") ? (form.querySelector(".macro-select").value || null) : null;
+        rule = { id: uid(), category: catValue, macro: macroRec, amount: Number(f.get("amount")), frequency: f.get("frequency")||"monthly", startMonth: displayToMonth(f.get("startMonth"))||thisMonth, dayOfMonth: Number(f.get("dayOfMonth"))||1, paymentType: f.get("paymentType")||"", linkedBondId: f.get("linkedBondId")||null, note: f.get("note")||"",
+          securityCode: assegnaCodiceTitolo(f.get("securityCode")),
+          issuerName: (f.get("issuerName")||"").trim() };
       }
       data.recurring[group].push(rule);
       saveData(); renderSettings();
@@ -8866,7 +9687,13 @@ function renderSettings() {
           rule.cryptoId = f.get("cryptoId")||""; rule.cryptoSymbol = f.get("cryptoSymbol")||""; rule.cryptoRefPrice = f.get("cryptoRefPrice")?Number(f.get("cryptoRefPrice")):null;
           rule.paymentType = f.get("paymentType")||"";
         }
-        else { rule.category = catValue; rule.paymentType = f.get("paymentType")||""; rule.linkedBondId = f.get("linkedBondId")||null; }
+        else {
+          rule.category = catValue; rule.paymentType = f.get("paymentType")||""; rule.linkedBondId = f.get("linkedBondId")||null;
+          const ms = form.querySelector(".macro-select");
+          if (ms) rule.macro = ms.value || null;
+          rule.securityCode = (f.get("securityCode")||"").trim() || rule.securityCode || consumeNextSecurityCode();
+          rule.issuerName = (f.get("issuerName")||"").trim();
+        }
       }
       editingRecurring = null;
       saveData(); renderSettings();
@@ -8876,13 +9703,24 @@ function renderSettings() {
 
 const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, liquidity: renderLiquidityTab, deposits: renderDepositsTab, fundsTab: renderFundsTab, bondsTab: renderBondsTab, assets: renderAssets, etf: renderETFTab, realEstateTab: renderRealEstateTab, commoditiesTab: renderCommoditiesTab, cryptoTab: renderCryptoTab, debts: renderDebts, budget: renderBudget, drive: renderDrive, settings: renderSettings };
 // Ogni renderer, dopo aver disegnato, riapplica l'ordine dei riquadri salvato.
+// La versione avvolta sostituisce anche il NOME GLOBALE della funzione: senza
+// questo, le chiamate interne (per esempio renderFundsTab() dopo un aggiornamento
+// prezzi) saltavano il riordino e i riquadri tornavano all'ordine di partenza.
+const NOMI_RENDERER = { dashboard:"renderDashboard", income:"renderIncome", expenses:"renderExpenses",
+  portfolio:"renderPortfolio", liquidity:"renderLiquidityTab", deposits:"renderDepositsTab",
+  fundsTab:"renderFundsTab", bondsTab:"renderBondsTab", assets:"renderAssets", etf:"renderETFTab",
+  realEstateTab:"renderRealEstateTab", commoditiesTab:"renderCommoditiesTab", cryptoTab:"renderCryptoTab",
+  debts:"renderDebts", budget:"renderBudget", drive:"renderDrive", settings:"renderSettings" };
 Object.keys(RENDERERS).forEach(k => {
   const originale = RENDERERS[k];
-  RENDERERS[k] = function() {
+  const avvolta = function() {
     const r = originale.apply(this, arguments);
     try { applyCardOrder(k); } catch (e) {}
     return r;
   };
+  RENDERERS[k] = avvolta;
+  const nome = NOMI_RENDERER[k];
+  if (nome) { try { window[nome] = avvolta; } catch (e) {} }
 });
 
 const TAB_DEFS = [
@@ -8928,6 +9766,383 @@ function searchPositions(query) {
     return haystack.includes(q);
   });
 }
+// ---------- Sistema Lavoro Dipendente ----------
+const CAT_RLD = "Reddito da Lavoro Dipendente";
+const CAT_DEDUZIONE_FP = "Deduzione Fiscale da Fondo Pensione";
+const CAT_CONTR_PENS = "Contributo Pensionistico da RLD";
+const CAT_CONTR_SAN = "Contributo Sanitario da RLD";
+const CAT_TASSA_RLD = "Tassazione da RLD";
+const MACRO_LAVORO = "Lavoro";
+
+function cfgLavoro() {
+  const predefinita = JSON.parse(JSON.stringify(DEFAULT_DATA.settings.lavoroDipendente));
+  const attuale = data.settings.lavoroDipendente;
+  if (!attuale) {
+    data.settings.lavoroDipendente = predefinita;
+    return data.settings.lavoroDipendente;
+  }
+  // Una configurazione salvata da una versione precedente può non avere tutte le
+  // chiavi: senza questo completamento mancherebbero gli scaglioni e il calcolo
+  // dell'imposta manderebbe in errore l'intera Panoramica.
+  Object.keys(predefinita).forEach(k => {
+    if (attuale[k] === undefined || attuale[k] === null && Array.isArray(predefinita[k])) {
+      attuale[k] = predefinita[k];
+    }
+  });
+  if (!Array.isArray(attuale.scaglioni) || !attuale.scaglioni.length) {
+    attuale.scaglioni = predefinita.scaglioni;
+  }
+  return attuale;
+}
+
+// Toglie il rumore della virgola mobile prima degli arrotondamenti.
+function arrotondaCentesimi(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+
+// Imposta sul reddito secondo gli scaglioni configurati.
+function calcolaTassaScaglioni(base, scaglioni) {
+  const b = Number(base) || 0;
+  const sc = (scaglioni && scaglioni.length) ? scaglioni : cfgLavoro().scaglioni;
+  for (const s of sc) {
+    const limite = (s.fino === null || s.fino === undefined) ? Infinity : Number(s.fino);
+    if (b <= limite) {
+      const imponibile = Math.max(0, b - (Number(s.sottrai) || 0));
+      return (Number(s.fisso) || 0) + imponibile * (Number(s.aliquota) || 0) / 100;
+    }
+  }
+  return 0;
+}
+
+// Tutte le voci della busta paga per un dato lordo.
+function calcolaBustaPaga(lordoOverride) {
+  const c = cfgLavoro();
+  const lordo = Number(lordoOverride != null ? lordoOverride : c.stipendioLordo) || 0;
+  const massimale = Number(c.massimaleContributivo) || 0;
+  const baseCap = massimale > 0 ? Math.min(lordo, massimale) : lordo;
+  const b = (impostata, predefinita) =>
+    (impostata === null || impostata === undefined || impostata === "") ? predefinita : Number(impostata);
+
+  const basi = {
+    pensioneDatore: b(c.basePensioneDatore, baseCap),
+    sanitaDatore: b(c.baseSanitaDatore, lordo),
+    pensioneLavoratore: b(c.basePensioneLavoratore, baseCap),
+    sanitaLavoratore: b(c.baseSanitaLavoratore, lordo),
+    tassazione: b(c.baseTassazione, lordo)
+  };
+  const p1 = basi.pensioneDatore * (Number(c.pctPensioneDatore)||0) / 100;
+  const s1 = basi.sanitaDatore * (Number(c.pctSanitaDatore)||0) / 100;
+  const p2 = basi.pensioneLavoratore * (Number(c.pctPensioneLavoratore)||0) / 100;
+  const s2 = basi.sanitaLavoratore * (Number(c.pctSanitaLavoratore)||0) / 100;
+  const t1 = calcolaTassaScaglioni(basi.tassazione, c.scaglioni);
+  const nettoEsatto = arrotondaCentesimi(lordo - p2 - s2 - t1);
+  return { lordo, basi, p1, s1, p2, s2, t1,
+    nettoEsatto, netto: Math.ceil(nettoEsatto),   // per eccesso
+    costoDatore: lordo + p1 + s1 };
+}
+
+// Versamenti ai soli Fondo pensione nel mese indicato (chiave AAAA-MM).
+function versamentiFondoPensione(meseKey) {
+  return data.portfolio
+    .filter(p => String(p.type||"").toLowerCase() === "fondo pensione"
+      && Number(p.amount) > 0 && p.date && p.date.slice(0,7) === meseKey)
+    .reduce((s,p) => s + toALL(Number(p.amount), p.currency||"ALL"), 0);
+}
+
+// Risparmio fiscale dei versamenti di un mese: differenza fra la tassa sul lordo
+// e quella sul lordo ridotto dei versamenti, limitati al tetto mensile.
+function calcolaDeduzioneFondoPensione(meseVersamenti) {
+  const c = cfgLavoro();
+  const versato = versamentiFondoPensione(meseVersamenti);
+  const tetto = Number(c.tettoDeduzioneMensile) || 0;
+  const ammesso = tetto > 0 ? Math.min(versato, tetto) : versato;
+  if (ammesso <= 0) return { versato, ammesso: 0, risparmioEsatto: 0, risparmio: 0 };
+  const bp = calcolaBustaPaga();
+  const tassaPiena = calcolaTassaScaglioni(bp.basi.tassazione, c.scaglioni);
+  const tassaRidotta = calcolaTassaScaglioni(Math.max(0, bp.basi.tassazione - ammesso), c.scaglioni);
+  // La differenza fra due importi calcolati può dare 11499,999999996 invece di 11500:
+  // senza questa correzione l'arrotondamento per difetto perderebbe un lek.
+  const risparmioEsatto = Math.max(0, arrotondaCentesimi(tassaPiena - tassaRidotta));
+  return { versato, ammesso, risparmioEsatto, risparmio: Math.floor(risparmioEsatto) };  // per difetto
+}
+
+// Genera stipendio, contributi, tassa e deduzione per i mesi maturati.
+// Il controllo anti-duplicati guarda CATEGORIA e MESE, non il marcatore interno:
+// così una voce inserita a mano blocca la generazione automatica e non si finisce
+// con due stipendi nello stesso mese.
+// Migrazione una tantum al Sistema Lavoro Dipendente: rinomina la categoria dello
+// stipendio ovunque (compresi budget, macro e regole ricorrenti) e cancella le voci
+// registrate col vecchio nome insieme a tutto ciò che ne discendeva.
+function migraLavoroDipendente() {
+  if (data.settings.migrazioneRLD) return false;
+  const vecchia = "Reddito principale";
+  let tocc = false;
+
+  // voci da eliminare, con i movimenti bancari collegati
+  const daEliminare = data.income.filter(i => i.category === vecchia);
+  const idsEliminati = new Set(daEliminare.map(i => i.id));
+  if (daEliminare.length) {
+    data.income = data.income.filter(i => i.category !== vecchia);
+    data.portfolio = data.portfolio.filter(p => !(p.linkedTxnId && idsEliminati.has(p.linkedTxnId)));
+    tocc = true;
+  }
+  // deduzioni generate dal vecchio sistema, con i loro accrediti
+  const nomiDeduzioni = new Set((data.taxDeductions||[]).map(d => d.name));
+  if (nomiDeduzioni.size) {
+    const vecchieDed = data.income.filter(i => nomiDeduzioni.has(i.category));
+    const idsDed = new Set(vecchieDed.map(i => i.id));
+    if (vecchieDed.length) {
+      data.income = data.income.filter(i => !nomiDeduzioni.has(i.category));
+      data.portfolio = data.portfolio.filter(p => !(p.linkedTxnId && idsDed.has(p.linkedTxnId)));
+      tocc = true;
+    }
+  }
+
+  // Le vecchie regole di deduzione vanno disattivate: il risparmio fiscale ora lo
+  // calcola il pannello dagli scaglioni, e lasciandole attive verrebbe contato due volte.
+  if ((data.taxDeductions||[]).length) {
+    data.taxDeductions.forEach(r => {
+      if (!r.disattivataDaRLD) { r.disattivataDaRLD = true; r.endDate = todayISO; tocc = true; }
+    });
+  }
+
+  // Assegna il fattore di rischiosità alle posizioni già in portafoglio: senza
+  // questo restavano senza valore e ricadevano ogni volta sul predefinito,
+  // impedendo di correggerlo una volta per tutte.
+  data.portfolio.forEach(p => {
+    if (p.riskFactor != null) return;
+    if (isDebtType(p.type, p.macro) || isCreditCardType(p.type)) return;
+    if (!p.amount || p.amount <= 0) return;
+    p.riskFactor = rischioPredefinito(p);
+    tocc = true;
+  });
+  (data.income||[]).forEach(i => {
+    if (i.riskFactor == null && Number(i.amount) > 0) { i.riskFactor = 2; tocc = true; }
+  });
+
+  // rinomina ovunque la categoria residua
+  const rinomina = obj => { if (obj && obj[vecchia] !== undefined) { obj[CAT_RLD] = obj[vecchia]; delete obj[vecchia]; return true; } return false; };
+  data.categories.income = data.categories.income.map(x => x === vecchia ? CAT_RLD : x);
+  if (!data.categories.income.includes(CAT_RLD)) data.categories.income.push(CAT_RLD);
+  data.categories.income = [...new Set(data.categories.income)];
+  if (rinomina(data.categoryMacroMap.income)) tocc = true;
+  if (rinomina(data.categoryBudgets.income)) tocc = true;
+  data.categoryMacroMap.income[CAT_RLD] = MACRO_LAVORO;
+  // Lo stipendio ora lo genera il pannello Lavoro Dipendente: la vecchia regola
+  // ricorrente va rimossa, non solo rinominata, altrimenti verserebbe un secondo
+  // stipendio in parallelo ogni mese.
+  const primaRic = (data.recurring.income||[]).length;
+  data.recurring.income = (data.recurring.income||[]).filter(r => r.category !== vecchia && r.category !== CAT_RLD);
+  if ((data.recurring.income||[]).length !== primaRic) tocc = true;
+  // e le voci che quella regola aveva già generato, con i relativi accrediti
+  const idRegole = new Set();
+  (data.income||[]).forEach(i => { if (i.recurringId && (i.category === vecchia || i.category === CAT_RLD)) idRegole.add(i.id); });
+  if (idRegole.size) {
+    data.income = data.income.filter(i => !idRegole.has(i.id));
+    data.portfolio = data.portfolio.filter(x => !idRegole.has(x.linkedTxnId));
+    tocc = true;
+  }
+  (data.income||[]).forEach(i => { if (i.category === vecchia) { i.category = CAT_RLD; i.macro = MACRO_LAVORO; tocc = true; } });
+
+  ensureCategorieLavoro();
+  data.settings.migrazioneRLD = true;
+  saveData();
+  return tocc;
+}
+
+function autoGenerateLavoroDipendente() {
+  const c = cfgLavoro();
+  if (!c.attivo || !(Number(c.stipendioLordo) > 0)) return;
+  ensureCategorieLavoro();
+
+  const giorno = Math.min(Math.max(Number(c.giornoPaga) || 10, 1), 28);
+  const inizio = c.startMonth || thisMonth;
+  let changed = false;
+
+  // elenco dei mesi da coprire, dall'attivazione a oggi
+  const [ay, am] = inizio.split("-").map(Number);
+  let cursore = new Date(ay, am - 1, 1);
+  const fine = new Date(now.getFullYear(), now.getMonth(), 1);
+  let giri = 0;
+  while (cursore <= fine && giri++ < 600) {
+    const meseKey = `${cursore.getFullYear()}-${String(cursore.getMonth()+1).padStart(2,"0")}`;
+    const dataPaga = `${meseKey}-${String(giorno).padStart(2,"0")}`;
+    cursore = new Date(cursore.getFullYear(), cursore.getMonth() + 1, 1);
+    if (dataPaga > todayISO) continue;
+
+    const esisteGia = data.income.some(i => i.category === CAT_RLD && i.date && i.date.slice(0,7) === meseKey);
+    if (esisteGia) continue;
+
+    const bp = calcolaBustaPaga();
+    const codice = "RLD";
+    const idStipendio = uid();
+    data.income.push({ id: idStipendio, date: dataPaga, amount: bp.lordo, currency: "ALL",
+      category: CAT_RLD, macro: MACRO_LAVORO, paymentType: null, note: "Stipendio lordo",
+      securityCode: codice, issuerName: c.datoreLavoro || "", generatoDaRLD: true });
+
+    const spesa = (cat, importo, nota) => {
+      if (!(importo > 0)) return;
+      data.expenses.push({ id: uid(), date: dataPaga, amount: importo, category: cat,
+        macro: MACRO_LAVORO, note: nota, securityCode: codice, generatoDaRLD: true });
+    };
+    spesa(CAT_CONTR_PENS, bp.p2, "Trattenuta in busta paga");
+    spesa(CAT_CONTR_SAN, bp.s2, "Trattenuta in busta paga");
+    spesa(CAT_TASSA_RLD, bp.t1, "Trattenuta in busta paga");
+
+    // In banca arriva il netto, arrotondato per eccesso.
+    createLiquidityAdjustment("Banca", bp.netto, dataPaga, "Stipendio netto", idStipendio);
+
+    // Deduzione sui versamenti del mese PRECEDENTE, con la data di questo stipendio.
+    const prec = new Date(cursore.getFullYear(), cursore.getMonth() - 2, 1);
+    const mesePrec = `${prec.getFullYear()}-${String(prec.getMonth()+1).padStart(2,"0")}`;
+    const ded = calcolaDeduzioneFondoPensione(mesePrec);
+    const dedGiaPresente = data.income.some(i => i.category === CAT_DEDUZIONE_FP && i.date && i.date.slice(0,7) === meseKey);
+    if (ded.risparmio > 0 && !dedGiaPresente) {
+      const idDed = uid();
+      data.income.push({ id: idDed, date: dataPaga, amount: ded.risparmio, currency: "ALL",
+        category: CAT_DEDUZIONE_FP, macro: MACRO_LAVORO, paymentType: null,
+        note: `Su ${fmt(ded.ammesso)} versati nel ${mesePrec}`, securityCode: codice, generatoDaRLD: true });
+      createLiquidityAdjustment("Banca", ded.risparmio, dataPaga, "Deduzione fiscale fondo pensione", idDed);
+    }
+    changed = true;
+  }
+  if (changed) saveData();
+}
+
+// Categorie e macro necessarie al sistema.
+function ensureCategorieLavoro() {
+  let ok = false;
+  if (!data.macroCategories.income.includes(MACRO_LAVORO)) { data.macroCategories.income.push(MACRO_LAVORO); ok = true; }
+  if (!data.macroCategories.expenses.includes(MACRO_LAVORO)) { data.macroCategories.expenses.push(MACRO_LAVORO); ok = true; }
+  [[CAT_RLD,"income"],[CAT_DEDUZIONE_FP,"income"],
+   [CAT_CONTR_PENS,"expenses"],[CAT_CONTR_SAN,"expenses"],[CAT_TASSA_RLD,"expenses"]].forEach(([cat,gruppo]) => {
+    if (!data.categories[gruppo].includes(cat)) { data.categories[gruppo].push(cat); ok = true; }
+    if (!data.categoryMacroMap[gruppo]) data.categoryMacroMap[gruppo] = {};
+    if (data.categoryMacroMap[gruppo][cat] !== MACRO_LAVORO) { data.categoryMacroMap[gruppo][cat] = MACRO_LAVORO; ok = true; }
+  });
+  return ok;
+}
+
+// Pannello di configurazione del Sistema Lavoro Dipendente.
+function pannelloLavoroDipendente() {
+  const c = cfgLavoro();
+  const bp = calcolaBustaPaga();
+  const num = (nome, val, step) => `<input type="number" step="${step||'0.0001'}" min="0" name="${nome}" value="${val==null?'':val}">`;
+  const riga = (etichetta, nomeBase, valBase, nomePct, valPct, valore, informativa) => `
+    <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .7fr 1fr .9fr; gap:6px; align-items:center;">
+      <span class="label" style="font-size:11px;">${etichetta}${informativa?' <span class="subtle">(informativo)</span>':''}</span>
+      <span>${num(nomePct, valPct, '0.001')}</span>
+      <span>${num(nomeBase, valBase==null?'':valBase)}</span>
+      <span class="val" style="text-align:right;">${fmt2(valore)}</span>
+    </div>`;
+  return `
+    <div class="card">
+      <h3>Sistema Lavoro Dipendente</h3>
+      <div class="subtle">Da qui vengono generati stipendio, contributi, tassazione e deduzione da fondo pensione. Sostituisce la voce ricorrente del reddito. I contributi del datore sono solo informativi e non generano movimenti.</div>
+      <form class="entry" id="formLavoroDipendente">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" name="attivo" id="rldAttivo" style="width:auto;" ${c.attivo?'checked':''}>
+          <label style="margin:0;" for="rldAttivo">Sistema attivo</label>
+        </div>
+        <div class="row2">
+          <div><label>Stipendio lordo mensile</label>${num("stipendioLordo", c.stipendioLordo)}</div>
+          <div><label>Giorno di accredito</label><input type="number" min="1" max="28" name="giornoPaga" value="${c.giornoPaga||10}"></div>
+        </div>
+        <div class="row2">
+          <div><label>Massimale contributivo</label>${num("massimaleContributivo", c.massimaleContributivo)}</div>
+          <div><label>Tetto mensile deducibile</label>${num("tettoDeduzioneMensile", c.tettoDeduzioneMensile)}</div>
+        </div>
+        <div><label>Mese di partenza (MM/AAAA)</label><input type="text" name="startMonth" pattern="[0-9]{2}/[0-9]{4}" placeholder="es. 08/2026" value="${c.startMonth?monthToDisplay(c.startMonth):''}"></div>
+
+        <div style="margin-top:10px; border-top:1px solid #2E4159; padding-top:8px;">
+          <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .7fr 1fr .9fr; gap:6px;">
+            <span class="subtle" style="font-size:10px;">VOCE</span><span class="subtle" style="font-size:10px;">%</span>
+            <span class="subtle" style="font-size:10px;">BASE</span><span class="subtle" style="font-size:10px; text-align:right;">VALORE</span>
+          </div>
+          ${riga("Pensione datore", "basePensioneDatore", c.basePensioneDatore, "pctPensioneDatore", c.pctPensioneDatore, bp.p1, true)}
+          ${riga("Sanità datore", "baseSanitaDatore", c.baseSanitaDatore, "pctSanitaDatore", c.pctSanitaDatore, bp.s1, true)}
+          ${riga("Pensione lavoratore", "basePensioneLavoratore", c.basePensioneLavoratore, "pctPensioneLavoratore", c.pctPensioneLavoratore, bp.p2)}
+          ${riga("Sanità lavoratore", "baseSanitaLavoratore", c.baseSanitaLavoratore, "pctSanitaLavoratore", c.pctSanitaLavoratore, bp.s2)}
+          <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .7fr 1fr .9fr; gap:6px; align-items:center;">
+            <span class="label" style="font-size:11px;">Tassazione (scaglioni)</span>
+            <span class="subtle" style="font-size:10px;">tabella</span>
+            <span>${num("baseTassazione", c.baseTassazione)}</span>
+            <span class="val" style="text-align:right;">${fmt2(bp.t1)}</span>
+          </div>
+          <div class="subtle" style="font-size:10px; margin-top:4px;">Base vuota = calcolata dal lordo (con massimale dove previsto).</div>
+        </div>
+
+        <div class="section-total"><span>Stipendio netto (per eccesso)</span><span style="color:#C9A227;">${fmt(bp.netto)}</span></div>
+
+        <label style="margin-top:10px;">Scaglioni di tassazione</label>
+        <div id="rldScaglioni">
+          ${(c.scaglioni||[]).map((s,i)=>`
+            <div class="row2" style="gap:6px; margin-bottom:4px;">
+              <div><label style="font-size:10px;">Fino a (vuoto = oltre)</label><input type="number" min="0" name="sc_fino_${i}" value="${s.fino==null?'':s.fino}"></div>
+              <div><label style="font-size:10px;">Sottrai</label><input type="number" min="0" name="sc_sottrai_${i}" value="${s.sottrai||0}"></div>
+              <div><label style="font-size:10px;">Aliquota %</label><input type="number" step="0.001" min="0" name="sc_aliquota_${i}" value="${s.aliquota||0}"></div>
+              <div><label style="font-size:10px;">Importo fisso</label><input type="number" min="0" name="sc_fisso_${i}" value="${s.fisso||0}"></div>
+            </div>`).join('')}
+        </div>
+        <button class="primary" type="submit">Salva e rigenera</button>
+      </form>
+    </div>`;
+}
+
+function bindPannelloLavoroDipendente() {
+  const form = document.getElementById("formLavoroDipendente");
+  if (!form) return;
+  form.addEventListener("submit", ev => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const c = cfgLavoro();
+    const n = k => { const v = f.get(k); return (v === null || v === "") ? null : Number(v); };
+    c.attivo = f.get("attivo") === "on";
+    c.stipendioLordo = n("stipendioLordo") || 0;
+    c.giornoPaga = Math.min(Math.max(n("giornoPaga") || 10, 1), 28);
+    c.massimaleContributivo = n("massimaleContributivo") || 0;
+    c.tettoDeduzioneMensile = n("tettoDeduzioneMensile") || 0;
+    c.startMonth = displayToMonth(f.get("startMonth")) || c.startMonth || thisMonth;
+    ["pctPensioneDatore","pctSanitaDatore","pctPensioneLavoratore","pctSanitaLavoratore"].forEach(k => c[k] = n(k) || 0);
+    ["basePensioneDatore","baseSanitaDatore","basePensioneLavoratore","baseSanitaLavoratore","baseTassazione"].forEach(k => c[k] = n(k));
+    c.scaglioni = (c.scaglioni||[]).map((s,i) => ({
+      fino: n(`sc_fino_${i}`), sottrai: n(`sc_sottrai_${i}`) || 0,
+      aliquota: n(`sc_aliquota_${i}`) || 0, fisso: n(`sc_fisso_${i}`) || 0
+    }));
+    ensureCategorieLavoro();
+    saveData();
+    autoGenerateLavoroDipendente();
+    renderSettings();
+  });
+}
+
+// Riquadro di sintesi del reddito da lavoro dipendente per l'anno corrente.
+function riquadroRedditoLavoro(anno) {
+  const c = cfgLavoro();
+  const voci = (data.income||[]).filter(i => i.date && i.date.slice(0,4) === String(anno));
+  const somma = (arr) => arr.reduce((s,e) => s + toALL(Number(e.amount), e.currency||"ALL"), 0);
+  const lordo = somma(voci.filter(i => i.category === CAT_RLD));
+  if (lordo <= 0 && !c.attivo) return "";
+  const spese = (data.expenses||[]).filter(e => e.date && e.date.slice(0,4) === String(anno));
+  const sp = cat => spese.filter(e => e.category === cat).reduce((s,e) => s + Number(e.amount), 0);
+  const pens = sp(CAT_CONTR_PENS), san = sp(CAT_CONTR_SAN), tassa = sp(CAT_TASSA_RLD);
+  const netto = Math.ceil(arrotondaCentesimi(lordo - pens - san - tassa));
+  const deduzione = somma(voci.filter(i => i.category === CAT_DEDUZIONE_FP));
+  const totale = netto + Math.floor(deduzione);
+  const r = (etichetta, valore, cls, grassetto) =>
+    `<div class="stat-row"${grassetto?' style="font-weight:600;"':''}><span class="label">${etichetta}</span><span class="val ${cls||''}">${fmtDisplay(valore)}</span></div>`;
+  return `
+    <div class="card">
+      <h3>Reddito da Lavoro Dipendente ${anno}</h3>
+      <div class="subtle">Riepilogo della macro-categoria Lavoro. Il netto è arrotondato per eccesso, la deduzione per difetto.</div>
+      ${r("Stipendio lordo", lordo)}
+      ${r("· contributo pensionistico", -pens, "down")}
+      ${r("· contributo sanitario", -san, "down")}
+      ${r("· tassazione", -tassa, "down")}
+      <div class="section-total"><span>Stipendio netto</span><span style="color:#C9A227;">${fmtDisplay(netto)}</span></div>
+      ${r("Deduzione fiscale da fondo pensione", Math.floor(deduzione), "up")}
+      <div class="section-total"><span>Entrate totali da RLD</span><span style="font-weight:600; color:#3F6E5E;">${fmtDisplay(totale)}</span></div>
+    </div>`;
+}
+
 function computeAnnualTaxSummary(year) {
   const isTax = c => c.startsWith("Tassa") || c.startsWith("Tassazione");
   const isCommission = c => c.startsWith("Commissione");
@@ -9462,6 +10677,32 @@ function getOrderedTabDefs() {
   return fullOrder.map(id => TAB_DEFS.find(t=>t.id===id)).filter(Boolean);
 }
 
+// Porta la scheda attiva dentro la parte visibile della barra e aggiorna le
+// sfumature laterali, che indicano se c'è altro da scorrere a destra o a sinistra.
+function aggiornaBarraSchede() {
+  const nav = document.getElementById("navTabs");
+  if (!nav || nav.classList.contains("nav-edit-mode")) return;
+  const attivo = nav.querySelector("button.active");
+  if (attivo && nav.scrollWidth > nav.clientWidth) {
+    const centro = attivo.offsetLeft - (nav.clientWidth / 2) + (attivo.offsetWidth / 2);
+    nav.scrollLeft = Math.max(0, centro);
+  }
+  const aggiornaSfumature = () => {
+    const l = document.getElementById("tabsFadeL");
+    const r = document.getElementById("tabsFadeR");
+    if (!l || !r) return;
+    const scorrevole = nav.scrollWidth - nav.clientWidth;
+    l.style.opacity = nav.scrollLeft > 4 ? "1" : "0";
+    r.style.opacity = nav.scrollLeft < scorrevole - 4 ? "1" : "0";
+  };
+  aggiornaSfumature();
+  if (!nav.dataset.scrollBound) {
+    nav.addEventListener("scroll", aggiornaSfumature);
+    window.addEventListener("resize", aggiornaSfumature);
+    nav.dataset.scrollBound = "1";
+  }
+}
+
 function renderNavTabs() {
   const nav = document.getElementById("navTabs");
   const ordered = getOrderedTabDefs();
@@ -9526,6 +10767,7 @@ function renderNavTabs() {
       }
     });
   }
+  try { aggiornaBarraSchede(); } catch (e) {}
 }
 document.getElementById("navEditBtn").addEventListener("click", ()=>{
   navEditMode = !navEditMode;
