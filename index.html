@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.18</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.24</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -226,6 +226,9 @@ const DEFAULT_CATEGORIES = {
 const DEFAULT_DATA = {
   settings: { fx: 93.5, fxUsd: 82, savingsRateTarget: 70, expenseGrowth: 75000, incomeGrowth2y: 70000, centralRet: 2, horizon: 20, expenseBase: 1160000, startYear: thisYearNum, pinHash: null, planBaselineYear: null, planBaselineSetDate: null, hfToken: "", hfModel: "Qwen/Qwen3.5-9B", nextSecurityCodeSeq: 1, withdrawalRate: 4, inflationPct: 3,
     lavoroDipendente: {
+      // Più stipendi: ognuno con i propri dati, le trattenute e la tassazione
+      // calcolate sul CUMULO, non isolatamente.
+      stipendi: [],
       attivo: false, startMonth: null, giornoPaga: 10,
       stipendioLordo: 0, massimaleContributivo: 186416, tettoDeduzioneMensile: 50000,
       // percentuali contributive
@@ -255,7 +258,8 @@ const DEFAULT_DATA = {
   creditCardDebts: [],
   marketYieldCurve: null,
   taxDeductions: [],
-  trash: []
+  trash: [],
+  deletedGenerated: []
 };
 
 // ---------- Storage ----------
@@ -303,7 +307,8 @@ function loadData() {
       creditCardDebts: parsed.creditCardDebts || [],
       marketYieldCurve: parsed.marketYieldCurve || null,
       taxDeductions: parsed.taxDeductions || [],
-      trash: parsed.trash || []
+      trash: parsed.trash || [],
+      deletedGenerated: parsed.deletedGenerated || []
     };
   } catch (e) { return base; }
 }
@@ -652,6 +657,48 @@ function createLiquidityAdjustment(paymentType, signedAmount, date, note, linked
 function removeLiquidityAdjustment(linkedTxnId) {
   data.portfolio = data.portfolio.filter(p => p.linkedTxnId !== linkedTxnId);
 }
+// ===== Registro delle cancellazioni =====
+// I motori automatici rigenerano una voce se non la trovano più: senza memoria di
+// ciò che è stato cancellato, eliminare lo stipendio di un mese non serve a nulla
+// perché ricompare alla riapertura. Qui si tiene traccia di quali generazioni sono
+// state annullate deliberatamente, così non tornano.
+function registroCancellazioni() {
+  if (!data.deletedGenerated) data.deletedGenerated = [];
+  return data.deletedGenerated;
+}
+// Chiave stabile di una generazione: fonte + mese di competenza.
+function chiaveGenerazione(fonte, mese) {
+  return String(fonte || "") + "|" + String(mese || "");
+}
+function segnaCancellazione(fonte, mese) {
+  if (!fonte || !mese) return;
+  const reg = registroCancellazioni();
+  const k = chiaveGenerazione(fonte, mese);
+  if (!reg.includes(k)) reg.push(k);
+}
+function eraStataCancellata(fonte, mese) {
+  return registroCancellazioni().includes(chiaveGenerazione(fonte, mese));
+}
+// Riattiva le generazioni di una fonte (usato quando si ricrea o riattiva la fonte).
+function dimenticaCancellazioni(fonte) {
+  data.deletedGenerated = registroCancellazioni().filter(k => !k.startsWith(String(fonte) + "|"));
+}
+// Da una voce generata ricava la fonte, qualunque motore l'abbia prodotta.
+function fonteDiGenerazione(voce) {
+  if (!voce) return null;
+  if (voce.recurringId) return "rec:" + voce.recurringId;
+  if (voce.rldId) return "rld:" + voce.rldId;
+  if (voce.category === CAT_RLD) return "rld:" + (voce.rldId || "principale");
+  if (voce.category === CAT_DEDUZIONE_FP) return "dedfp";
+  if (voce.deductionRuleId) return "ded:" + voce.deductionRuleId;
+  return null;
+}
+// Registra la cancellazione di una voce generata, se lo è.
+function registraCancellazioneVoce(voce) {
+  const fonte = fonteDiGenerazione(voce);
+  if (fonte && voce.date) segnaCancellazione(fonte, voce.date.slice(0,7));
+}
+
 const TRASH_MAX = 30;
 // Cestino: prima di eliminare qualcosa se ne conserva una copia, così una conferma
 // data per sbaglio non è più definitiva. Tiene le ultime TRASH_MAX eliminazioni.
@@ -1730,6 +1777,81 @@ function riquadroRischioScheda(posizioni, titolo) {
 // Riquadro complessivo in Panoramica: le due letture, la ripartizione, lo scostamento
 // dall'obiettivo, l'andamento nel tempo e gli strumenti che non ripagano il rischio.
 // Riquadro del rendimento corretto per il rischio.
+// ===== Master del fattore di rischiosità =====
+// Raggruppa le posizioni per STRUMENTO, non per singolo acquisto: tre versamenti
+// sullo stesso fondo sono una riga sola. Obbligazioni, depositi e immobili restano
+// separati anche a parità di emittente, perché sono titoli distinti per costruzione.
+function strumentiPerRischio() {
+  const gruppi = {};
+  posizioniRischiose(false).forEach(p => {
+    const chiave = chiaveIdentitaStrumento(p) || ("singolo:" + p.id);
+    if (!gruppi[chiave]) {
+      gruppi[chiave] = {
+        chiave, ids: [], nome: nomeStrumento(p), tipo: p.type, macro: p.macro || null,
+        ente: p.issuerName || "", codice: p.securityCode || "",
+        rischio: normalizzaRischio(p.riskFactor, p), valore: 0, quante: 0
+      };
+    }
+    const g = gruppi[chiave];
+    g.ids.push(p.id);
+    g.valore += valoreDiRischio(p);
+    g.quante++;
+  });
+  return Object.values(gruppi).sort((a,b) => b.valore - a.valore);
+}
+function nomeStrumento(p) {
+  return p.fundName || p.stockTicker || p.commodityName || p.cryptoSymbol
+    || p.propertyType || p.type || "senza nome";
+}
+// Applica un fattore a tutte le posizioni dello stesso strumento.
+function applicaRischioAStrumento(chiave, valore) {
+  let tocc = 0;
+  data.portfolio.forEach(p => {
+    const k = chiaveIdentitaStrumento(p) || ("singolo:" + p.id);
+    if (k !== chiave) return;
+    p.riskFactor = normalizzaRischio(valore, p);
+    tocc++;
+  });
+  return tocc;
+}
+
+function riquadroMasterRischio() {
+  const gruppi = strumentiPerRischio();
+  if (!gruppi.length) return "";
+  const righe = gruppi.map(g => `
+    <div class="stat-row" style="display:grid; grid-template-columns:1.5fr .8fr .9fr .9fr; gap:6px; align-items:center;">
+      <span class="label" style="font-size:11px;">${g.nome}${g.codice?' <span class="pill">'+g.codice+'</span>':''}${g.quante>1?' <span class="subtle" style="font-size:9px;">('+g.quante+' acquisti)</span>':''}</span>
+      <span class="subtle" style="font-size:10px;">${g.macro || g.tipo}</span>
+      <span class="subtle" style="font-size:10px;">${g.ente || "—"}</span>
+      <select class="master-rischio" data-chiave="${escAttr(g.chiave)}" style="font-size:11px; padding:3px;">
+        ${Array.from({length:RISCHIO_MAX}, (_,i) => i+1).map(v =>
+          `<option value="${v}" ${v===g.rischio?'selected':''}>${v} — ${RISCHIO_ETICHETTE[v]}</option>`).join('')}
+      </select>
+    </div>`).join('');
+  return `
+    <div class="card">
+      <h3>Fattore di rischiosità per strumento</h3>
+      <div class="subtle">Un valore per strumento, non per singolo acquisto: modificandolo qui si
+        aggiorna ovunque. Obbligazioni, depositi e immobili restano distinti anche a parità di emittente.</div>
+      <div class="stat-row" style="display:grid; grid-template-columns:1.5fr .8fr .9fr .9fr; gap:6px;">
+        <span class="subtle" style="font-size:10px;">STRUMENTO</span>
+        <span class="subtle" style="font-size:10px;">CATEGORIA</span>
+        <span class="subtle" style="font-size:10px;">ENTE</span>
+        <span class="subtle" style="font-size:10px;">RISCHIO</span>
+      </div>
+      ${righe}
+    </div>`;
+}
+function bindMasterRischio() {
+  document.querySelectorAll(".master-rischio").forEach(sel => {
+    sel.addEventListener("change", () => {
+      const n = applicaRischioAStrumento(sel.dataset.chiave, sel.value);
+      saveData();
+      if (RENDERERS[currentTabId]) RENDERERS[currentTabId]();
+    });
+  });
+}
+
 function riquadroRendimentoRischio() {
   const cplx = rendimentoCorrettoPortafoglio();
   const righe = classificaRendimentoRischio();
@@ -2041,7 +2163,10 @@ function generateRecurring() {
         if (!bond) return;
         if (bond.maturityDate && new Date(bond.maturityDate) < now) return;
       }
-      const already = data[group].some(e => e.recurringId === rule.id && e.date.slice(0,7) === thisMonth);
+      // Una voce cancellata deliberatamente non va rigenerata: senza questo controllo
+      // eliminare la spesa del mese corrente era inutile, ricompariva alla riapertura.
+      const already = data[group].some(e => e.recurringId === rule.id && e.date.slice(0,7) === thisMonth)
+        || eraStataCancellata("rec:" + rule.id, thisMonth);
       if (!already) {
         const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
         const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
@@ -2067,7 +2192,8 @@ function generateRecurring() {
   });
   (data.recurring.portfolio||[]).forEach(rule => {
     if (!shouldGenerateThisMonth(rule)) return;
-    const already = data.portfolio.some(p => p.recurringId === rule.id && p.date && p.date.slice(0,7) === thisMonth);
+    const already = data.portfolio.some(p => p.recurringId === rule.id && p.date && p.date.slice(0,7) === thisMonth)
+      || eraStataCancellata("rec:" + rule.id, thisMonth);
     if (!already) {
       const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
       const day = Math.min(rule.dayOfMonth || 1, daysInMonth);
@@ -2075,7 +2201,8 @@ function generateRecurring() {
       if (canGenerateOnDate(dateStr)) {
         const mappedMacro = rule.macro || (data.categoryMacroMap.portfolio && data.categoryMacroMap.portfolio[rule.type]) || null;
         const entry = { id: uid(), type: rule.type, macro: mappedMacro, amount: rule.amount, currency: rule.currency||"ALL", marketValue: null, date: dateStr, maturityDate: null, note: rule.note||"", recurringId: rule.id,
-          securityCode: rule.securityCode || null, issuerName: rule.issuerName || "" };
+          securityCode: rule.securityCode || null, issuerName: rule.issuerName || "",
+          riskFactor: normalizzaRischio(rule.riskFactor, { type: rule.type, macro: mappedMacro }) };
         if (rule.fundName) {
           entry.fundName = rule.fundName;
           if (rule.fundRefPrice) {
@@ -2731,10 +2858,11 @@ function renderIncome() {
   const incomeMacroFilterOptions = ["all", ...data.macroCategories.income].map(m=>`<option value="${m}" ${incomeMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
   document.getElementById("main").innerHTML = `
     ${riquadroRedditoLavoro(thisYear)}
+    ${riquadriStipendi()}
     <div class="card">
-      <h3>Nuova voce</h3>
+      <h3>Nuova voce (non da lavoro)</h3>
       <form class="entry" id="incomeForm">
-        <div><label>Categoria</label>${categorySelect("income", null, c => !isAutoManagedIncomeCategory(c) || c === "Dividendo")}</div>
+        <div><label>Categoria</label>${categorySelect("income", null, c => (!isAutoManagedIncomeCategory(c) || c === "Dividendo") && c !== CAT_RLD && c !== CAT_DEDUZIONE_FP)}</div>
         <button class="secondary" type="button" id="toggleCatManage-income" style="width:auto; padding:6px 12px; font-size:11px;">${catManagerOpen.income ? "Chiudi gestione categorie" : "✎ Gestisci categorie"}</button>
         <div><label>Macro-categoria</label>${macroSelect("income")}</div>
         <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
@@ -2749,6 +2877,17 @@ function renderIncome() {
         ${bondOptions ? `<div><label>Bond collegato (opzionale, per cedole)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptions}</select></div>` : ''}
         ${dividendSecurityOptions ? `<div id="dividendSecurityRow" style="display:none;"><label>Titolo collegato (azione, ETF o fondo)</label><select name="linkedDividendId"><option value="">— nessuno —</option>${dividendSecurityOptions}</select></div>` : ''}
         <div><label>Ricevuto su</label>${paymentTypeSelect("Banca")}</div>
+        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+          <input type="checkbox" name="isRicorrente" id="incomeRicorrenteChk" style="width:auto;">
+          <label style="margin:0;" for="incomeRicorrenteChk">Voce ricorrente (si ripete ogni mese)</label>
+        </div>
+        <div id="incomeRicorrenteCampi" style="display:none;">
+          <div class="row2">
+            <div><label>Frequenza</label><select name="recFrequency"><option value="monthly">Mensile</option><option value="quarterly">Trimestrale</option><option value="semiannual">Semestrale</option><option value="annual">Annuale</option></select></div>
+            <div><label>Giorno del mese</label><input type="number" min="1" max="28" name="recDayOfMonth" value="1"></div>
+          </div>
+          <div><label>Da (mese, MM/AAAA)</label><input type="text" name="recStartMonth" value="${monthToDisplay(thisMonth)}" pattern="[0-9]{2}/[0-9]{4}" placeholder="MM/AAAA"></div>
+        </div>
         <div style="display:flex; align-items:center; gap:8px;">
           <input type="checkbox" name="applyTax" id="applyTaxChk" style="width:auto;">
           <label style="margin:0;" for="applyTaxChk">Applica ritenuta 15% (interessi/cedole) — importo inserito è lordo</label>
@@ -2795,6 +2934,16 @@ function renderIncome() {
       <div class="section-total"><span>Totale ${thisYear}</span><span>${fmtDisplay(total)}</span></div>
     </div>
   `;
+  try { bindRiquadriStipendi(); } catch (e) {}
+  // La casella "ricorrente" apre i campi aggiuntivi, così il modulo resta snello
+  // per l'inserimento normale.
+  const chkRic = document.getElementById("incomeRicorrenteChk");
+  if (chkRic) {
+    const campi = document.getElementById("incomeRicorrenteCampi");
+    const aggiorna = () => { if (campi) campi.style.display = chkRic.checked ? "block" : "none"; };
+    chkRic.addEventListener("change", aggiorna);
+    aggiorna();
+  }
   bindCategorySelects();
   bindMacroSelects();
   document.getElementById("incomeFilterSelect").addEventListener("change", ev=>{ incomeCategoryFilter = ev.target.value; renderIncome(); });
@@ -2850,12 +2999,27 @@ function renderIncome() {
     data.income.push({id:incId, date, amount:net, grossAmount: applyTax?gross:null, taxApplied: applyTax, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||"", linkedBondId: linkedId, securityCode: codiceRed, issuerName: enteRed,
       riskFactor: normalizzaRischio(f.get("riskFactor"), { type: "reddito" })});
     if (paymentType) createLiquidityAdjustment(paymentType, net, date, `Reddito: ${cat}`, incId);
+    // Se marcata come ricorrente, si crea anche la regola: la voce appena inserita
+    // è la prima occorrenza, le successive le genera il motore.
+    if (f.get("isRicorrente") === "on") {
+      const rg = {
+        id: uid(), category: cat, macro: macro || null,
+        amount: net, currency: "ALL",
+        frequency: f.get("recFrequency") || "monthly",
+        startMonth: displayToMonth(f.get("recStartMonth")) || thisMonth,
+        dayOfMonth: Math.min(Math.max(Number(f.get("recDayOfMonth")) || 1, 1), 28),
+        paymentType: paymentType || "Banca", note: f.get("note") || "",
+        securityCode: codiceRed, issuerName: enteRed
+      };
+      data.recurring.income.push(rg);
+    }
     saveData(); renderIncome();
   });
   document.querySelectorAll("[data-del-income]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       const _delInc = data.income.find(e=>e.id===btn.dataset.delIncome);
       if (_delInc) trashPush("income", trashLabelFor("income", _delInc), { entry: _delInc });
+      if (_delInc) registraCancellazioneVoce(_delInc);
       data.income = data.income.filter(e=>e.id!==btn.dataset.delIncome);
       removeLiquidityAdjustment(btn.dataset.delIncome);
       saveData(); renderIncome();
@@ -3372,6 +3536,7 @@ function renderExpenses() {
     btn.addEventListener("click", ()=>{
       const _delExp = data.expenses.find(e=>e.id===btn.dataset.delExpense);
       if (_delExp) trashPush("expense", trashLabelFor("expense", _delExp), { entry: _delExp });
+      if (_delExp) registraCancellazioneVoce(_delExp);
       data.expenses = data.expenses.filter(e=>e.id!==btn.dataset.delExpense);
       removeLiquidityAdjustment(btn.dataset.delExpense);
       saveData(); renderExpenses();
@@ -3585,7 +3750,7 @@ function renderPortfolioEditForm(p) {
   return `<form class="entry" data-editportform="${p.id}" style="border:1px solid #C9A227; border-radius:6px; padding:12px; margin-bottom:8px;">
     <div><label>Tipo</label>${categorySelect("portfolio", p.type)}</div>
     ${isFund ? `<div><label>Nome fondo</label><input type="text" name="fundName" value="${p.fundName||''}"></div>` : ''}
-    ${(isFund || isBond) ? `<div><label>Società/Ente (di proprietà/gestione)</label><input type="text" name="issuer" value="${p.issuer||''}"></div>` : ''}
+    
     <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${p.securityCode||peekNextSecurityCode()}" required></div>
     <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" value="${escAttr(p.issuerName||'')}" ${isDebtType(p.type,p.macro)||isCreditCardType(p.type)?'':'required'}></div>
     <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(p.riskFactor, p)}</div>
@@ -4626,7 +4791,9 @@ function renderPortfolio() {
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
       <div class="section-total" style="font-size:11px; opacity:0.7;"><span></span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} € · ${fmt(totalALL/data.settings.fxUsd)} $</span></div>
     </div>
+    ${riquadroMasterRischio()}
   `;
+  try { bindMasterRischio(); } catch (e) {}
   bindCategorySelects();
   bindMacroSelects();
 
@@ -5017,6 +5184,18 @@ function renderPortfolio() {
       saveData();
       throw err;
     }
+    // Valuta discordante: il sito quota in una valuta, la posizione è registrata in
+    // un'altra. Salvare il numero così com'è lo tratterebbe come se fosse già nella
+    // valuta della posizione, sbagliando il valore di decine di volte. Meglio non
+    // scrivere nulla e dirlo chiaramente.
+    const valutaPos = lots[0].currency || "ALL";
+    if (currency && currency !== valutaPos && !opts.forzaValuta) {
+      recordPriceFetchOutcome(lots, false, `valuta discordante: sito ${currency}, posizione ${valutaPos}`);
+      saveData();
+      return { ok:false, currencyMismatch:true, price, currency, valutaPosizione: valutaPos,
+        evalDate, fundName, raiffeisenName, lotCount: lots.length };
+    }
+
     // Controllo di plausibilità: una variazione enorme rispetto all'ultimo prezzo
     // noto è quasi sempre un numero sbagliato letto da un layout cambiato,
     // non un rendimento. Non si scrive nulla senza conferma esplicita.
@@ -5096,9 +5275,13 @@ function renderPortfolio() {
           r = await updateOneFund(fundName, select.value, { force:true });
         }
         saveData();
-        statusEl.textContent = r.currencyMismatch
-          ? `Attenzione: il fondo quota in ${r.currency}, la posizione è in valuta diversa — controlla manualmente.`
-          : `Aggiornato su ${r.lotCount} lotti: ${fmt2(r.price)} ${r.currency}/quota (${select.value})${r.evalDate?' · data e vlerësimit: '+r.evalDate:' · data e vlerësimit non trovata sulla pagina'}.`;
+        if (r.currencyMismatch) {
+          statusEl.textContent = `Aggiornamento annullato: il fondo quota in ${r.currency} ma la posizione è registrata in ${r.valutaPosizione}. `
+            + `Prezzo letto: ${fmt2(r.price)} ${r.currency}. Correggi la valuta della posizione, oppure inserisci il prezzo a mano.`;
+          renderPortfolio();
+          return;
+        }
+        statusEl.textContent = `Aggiornato su ${r.lotCount} lotti: ${fmt2(r.price)} ${r.currency}/quota (${select.value})${r.evalDate?' · data e vlerësimit: '+r.evalDate:' · data e vlerësimit non trovata sulla pagina'}.`;
         renderPortfolio();
       } catch (err) {
         statusEl.textContent = "Errore: " + String(err.message||err).slice(0,150);
@@ -5111,14 +5294,17 @@ function renderPortfolio() {
     const statusEl = document.getElementById("statusUpdateAll");
     const selects = document.querySelectorAll(".raif-fund-select");
     let okCount = 0, errCount = 0, mismatches = [];
-    const datesFound = [], suspicious = [], senzaFonte = [];
+    const datesFound = [], suspicious = [], senzaFonte = [], valutaDiversa = [];
     for (const select of selects) {
       const fundName = select.dataset.fundname;
       if (!select.value) { errCount++; senzaFonte.push(fundName); continue; }
       statusEl.textContent = `Aggiorno ${fundName}… (${okCount+errCount+1}/${selects.length})`;
       try {
         const r = await updateOneFund(fundName, select.value);
-        if (r.needsConfirm) {
+        if (r.currencyMismatch) {
+          valutaDiversa.push(`${fundName} (sito ${r.currency}, posizione ${r.valutaPosizione})`);
+          errCount++;
+        } else if (r.needsConfirm) {
           suspicious.push(`${fundName} (${r.changePct>0?'+':''}${r.changePct.toFixed(1)}%)`);
           errCount++;
         } else {
@@ -5131,7 +5317,7 @@ function renderPortfolio() {
       }
     }
     saveData();
-    statusEl.textContent = `Fatto: ${okCount} aggiornati${errCount>0?', '+errCount+' falliti':''}${mismatches.length>0?' — attenzione valuta per: '+mismatches.join(', '):''}.${senzaFonte.length>0?' — senza fonte impostata: '+senzaFonte.join(', '):''}${suspicious.length>0?' — variazione sospetta, non aggiornati: '+suspicious.join(', ')+' (aggiornali singolarmente per confermare)':''}${datesFound.length>0?' Date e vlerësimit — '+datesFound.join('; ')+'.':''}`;
+    statusEl.textContent = `Fatto: ${okCount} aggiornati${errCount>0?', '+errCount+' falliti':''}${mismatches.length>0?' — attenzione valuta per: '+mismatches.join(', '):''}.${valutaDiversa.length>0?' — valuta discordante, non aggiornati: '+valutaDiversa.join(', '):''}${senzaFonte.length>0?' — senza fonte impostata: '+senzaFonte.join(', '):''}${suspicious.length>0?' — variazione sospetta, non aggiornati: '+suspicious.join(', ')+' (aggiornali singolarmente per confermare)':''}${datesFound.length>0?' Date e vlerësimit — '+datesFound.join('; ')+'.':''}`;
     renderPortfolio();
   });
 
@@ -5883,6 +6069,7 @@ function renderFundsTab() {
         <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
         <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
         <div><label>Nome fondo</label><input type="text" name="fundName" placeholder="es. Raiffeisen Pension"></div>
+        <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type:"Fondo", macro:"Fondi" })}</div>
         <div><label>Pagato con (genera l'uscita di cassa per ogni versamento)</label>${paymentTypeSelect("Banca")}</div>
         <div class="row2">
           <div><label>Prezzo inizio anno (opzionale, per YTD) — data</label><input type="date" name="baselineDate"></div>
@@ -6057,6 +6244,18 @@ function renderFundsTab() {
       saveData();
       throw err;
     }
+    // Valuta discordante: il sito quota in una valuta, la posizione è registrata in
+    // un'altra. Salvare il numero così com'è lo tratterebbe come se fosse già nella
+    // valuta della posizione, sbagliando il valore di decine di volte. Meglio non
+    // scrivere nulla e dirlo chiaramente.
+    const valutaPos = lots[0].currency || "ALL";
+    if (currency && currency !== valutaPos && !opts.forzaValuta) {
+      recordPriceFetchOutcome(lots, false, `valuta discordante: sito ${currency}, posizione ${valutaPos}`);
+      saveData();
+      return { ok:false, currencyMismatch:true, price, currency, valutaPosizione: valutaPos,
+        evalDate, fundName, raiffeisenName, lotCount: lots.length };
+    }
+
     // Controllo di plausibilità: una variazione enorme rispetto all'ultimo prezzo
     // noto è quasi sempre un numero sbagliato letto da un layout cambiato,
     // non un rendimento. Non si scrive nulla senza conferma esplicita.
@@ -6134,9 +6333,13 @@ function renderFundsTab() {
           r = await updateOneFund(fundName, select.value, { force:true });
         }
         saveData();
-        statusEl.textContent = r.currencyMismatch
-          ? `Attenzione: il fondo quota in ${r.currency}, la posizione è in valuta diversa — controlla manualmente.`
-          : `Aggiornato su ${r.lotCount} lotti: ${fmt2(r.price)} ${r.currency}/quota (${select.value})${r.evalDate?' · data e vlerësimit: '+r.evalDate:' · data e vlerësimit non trovata sulla pagina'}.`;
+        if (r.currencyMismatch) {
+          statusEl.textContent = `Aggiornamento annullato: il fondo quota in ${r.currency} ma la posizione è registrata in ${r.valutaPosizione}. `
+            + `Prezzo letto: ${fmt2(r.price)} ${r.currency}. Correggi la valuta della posizione, oppure inserisci il prezzo a mano.`;
+          renderFundsTab();
+          return;
+        }
+        statusEl.textContent = `Aggiornato su ${r.lotCount} lotti: ${fmt2(r.price)} ${r.currency}/quota (${select.value})${r.evalDate?' · data e vlerësimit: '+r.evalDate:' · data e vlerësimit non trovata sulla pagina'}.`;
         renderFundsTab();
       } catch (err) {
         statusEl.textContent = "Errore: " + String(err.message||err).slice(0,150);
@@ -6148,14 +6351,17 @@ function renderFundsTab() {
     const statusEl = document.getElementById("statusUpdateAll");
     const selects = document.querySelectorAll(".raif-fund-select");
     let okCount = 0, errCount = 0, mismatches = [];
-    const datesFound = [], suspicious = [], senzaFonte = [];
+    const datesFound = [], suspicious = [], senzaFonte = [], valutaDiversa = [];
     for (const select of selects) {
       const fundName = select.dataset.fundname;
       if (!select.value) { errCount++; senzaFonte.push(fundName); continue; }
       statusEl.textContent = `Aggiorno ${fundName}… (${okCount+errCount+1}/${selects.length})`;
       try {
         const r = await updateOneFund(fundName, select.value);
-        if (r.needsConfirm) {
+        if (r.currencyMismatch) {
+          valutaDiversa.push(`${fundName} (sito ${r.currency}, posizione ${r.valutaPosizione})`);
+          errCount++;
+        } else if (r.needsConfirm) {
           suspicious.push(`${fundName} (${r.changePct>0?'+':''}${r.changePct.toFixed(1)}%)`);
           errCount++;
         } else {
@@ -6168,7 +6374,7 @@ function renderFundsTab() {
       }
     }
     saveData();
-    statusEl.textContent = `Fatto: ${okCount} aggiornati${errCount>0?', '+errCount+' falliti':''}${mismatches.length>0?' — attenzione valuta per: '+mismatches.join(', '):''}.${senzaFonte.length>0?' — senza fonte impostata: '+senzaFonte.join(', '):''}${suspicious.length>0?' — variazione sospetta, non aggiornati: '+suspicious.join(', ')+' (aggiornali singolarmente per confermare)':''}${datesFound.length>0?' Date e vlerësimit — '+datesFound.join('; ')+'.':''}`;
+    statusEl.textContent = `Fatto: ${okCount} aggiornati${errCount>0?', '+errCount+' falliti':''}${mismatches.length>0?' — attenzione valuta per: '+mismatches.join(', '):''}.${valutaDiversa.length>0?' — valuta discordante, non aggiornati: '+valutaDiversa.join(', '):''}${senzaFonte.length>0?' — senza fonte impostata: '+senzaFonte.join(', '):''}${suspicious.length>0?' — variazione sospetta, non aggiornati: '+suspicious.join(', ')+' (aggiornali singolarmente per confermare)':''}${datesFound.length>0?' Date e vlerësimit — '+datesFound.join('; ')+'.':''}`;
     renderFundsTab();
   });
 
@@ -6212,6 +6418,7 @@ function renderFundsTab() {
       securityCode: (f.get("securityCode")||"").trim(),
       issuerName: (f.get("issuerName")||"").trim(),
       paymentType: f.get("paymentType") || "Banca",
+      riskFactor: normalizzaRischio(f.get("riskFactor"), { type, macro: null }),
       baselineDate: baselineDate||null, baselinePrice: baselinePrice?Number(baselinePrice):null };
     renderFundsTab();
   });
@@ -6219,7 +6426,7 @@ function renderFundsTab() {
   if (fundImportCancelBtn) fundImportCancelBtn.addEventListener("click", ()=>{ fundImportPreview = null; renderFundsTab(); });
   const fundImportConfirmBtn = document.getElementById("fundImportConfirm");
   if (fundImportConfirmBtn) fundImportConfirmBtn.addEventListener("click", ()=>{
-    const { type, currency, fundName, rows, baselineDate, baselinePrice, macro, issuerName, paymentType } = fundImportPreview;
+    const { type, currency, fundName, rows, baselineDate, baselinePrice, macro, issuerName, paymentType, riskFactor } = fundImportPreview;
     const existingFundCode = (() => {
       const anyLot = data.portfolio.find(p => (p.fundName===fundName) && p.securityCode);
       return anyLot ? anyLot.securityCode : null;
@@ -6254,6 +6461,7 @@ function renderFundsTab() {
       if (idx===0) firstId = id;
       data.portfolio.push({
         id, type, macro: macro || null, fundName, issuerName: issuerName || "",
+        riskFactor: normalizzaRischio(riskFactor, { type, macro }),
         amount: r.amount, currency: currency || "ALL", marketValue: r.amount,
         date: r.date, maturityDate: null, note: "Importato da storico",
         fundQuotaCount: r.units, fundPurchaseQuotaPrice: r.unitPrice, fundCurrentQuotaPrice: r.unitPrice,
@@ -6339,7 +6547,6 @@ function renderBondsTab() {
         <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" placeholder="es. Ministria e Financave" required></div>
         <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
         <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type: "", macro: null })}</div>
-        <div><label>Ente emittente</label><input type="text" name="issuer" placeholder="es. Ministria e Financave"></div>
         <div class="row2">
           <div><label>Capitale nominale</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
           <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
@@ -7810,7 +8017,6 @@ function renderDebts() {
         <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
           <label style="color:#C9A227;">Piano di ammortamento (se è un prestito/mutuo, non una carta)</label>
           <div class="row2">
-            <div><label>Ente finanziatore (per il piano)</label><input type="text" name="issuer" placeholder="es. Raiffeisen Bank"></div>
             <div><label>Tipo pagamento</label><select name="amortizationType"><option value="francese">Alla francese (rata costante)</option><option value="italiana">All'italiana (capitale costante)</option></select></div>
           </div>
           <div class="row2">
@@ -7887,7 +8093,7 @@ function renderDebts() {
     const date = f.get("date") || todayISO;
     const posId = uid();
     const isLoan = isDebtType(type, macro) && !isCreditCardType(type);
-    const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: f.get("issuer")||null, linkedPropertyId: f.get("linkedPropertyId")||null,
+    const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: (f.get("issuerName")||"").trim() || null, linkedPropertyId: f.get("linkedPropertyId")||null,
       securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
       riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
       issuerName: (f.get("issuerName")||"").trim() };
@@ -8024,8 +8230,8 @@ function recurringBlock(groupKey, title) {
           <div><label>Importo</label><input type="number" min="0" step="0.0001" name="amount" value="${r.amount}" required></div>
         </div>
         <div><label>Macro-categoria</label>${macroSelect(groupKey, r.macro||null)}</div>
-        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
-        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" ${groupKey==="income"?"required":""} placeholder="${groupKey==="income"?"chi genera il flusso":"facoltativo"}"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${groupKey==="income"?peekNextSecurityCode():""}" ${groupKey==="income"?"required":""} placeholder="${groupKey==="income"?"precompilato, puoi cambiarlo":"facoltativo"}"></div>
         ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${data.portfolio.filter(p=>p.maturityDate).map(p=>`<option value="${p.id}" ${r.linkedBondId===p.id?'selected':''}>${p.type}${p.note?' · '+p.note:''} (scad. ${p.maturityDate})</option>`).join('')}</select></div>` : ''}
         <div class="row2">
           <div><label>Frequenza</label>${freqSelect(r.frequency)}</div>
@@ -8059,8 +8265,8 @@ function recurringBlock(groupKey, title) {
         <div><label>Importo</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
       </div>
       <div><label>Macro-categoria</label>${macroSelect(groupKey)}</div>
-      <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
-      <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
+      <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" ${groupKey==="income"?"required":""} placeholder="${groupKey==="income"?"chi genera il flusso":"facoltativo"}"></div>
+      <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${groupKey==="income"?peekNextSecurityCode():""}" ${groupKey==="income"?"required":""} placeholder="${groupKey==="income"?"precompilato, puoi cambiarlo":"facoltativo"}"></div>
       ${groupKey==="income" && bondOptionsRec ? `<div><label>Bond/deposito collegato (opzionale — smette di generare dopo la scadenza)</label><select name="linkedBondId"><option value="">— nessuno —</option>${bondOptionsRec}</select></div>` : ''}
       <div class="row2">
         <div><label>Frequenza</label><select name="frequency">${freqOpts}</select></div>
@@ -8184,6 +8390,7 @@ function recurringBlockPortfolio(title) {
         <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="chi emette/gestisce"></div>
         <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required placeholder="precompilato, puoi cambiarlo"></div>
       </div>
+      <div><label>Fattore di rischiosità (1-7)</label>${selettoreRischio(null, { type:"", macro:null })}</div>
       <div class="row2">
         <div><label>Importo</label><input type="number" min="0" step="0.0001" name="amount" placeholder="0" required></div>
         <div><label>Valuta</label><select name="currency"><option>ALL</option><option>EUR</option><option>USD</option></select></div>
@@ -9360,7 +9567,6 @@ function renderSettings() {
       <div class="subtle">Si generano automaticamente ogni mese, così non devi reinserirle ogni volta.</div>
       ${recurringBlock("expenses", "Spese ricorrenti")}
       ${pannelloLavoroDipendente()}
-      ${recurringBlock("income", "Reddito ricorrente")}
       ${recurringBlockPortfolio("Investimenti ricorrenti (es. fondo pensione)")}
     </div>
     <div class="card">
@@ -9633,6 +9839,7 @@ function renderSettings() {
           cryptoId: f.get("cryptoId")||"", cryptoSymbol: f.get("cryptoSymbol")||"", cryptoRefPrice: f.get("cryptoRefPrice")?Number(f.get("cryptoRefPrice")):null,
           securityCode: (f.get("securityCode")||"").trim() || consumeNextSecurityCode(),
           issuerName: (f.get("issuerName")||"").trim(),
+          riskFactor: normalizzaRischio(f.get("riskFactor"), { type: f.get("type")||"", macro: null }),
           paymentType: f.get("paymentType")||"" };
       } else {
         const macroRec = form.querySelector(".macro-select") ? (form.querySelector(".macro-select").value || null) : null;
@@ -9648,6 +9855,8 @@ function renderSettings() {
     btn.addEventListener("click", ()=>{
       const [group, id] = btn.dataset.recdel.split("|");
       data.recurring[group] = data.recurring[group].filter(r=>r.id!==id);
+      // Eliminata la fonte, il registro delle cancellazioni di quella fonte non serve più.
+      dimenticaCancellazioni("rec:" + id);
       saveData(); renderSettings();
     });
   });
@@ -9813,6 +10022,69 @@ function calcolaTassaScaglioni(base, scaglioni) {
 }
 
 // Tutte le voci della busta paga per un dato lordo.
+// Elenco degli stipendi configurati, in ordine di inserimento.
+function stipendiLavoro() {
+  const c = cfgLavoro();
+  if (!Array.isArray(c.stipendi)) c.stipendi = [];
+  // Migrazione dal modello a stipendio unico: il vecchio pannello diventa il primo
+  // rapporto di lavoro dell'elenco, senza perdere la configurazione.
+  if (c.stipendi.length === 0 && Number(c.stipendioLordo) > 0) {
+    c.stipendi.push({
+      id: "rld-principale", attivo: !!c.attivo,
+      issuerName: c.datoreLavoro || "",
+      securityCode: (c.codiceRLD || "").trim() || peekNextSecurityCode(),
+      riskFactor: 2,
+      stipendioLordo: Number(c.stipendioLordo) || 0,
+      giornoPaga: Number(c.giornoPaga) || 10,
+      startMonth: c.startMonth || thisMonth,
+      paymentType: "Banca"
+    });
+  }
+  return c.stipendi;
+}
+function stipendiAttivi() {
+  return stipendiLavoro().filter(s => s.attivo && Number(s.stipendioLordo) > 0);
+}
+
+// Busta paga di TUTTI gli stipendi con cumulo fiscale e contributivo.
+// Il secondo stipendio non riparte da zero: entra nella fascia raggiunta dal primo,
+// e se il massimale contributivo è già esaurito i suoi contributi pensionistici
+// sono nulli. È il comportamento reale di chi ha più rapporti di lavoro.
+function calcolaBustePagaCumulate(elenco) {
+  const c = cfgLavoro();
+  const lista = elenco || stipendiAttivi();
+  const massimale = Number(c.massimaleContributivo) || 0;
+  const pct = (v, d) => (v === null || v === undefined || v === "") ? d : Number(v);
+  let cumulLordo = 0, cumulBaseContributiva = 0;
+  const righe = lista.map(s => {
+    const lordo = Number(s.stipendioLordo) || 0;
+    // base contributiva residua fino al massimale
+    const residuo = massimale > 0 ? Math.max(0, massimale - cumulBaseContributiva) : lordo;
+    const baseContributiva = massimale > 0 ? Math.min(lordo, residuo) : lordo;
+    // tassazione marginale sul cumulo
+    const tassaPrima = calcolaTassaScaglioni(cumulLordo, c.scaglioni);
+    const tassaDopo = calcolaTassaScaglioni(cumulLordo + lordo, c.scaglioni);
+    const t1 = arrotondaCentesimi(tassaDopo - tassaPrima);
+
+    const p1 = baseContributiva * pct(c.pctPensioneDatore, 0) / 100;
+    const s1 = lordo * pct(c.pctSanitaDatore, 0) / 100;
+    const p2 = baseContributiva * pct(c.pctPensioneLavoratore, 0) / 100;
+    const s2 = lordo * pct(c.pctSanitaLavoratore, 0) / 100;
+    const nettoEsatto = arrotondaCentesimi(lordo - p2 - s2 - t1);
+
+    cumulLordo += lordo;
+    cumulBaseContributiva += baseContributiva;
+    return { stipendio: s, lordo, baseContributiva, p1, s1, p2, s2, t1,
+      nettoEsatto, netto: Math.ceil(nettoEsatto), costoDatore: lordo + p1 + s1 };
+  });
+  const tot = righe.reduce((a,r) => ({
+    lordo: a.lordo + r.lordo, p1: a.p1 + r.p1, s1: a.s1 + r.s1,
+    p2: a.p2 + r.p2, s2: a.s2 + r.s2, t1: a.t1 + r.t1, nettoEsatto: a.nettoEsatto + r.nettoEsatto
+  }), { lordo:0, p1:0, s1:0, p2:0, s2:0, t1:0, nettoEsatto:0 });
+  tot.netto = Math.ceil(tot.nettoEsatto);
+  return { righe, totale: tot, cumulLordo };
+}
+
 function calcolaBustaPaga(lordoOverride) {
   const c = cfgLavoro();
   const lordo = Number(lordoOverride != null ? lordoOverride : c.stipendioLordo) || 0;
@@ -9855,9 +10127,12 @@ function calcolaDeduzioneFondoPensione(meseVersamenti) {
   const tetto = Number(c.tettoDeduzioneMensile) || 0;
   const ammesso = tetto > 0 ? Math.min(versato, tetto) : versato;
   if (ammesso <= 0) return { versato, ammesso: 0, risparmioEsatto: 0, risparmio: 0 };
-  const bp = calcolaBustaPaga();
-  const tassaPiena = calcolaTassaScaglioni(bp.basi.tassazione, c.scaglioni);
-  const tassaRidotta = calcolaTassaScaglioni(Math.max(0, bp.basi.tassazione - ammesso), c.scaglioni);
+  // La base è il CUMULO di tutti gli stipendi attivi: il risparmio dipende dalla
+  // fascia complessiva raggiunta, non da un singolo rapporto di lavoro.
+  const cumulo = calcolaBustePagaCumulate().cumulLordo;
+  if (!(cumulo > 0)) return { versato, ammesso, risparmioEsatto: 0, risparmio: 0 };
+  const tassaPiena = calcolaTassaScaglioni(cumulo, c.scaglioni);
+  const tassaRidotta = calcolaTassaScaglioni(Math.max(0, cumulo - ammesso), c.scaglioni);
   // La differenza fra due importi calcolati può dare 11499,999999996 invece di 11500:
   // senza questa correzione l'arrotondamento per difetto perderebbe un lek.
   const risparmioEsatto = Math.max(0, arrotondaCentesimi(tassaPiena - tassaRidotta));
@@ -9918,6 +10193,19 @@ function migraLavoroDipendente() {
     if (i.riskFactor == null && Number(i.amount) > 0) { i.riskFactor = 2; tocc = true; }
   });
 
+  // Le voci generate dal vecchio modello a stipendio unico vanno collegate al
+  // primo rapporto di lavoro, altrimenti il motore le rigenererebbe.
+  (data.income||[]).forEach(i => {
+    if (i.category === CAT_RLD && i.generatoDaRLD && !i.rldId) { i.rldId = "rld-principale"; tocc = true; }
+  });
+
+  // Il vecchio campo "issuer" è stato sostituito dalla casella unica Societa/Ente:
+  // il valore già registrato va travasato, altrimenti andrebbe perso.
+  data.portfolio.forEach(p => {
+    if (p.issuer && !p.issuerName) { p.issuerName = p.issuer; tocc = true; }
+    if (p.issuer !== undefined && !isDebtType(p.type, p.macro)) { delete p.issuer; tocc = true; }
+  });
+
   // rinomina ovunque la categoria residua
   const rinomina = obj => { if (obj && obj[vecchia] !== undefined) { obj[CAT_RLD] = obj[vecchia]; delete obj[vecchia]; return true; } return false; };
   data.categories.income = data.categories.income.map(x => x === vecchia ? CAT_RLD : x);
@@ -9950,64 +10238,102 @@ function migraLavoroDipendente() {
 
 function autoGenerateLavoroDipendente() {
   const c = cfgLavoro();
-  if (!c.attivo || !(Number(c.stipendioLordo) > 0)) return;
+  const attivi = stipendiAttivi();
+  if (!c.attivo || attivi.length === 0) return;
   ensureCategorieLavoro();
-
-  const giorno = Math.min(Math.max(Number(c.giornoPaga) || 10, 1), 28);
-  const inizio = c.startMonth || thisMonth;
   let changed = false;
 
-  // elenco dei mesi da coprire, dall'attivazione a oggi
-  const [ay, am] = inizio.split("-").map(Number);
-  let cursore = new Date(ay, am - 1, 1);
-  const fine = new Date(now.getFullYear(), now.getMonth(), 1);
-  let giri = 0;
-  while (cursore <= fine && giri++ < 600) {
-    const meseKey = `${cursore.getFullYear()}-${String(cursore.getMonth()+1).padStart(2,"0")}`;
-    const dataPaga = `${meseKey}-${String(giorno).padStart(2,"0")}`;
-    cursore = new Date(cursore.getFullYear(), cursore.getMonth() + 1, 1);
-    if (dataPaga > todayISO) continue;
+  // Ogni stipendio genera il proprio flusso, ma trattenute e imposta vengono dal
+  // calcolo CUMULATO: chi ha due rapporti di lavoro non viene tassato due volte
+  // come se ciascuno fosse l'unico.
+  const calc = calcolaBustePagaCumulate(attivi);
+  const perId = {};
+  calc.righe.forEach(r => { perId[r.stipendio.id] = r; });
 
-    const esisteGia = data.income.some(i => i.category === CAT_RLD && i.date && i.date.slice(0,7) === meseKey);
-    if (esisteGia) continue;
+  attivi.forEach(s => {
+    const r = perId[s.id];
+    if (!r) return;
+    const giorno = Math.min(Math.max(Number(s.giornoPaga) || 10, 1), 28);
+    const inizio = s.startMonth || thisMonth;
+    const [ay, am] = inizio.split("-").map(Number);
+    let cursore = new Date(ay, am - 1, 1);
+    const fine = new Date(now.getFullYear(), now.getMonth(), 1);
+    let giri = 0;
+    while (cursore <= fine && giri++ < 600) {
+      const meseKey = `${cursore.getFullYear()}-${String(cursore.getMonth()+1).padStart(2,"0")}`;
+      const dataPaga = `${meseKey}-${String(giorno).padStart(2,"0")}`;
+      const meseCursore = cursore;
+      cursore = new Date(cursore.getFullYear(), cursore.getMonth() + 1, 1);
+      if (dataPaga > todayISO) continue;
 
-    const bp = calcolaBustaPaga();
-    const codice = "RLD";
-    const idStipendio = uid();
-    data.income.push({ id: idStipendio, date: dataPaga, amount: bp.lordo, currency: "ALL",
-      category: CAT_RLD, macro: MACRO_LAVORO, paymentType: null, note: "Stipendio lordo",
-      securityCode: codice, issuerName: c.datoreLavoro || "", generatoDaRLD: true });
+      const esisteGia = data.income.some(i => i.category === CAT_RLD && i.rldId === s.id
+          && i.date && i.date.slice(0,7) === meseKey)
+        || eraStataCancellata("rld:" + s.id, meseKey);
+      if (esisteGia) continue;
 
-    const spesa = (cat, importo, nota) => {
-      if (!(importo > 0)) return;
-      data.expenses.push({ id: uid(), date: dataPaga, amount: importo, category: cat,
-        macro: MACRO_LAVORO, note: nota, securityCode: codice, generatoDaRLD: true });
-    };
-    spesa(CAT_CONTR_PENS, bp.p2, "Trattenuta in busta paga");
-    spesa(CAT_CONTR_SAN, bp.s2, "Trattenuta in busta paga");
-    spesa(CAT_TASSA_RLD, bp.t1, "Trattenuta in busta paga");
+      const idStipendio = uid();
+      data.income.push({ id: idStipendio, date: dataPaga, amount: r.lordo, currency: "ALL",
+        category: CAT_RLD, macro: MACRO_LAVORO, paymentType: s.paymentType || "Banca",
+        note: `Stipendio lordo — ${s.issuerName||""}`.trim(),
+        securityCode: s.securityCode || null, issuerName: s.issuerName || "",
+        riskFactor: normalizzaRischio(s.riskFactor, { type:"reddito" }),
+        generatoDaRLD: true, rldId: s.id });
 
-    // In banca arriva il netto, arrotondato per eccesso.
-    createLiquidityAdjustment("Banca", bp.netto, dataPaga, "Stipendio netto", idStipendio);
+      const spesa = (cat, importo, nota) => {
+        if (!(importo > 0)) return;
+        data.expenses.push({ id: uid(), date: dataPaga, amount: importo, category: cat,
+          macro: MACRO_LAVORO, note: `${nota} — ${s.issuerName||""}`.trim(),
+          securityCode: s.securityCode || null, issuerName: s.issuerName || "",
+          generatoDaRLD: true, rldId: s.id });
+      };
+      spesa(CAT_CONTR_PENS, r.p2, "Trattenuta in busta paga");
+      spesa(CAT_CONTR_SAN, r.s2, "Trattenuta in busta paga");
+      spesa(CAT_TASSA_RLD, r.t1, "Trattenuta in busta paga");
 
-    // Deduzione sui versamenti del mese PRECEDENTE, con la data di questo stipendio.
-    const prec = new Date(cursore.getFullYear(), cursore.getMonth() - 2, 1);
-    const mesePrec = `${prec.getFullYear()}-${String(prec.getMonth()+1).padStart(2,"0")}`;
-    const ded = calcolaDeduzioneFondoPensione(mesePrec);
-    const dedGiaPresente = data.income.some(i => i.category === CAT_DEDUZIONE_FP && i.date && i.date.slice(0,7) === meseKey);
-    if (ded.risparmio > 0 && !dedGiaPresente) {
+      createLiquidityAdjustment(s.paymentType || "Banca", r.netto, dataPaga,
+        `Stipendio netto — ${s.issuerName||""}`.trim(), idStipendio);
+      changed = true;
+    }
+  });
+
+  // La deduzione da fondo pensione è UNA sola per mese, non una per stipendio:
+  // il tetto deducibile vale per l'insieme dei redditi da lavoro.
+  const primo = attivi[0];
+  if (primo) {
+    const giorno = Math.min(Math.max(Number(primo.giornoPaga) || 10, 1), 28);
+    const inizio = primo.startMonth || thisMonth;
+    const [ay, am] = inizio.split("-").map(Number);
+    let cur = new Date(ay, am - 1, 1);
+    const fine = new Date(now.getFullYear(), now.getMonth(), 1);
+    let giri = 0;
+    while (cur <= fine && giri++ < 600) {
+      const meseKey = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}`;
+      const dataPaga = `${meseKey}-${String(giorno).padStart(2,"0")}`;
+      const prec = new Date(cur.getFullYear(), cur.getMonth() - 1, 1);
+      const mesePrec = `${prec.getFullYear()}-${String(prec.getMonth()+1).padStart(2,"0")}`;
+      cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      if (dataPaga > todayISO) continue;
+
+      const gia = data.income.some(i => i.category === CAT_DEDUZIONE_FP && i.date && i.date.slice(0,7) === meseKey)
+        || eraStataCancellata("dedfp", meseKey);
+      if (gia) continue;
+
+      const ded = calcolaDeduzioneFondoPensione(mesePrec);
+      if (!(ded.risparmio > 0)) continue;
       const idDed = uid();
       data.income.push({ id: idDed, date: dataPaga, amount: ded.risparmio, currency: "ALL",
-        category: CAT_DEDUZIONE_FP, macro: MACRO_LAVORO, paymentType: null,
-        note: `Su ${fmt(ded.ammesso)} versati nel ${mesePrec}`, securityCode: codice, generatoDaRLD: true });
-      createLiquidityAdjustment("Banca", ded.risparmio, dataPaga, "Deduzione fiscale fondo pensione", idDed);
+        category: CAT_DEDUZIONE_FP, macro: MACRO_LAVORO, paymentType: primo.paymentType || "Banca",
+        note: `Su ${fmt(ded.ammesso)} versati nel ${mesePrec}`,
+        securityCode: primo.securityCode || null, issuerName: primo.issuerName || "",
+        riskFactor: normalizzaRischio(primo.riskFactor, { type:"reddito" }),
+        generatoDaRLD: true });
+      createLiquidityAdjustment(primo.paymentType || "Banca", ded.risparmio, dataPaga,
+        "Deduzione fiscale fondo pensione", idDed);
+      changed = true;
     }
-    changed = true;
   }
   if (changed) saveData();
 }
-
-// Categorie e macro necessarie al sistema.
 function ensureCategorieLavoro() {
   let ok = false;
   if (!data.macroCategories.income.includes(MACRO_LAVORO)) { data.macroCategories.income.push(MACRO_LAVORO); ok = true; }
@@ -10023,98 +10349,255 @@ function ensureCategorieLavoro() {
 
 // Pannello di configurazione del Sistema Lavoro Dipendente.
 function pannelloLavoroDipendente() {
+  // Diviso in due riquadri distinti, ciascuno con la propria responsabilità:
+  // gli scaglioni valgono per TUTTI i redditi da lavoro, le ritenute pure.
+  // Il riquadro degli stipendi vive invece nella scheda Reddito.
+  return riquadroScaglioni() + riquadroRitenute();
+}
+
+// --- Riquadro 1: scaglioni di tassazione, unica fonte per tutti i redditi da lavoro
+function riquadroScaglioni() {
   const c = cfgLavoro();
-  const bp = calcolaBustaPaga();
-  const num = (nome, val, step) => `<input type="number" step="${step||'0.0001'}" min="0" name="${nome}" value="${val==null?'':val}">`;
-  const riga = (etichetta, nomeBase, valBase, nomePct, valPct, valore, informativa) => `
-    <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .7fr 1fr .9fr; gap:6px; align-items:center;">
-      <span class="label" style="font-size:11px;">${etichetta}${informativa?' <span class="subtle">(informativo)</span>':''}</span>
-      <span>${num(nomePct, valPct, '0.001')}</span>
-      <span>${num(nomeBase, valBase==null?'':valBase)}</span>
-      <span class="val" style="text-align:right;">${fmt2(valore)}</span>
-    </div>`;
+  const sc = Array.isArray(c.scaglioni) ? c.scaglioni : [];
+  const righe = sc.map((s, i) => `
+    <div class="stat-row" style="display:grid; grid-template-columns:1fr 1fr 1fr .8fr; gap:6px; align-items:center;">
+      <input type="number" step="0.01" data-scaglione="${i}" data-campo="fino" value="${s.fino === null || s.fino === undefined ? '' : s.fino}" placeholder="nessun limite" style="font-size:11px; padding:4px;">
+      <input type="number" step="0.01" data-scaglione="${i}" data-campo="sottrai" value="${s.sottrai || 0}" style="font-size:11px; padding:4px;">
+      <input type="number" step="0.01" data-scaglione="${i}" data-campo="fisso" value="${s.fisso || 0}" style="font-size:11px; padding:4px;">
+      <input type="number" step="0.01" data-scaglione="${i}" data-campo="aliquota" value="${s.aliquota || 0}" style="font-size:11px; padding:4px;">
+    </div>`).join('');
   return `
     <div class="card">
-      <h3>Sistema Lavoro Dipendente</h3>
-      <div class="subtle">Da qui vengono generati stipendio, contributi, tassazione e deduzione da fondo pensione. Sostituisce la voce ricorrente del reddito. I contributi del datore sono solo informativi e non generano movimenti.</div>
-      <form class="entry" id="formLavoroDipendente">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <input type="checkbox" name="attivo" id="rldAttivo" style="width:auto;" ${c.attivo?'checked':''}>
-          <label style="margin:0;" for="rldAttivo">Sistema attivo</label>
-        </div>
+      <h3>Scaglione Tassazione da Reddito Dipendente</h3>
+      <div class="subtle">Unica fonte per il calcolo dell'imposta su tutti i redditi da lavoro dipendente.
+        Ogni riga: soglia superiore, importo da sottrarre alla base, imposta fissa, aliquota sull'eccedenza.</div>
+      <div class="stat-row" style="display:grid; grid-template-columns:1fr 1fr 1fr .8fr; gap:6px;">
+        <span class="subtle" style="font-size:10px;">FINO A</span>
+        <span class="subtle" style="font-size:10px;">SOTTRAI</span>
+        <span class="subtle" style="font-size:10px;">FISSO</span>
+        <span class="subtle" style="font-size:10px;">ALIQUOTA %</span>
+      </div>
+      ${righe}
+      <div class="row2" style="margin-top:8px;">
+        <button class="secondary" type="button" id="aggiungiScaglione">+ Scaglione</button>
+        <button class="secondary" type="button" id="rimuoviScaglione">− Ultimo</button>
+      </div>
+      <button class="primary" type="button" id="salvaScaglioni" style="margin-top:8px;">Salva scaglioni</button>
+    </div>`;
+}
+
+// --- Riquadro 2: ritenute e massimali, validi per tutti i redditi da lavoro
+function riquadroRitenute() {
+  const c = cfgLavoro();
+  const n2 = v => (v === null || v === undefined || v === "") ? "" : Number(v).toFixed(2);
+  const pctIn = (nome, val) =>
+    `<input type="number" step="0.01" min="0" max="100" name="${nome}" value="${n2(val)}" style="font-size:11px; padding:4px;">`;
+  return `
+    <div class="card">
+      <h3>Ritenute fiscali per i Redditi da lavoro dipendente</h3>
+      <div class="subtle">Percentuali e massimali applicati a tutti i redditi da lavoro dipendente.
+        Le percentuali si esprimono con due decimali.</div>
+      <form class="entry" id="formRitenuteRLD">
         <div class="row2">
-          <div><label>Stipendio lordo mensile</label>${num("stipendioLordo", c.stipendioLordo)}</div>
-          <div><label>Giorno di accredito</label><input type="number" min="1" max="28" name="giornoPaga" value="${c.giornoPaga||10}"></div>
+          <div><label>Massimale contributivo (mensile)</label><input type="number" step="0.01" min="0" name="massimaleContributivo" value="${n2(c.massimaleContributivo)}"></div>
+          <div><label>Tetto mensile deducibile da FP</label><input type="number" step="0.01" min="0" name="tettoDeduzioneMensile" value="${n2(c.tettoDeduzioneMensile)}"></div>
         </div>
-        <div class="row2">
-          <div><label>Massimale contributivo</label>${num("massimaleContributivo", c.massimaleContributivo)}</div>
-          <div><label>Tetto mensile deducibile</label>${num("tettoDeduzioneMensile", c.tettoDeduzioneMensile)}</div>
+        <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .9fr; gap:6px; align-items:center;">
+          <span class="label" style="font-size:11px;">Pensione datore</span>${pctIn("pctPensioneDatore", c.pctPensioneDatore)}
         </div>
-        <div><label>Mese di partenza (MM/AAAA)</label><input type="text" name="startMonth" pattern="[0-9]{2}/[0-9]{4}" placeholder="es. 08/2026" value="${c.startMonth?monthToDisplay(c.startMonth):''}"></div>
-
-        <div style="margin-top:10px; border-top:1px solid #2E4159; padding-top:8px;">
-          <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .7fr 1fr .9fr; gap:6px;">
-            <span class="subtle" style="font-size:10px;">VOCE</span><span class="subtle" style="font-size:10px;">%</span>
-            <span class="subtle" style="font-size:10px;">BASE</span><span class="subtle" style="font-size:10px; text-align:right;">VALORE</span>
-          </div>
-          ${riga("Pensione datore", "basePensioneDatore", c.basePensioneDatore, "pctPensioneDatore", c.pctPensioneDatore, bp.p1, true)}
-          ${riga("Sanità datore", "baseSanitaDatore", c.baseSanitaDatore, "pctSanitaDatore", c.pctSanitaDatore, bp.s1, true)}
-          ${riga("Pensione lavoratore", "basePensioneLavoratore", c.basePensioneLavoratore, "pctPensioneLavoratore", c.pctPensioneLavoratore, bp.p2)}
-          ${riga("Sanità lavoratore", "baseSanitaLavoratore", c.baseSanitaLavoratore, "pctSanitaLavoratore", c.pctSanitaLavoratore, bp.s2)}
-          <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .7fr 1fr .9fr; gap:6px; align-items:center;">
-            <span class="label" style="font-size:11px;">Tassazione (scaglioni)</span>
-            <span class="subtle" style="font-size:10px;">tabella</span>
-            <span>${num("baseTassazione", c.baseTassazione)}</span>
-            <span class="val" style="text-align:right;">${fmt2(bp.t1)}</span>
-          </div>
-          <div class="subtle" style="font-size:10px; margin-top:4px;">Base vuota = calcolata dal lordo (con massimale dove previsto).</div>
+        <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .9fr; gap:6px; align-items:center;">
+          <span class="label" style="font-size:11px;">Sanità datore</span>${pctIn("pctSanitaDatore", c.pctSanitaDatore)}
         </div>
-
-        <div class="section-total"><span>Stipendio netto (per eccesso)</span><span style="color:#C9A227;">${fmt(bp.netto)}</span></div>
-
-        <label style="margin-top:10px;">Scaglioni di tassazione</label>
-        <div id="rldScaglioni">
-          ${(c.scaglioni||[]).map((s,i)=>`
-            <div class="row2" style="gap:6px; margin-bottom:4px;">
-              <div><label style="font-size:10px;">Fino a (vuoto = oltre)</label><input type="number" min="0" name="sc_fino_${i}" value="${s.fino==null?'':s.fino}"></div>
-              <div><label style="font-size:10px;">Sottrai</label><input type="number" min="0" name="sc_sottrai_${i}" value="${s.sottrai||0}"></div>
-              <div><label style="font-size:10px;">Aliquota %</label><input type="number" step="0.001" min="0" name="sc_aliquota_${i}" value="${s.aliquota||0}"></div>
-              <div><label style="font-size:10px;">Importo fisso</label><input type="number" min="0" name="sc_fisso_${i}" value="${s.fisso||0}"></div>
-            </div>`).join('')}
+        <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .9fr; gap:6px; align-items:center;">
+          <span class="label" style="font-size:11px;">Pensione lavoratore</span>${pctIn("pctPensioneLavoratore", c.pctPensioneLavoratore)}
         </div>
-        <button class="primary" type="submit">Salva e rigenera</button>
+        <div class="stat-row" style="display:grid; grid-template-columns:1.6fr .9fr; gap:6px; align-items:center;">
+          <span class="label" style="font-size:11px;">Sanità lavoratore</span>${pctIn("pctSanitaLavoratore", c.pctSanitaLavoratore)}
+        </div>
+        <div class="subtle" style="margin-top:6px; font-size:10px;">I contributi del datore sono informativi: non generano movimenti.</div>
+        <button class="primary" type="submit" style="margin-top:8px;">Salva ritenute</button>
       </form>
     </div>`;
 }
 
 function bindPannelloLavoroDipendente() {
-  const form = document.getElementById("formLavoroDipendente");
-  if (!form) return;
-  form.addEventListener("submit", ev => {
+  // --- ritenute e massimali ---
+  const fr = document.getElementById("formRitenuteRLD");
+  if (fr) fr.addEventListener("submit", ev => {
     ev.preventDefault();
     const f = new FormData(ev.target);
     const c = cfgLavoro();
-    const n = k => { const v = f.get(k); return (v === null || v === "") ? null : Number(v); };
-    c.attivo = f.get("attivo") === "on";
-    c.stipendioLordo = n("stipendioLordo") || 0;
-    c.giornoPaga = Math.min(Math.max(n("giornoPaga") || 10, 1), 28);
-    c.massimaleContributivo = n("massimaleContributivo") || 0;
-    c.tettoDeduzioneMensile = n("tettoDeduzioneMensile") || 0;
-    c.startMonth = displayToMonth(f.get("startMonth")) || c.startMonth || thisMonth;
-    ["pctPensioneDatore","pctSanitaDatore","pctPensioneLavoratore","pctSanitaLavoratore"].forEach(k => c[k] = n(k) || 0);
-    ["basePensioneDatore","baseSanitaDatore","basePensioneLavoratore","baseSanitaLavoratore","baseTassazione"].forEach(k => c[k] = n(k));
-    c.scaglioni = (c.scaglioni||[]).map((s,i) => ({
-      fino: n(`sc_fino_${i}`), sottrai: n(`sc_sottrai_${i}`) || 0,
-      aliquota: n(`sc_aliquota_${i}`) || 0, fisso: n(`sc_fisso_${i}`) || 0
-    }));
-    ensureCategorieLavoro();
+    const n = k => { const v = f.get(k); return (v === null || v === "") ? 0 : Number(v); };
+    c.massimaleContributivo = n("massimaleContributivo");
+    c.tettoDeduzioneMensile = n("tettoDeduzioneMensile");
+    ["pctPensioneDatore","pctSanitaDatore","pctPensioneLavoratore","pctSanitaLavoratore"]
+      .forEach(k => c[k] = n(k));
+    saveData();
+    alert("Ritenute salvate.");
+    renderSettings();
+  });
+
+  // --- scaglioni ---
+  const salva = document.getElementById("salvaScaglioni");
+  if (salva) salva.addEventListener("click", () => {
+    const c = cfgLavoro();
+    document.querySelectorAll("[data-scaglione]").forEach(el => {
+      const idx = Number(el.dataset.scaglione);
+      const campo = el.dataset.campo;
+      if (!c.scaglioni[idx]) return;
+      const v = el.value;
+      c.scaglioni[idx][campo] = (campo === "fino" && (v === "" || v === null)) ? null : Number(v) || 0;
+    });
+    saveData();
+    alert("Scaglioni salvati.");
+    renderSettings();
+  });
+  const agg = document.getElementById("aggiungiScaglione");
+  if (agg) agg.addEventListener("click", () => {
+    const c = cfgLavoro();
+    c.scaglioni.push({ fino: null, sottrai: 0, aliquota: 0, fisso: 0 });
+    saveData(); renderSettings();
+  });
+  const rim = document.getElementById("rimuoviScaglione");
+  if (rim) rim.addEventListener("click", () => {
+    const c = cfgLavoro();
+    if (c.scaglioni.length <= 1) { alert("Deve restare almeno uno scaglione."); return; }
+    if (!confirm("Rimuovere l'ultimo scaglione?")) return;
+    c.scaglioni.pop();
+    saveData(); renderSettings();
+  });
+}
+// --- Riquadri degli stipendi, nella scheda Reddito: uno per ogni rapporto di lavoro.
+function riquadriStipendi() {
+  const lista = stipendiLavoro();
+  const calc = calcolaBustePagaCumulate(lista.filter(s => Number(s.stipendioLordo) > 0));
+  const perId = {};
+  calc.righe.forEach(r => { perId[r.stipendio.id] = r; });
+
+  const esistenti = lista.map(s => {
+    const r = perId[s.id];
+    return `
+    <div class="card" style="border-color:${s.attivo ? '#C9A227' : '#2E4159'};">
+      <h3>${s.issuerName || "Stipendio senza ente"} ${s.securityCode ? '<span class="pill">'+s.securityCode+'</span>' : ''}</h3>
+      <form class="entry" data-stipendioform="${s.id}">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <input type="checkbox" name="attivo" ${s.attivo ? 'checked' : ''} style="width:auto;">
+          <label style="margin:0;">Sistema attivo (genera ogni mese)</label>
+        </div>
+        <div><label>Categoria</label><input type="text" value="${CAT_RLD}" readonly style="opacity:0.7;"></div>
+        <div><label>Macro-categoria</label><input type="text" value="${MACRO_LAVORO}" readonly style="opacity:0.7;"></div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" value="${escAttr(s.issuerName||'')}" required></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${escAttr(s.securityCode||'')}" required></div>
+        <div><label>Stabilità della fonte (1-7, 1 = molto stabile)</label>${selettoreRischio(s.riskFactor, { type:"reddito" })}</div>
+        <div class="row2">
+          <div><label>Stipendio lordo mensile</label><input type="number" step="0.01" min="0" name="stipendioLordo" value="${s.stipendioLordo||''}" required></div>
+          <div><label>Giorno di accredito</label><input type="number" min="1" max="28" name="giornoPaga" value="${s.giornoPaga||10}"></div>
+        </div>
+        <div class="row2">
+          <div><label>Da (mese, MM/AAAA)</label><input type="text" name="startMonth" value="${monthToDisplay(s.startMonth)||''}" pattern="[0-9]{2}/[0-9]{4}" placeholder="MM/AAAA"></div>
+          <div><label>Ricevuto su</label>${paymentTypeSelect(s.paymentType||"Banca")}</div>
+        </div>
+        ${r ? `
+        <div style="margin-top:10px; border-top:1px solid #2E4159; padding-top:8px;">
+          <div class="stat-row"><span class="label">Base contributiva (dopo cumulo)</span><span class="val">${fmt2(r.baseContributiva)}</span></div>
+          <div class="stat-row"><span class="label">Pensione lavoratore</span><span class="val">-${fmt2(r.p2)}</span></div>
+          <div class="stat-row"><span class="label">Sanità lavoratore</span><span class="val">-${fmt2(r.s2)}</span></div>
+          <div class="stat-row"><span class="label">Tassazione (marginale sul cumulo)</span><span class="val">-${fmt2(r.t1)}</span></div>
+          <div class="section-total"><span>Stipendio netto</span><span>${fmt(r.netto)}</span></div>
+          <div class="subtle" style="font-size:10px;">Contributi datore (informativi): ${fmt2(r.p1)} + ${fmt2(r.s1)}</div>
+        </div>` : ''}
+        <div class="row2" style="margin-top:8px;">
+          <button class="primary" type="submit">Salva e genera</button>
+          <button class="secondary" type="button" data-delstipendio="${s.id}">Elimina</button>
+        </div>
+      </form>
+    </div>`;
+  }).join('');
+
+  // modulo di inserimento: si svuota dopo il salvataggio
+  const nuovo = `
+    <div class="card">
+      <h3>Nuovo Reddito da Lavoro Dipendente</h3>
+      <div class="subtle">Un riquadro per ogni rapporto di lavoro. Le trattenute e la tassazione
+        si calcolano sul cumulo di tutti gli stipendi attivi, non su ciascuno isolatamente.</div>
+      <form class="entry" id="formNuovoStipendio">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <input type="checkbox" name="attivo" checked style="width:auto;">
+          <label style="margin:0;">Sistema attivo</label>
+        </div>
+        <div><label>Categoria</label><input type="text" value="${CAT_RLD}" readonly style="opacity:0.7;"></div>
+        <div><label>Macro-categoria</label><input type="text" value="${MACRO_LAVORO}" readonly style="opacity:0.7;"></div>
+        <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" required placeholder="la societa dove lavori"></div>
+        <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${peekNextSecurityCode()}" required></div>
+        <div><label>Stabilità della fonte (1-7, 1 = molto stabile)</label>${selettoreRischio(2, { type:"reddito" })}</div>
+        <div class="row2">
+          <div><label>Stipendio lordo mensile</label><input type="number" step="0.01" min="0" name="stipendioLordo" required placeholder="0"></div>
+          <div><label>Giorno di accredito</label><input type="number" min="1" max="28" name="giornoPaga" value="10"></div>
+        </div>
+        <div class="row2">
+          <div><label>Da (mese, MM/AAAA)</label><input type="text" name="startMonth" value="${monthToDisplay(thisMonth)}" pattern="[0-9]{2}/[0-9]{4}" placeholder="MM/AAAA"></div>
+          <div><label>Ricevuto su</label>${paymentTypeSelect("Banca")}</div>
+        </div>
+        <button class="primary" type="submit" style="margin-top:8px;">Salva e genera</button>
+      </form>
+    </div>`;
+  return esistenti + nuovo;
+}
+
+function bindRiquadriStipendi() {
+  const leggi = form => {
+    const f = new FormData(form);
+    const sel = form.querySelector('[name="riskFactor"]');
+    return {
+      attivo: f.get("attivo") === "on",
+      issuerName: (f.get("issuerName")||"").trim(),
+      securityCode: (f.get("securityCode")||"").trim(),
+      riskFactor: normalizzaRischio(sel ? sel.value : null, { type:"reddito" }),
+      stipendioLordo: Number(f.get("stipendioLordo")) || 0,
+      giornoPaga: Math.min(Math.max(Number(f.get("giornoPaga")) || 10, 1), 28),
+      startMonth: displayToMonth(f.get("startMonth")) || thisMonth,
+      paymentType: f.get("paymentType") || "Banca"
+    };
+  };
+  const nuovo = document.getElementById("formNuovoStipendio");
+  if (nuovo) nuovo.addEventListener("submit", ev => {
+    ev.preventDefault();
+    const dati = leggi(ev.target);
+    if (!dati.issuerName || dati.stipendioLordo <= 0) { alert("Servono ente e stipendio lordo."); return; }
+    assegnaCodiceTitolo(dati.securityCode, null);
+    stipendiLavoro().push(Object.assign({ id: uid() }, dati));
+    cfgLavoro().attivo = true;
     saveData();
     autoGenerateLavoroDipendente();
-    renderSettings();
+    saveData();
+    renderIncome();   // il modulo si ripresenta vuoto
+  });
+  document.querySelectorAll("[data-stipendioform]").forEach(form => {
+    form.addEventListener("submit", ev => {
+      ev.preventDefault();
+      const s = stipendiLavoro().find(x => x.id === form.dataset.stipendioform);
+      if (!s) return;
+      Object.assign(s, leggi(ev.target));
+      saveData();
+      autoGenerateLavoroDipendente();
+      saveData();
+      renderIncome();
+    });
+  });
+  document.querySelectorAll("[data-delstipendio]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.delstipendio;
+      const s = stipendiLavoro().find(x => x.id === id);
+      if (!s) return;
+      if (!confirm(`Eliminare "${s.issuerName||"questo stipendio"}"?\n\nLe voci già registrate restano; non ne verranno generate altre.`)) return;
+      const c = cfgLavoro();
+      c.stipendi = c.stipendi.filter(x => x.id !== id);
+      dimenticaCancellazioni("rld:" + id);
+      saveData(); renderIncome();
+    });
   });
 }
 
-// Riquadro di sintesi del reddito da lavoro dipendente per l'anno corrente.
 function riquadroRedditoLavoro(anno) {
   const c = cfgLavoro();
   const voci = (data.income||[]).filter(i => i.date && i.date.slice(0,4) === String(anno));
@@ -10125,6 +10608,14 @@ function riquadroRedditoLavoro(anno) {
   const sp = cat => spese.filter(e => e.category === cat).reduce((s,e) => s + Number(e.amount), 0);
   const pens = sp(CAT_CONTR_PENS), san = sp(CAT_CONTR_SAN), tassa = sp(CAT_TASSA_RLD);
   const netto = Math.ceil(arrotondaCentesimi(lordo - pens - san - tassa));
+  // Una riga di lordo per ogni società: con più rapporti di lavoro serve vedere
+  // da dove arriva ciascuna quota, non solo il totale.
+  const raggr = {};
+  voci.filter(i => i.category === CAT_RLD).forEach(i => {
+    const ente = (i.issuerName || "").trim() || "senza ente";
+    raggr[ente] = (raggr[ente] || 0) + toALL(Number(i.amount), i.currency || "ALL");
+  });
+  const perEnte = Object.keys(raggr).sort().map(ente => ({ ente, lordo: raggr[ente] }));
   const deduzione = somma(voci.filter(i => i.category === CAT_DEDUZIONE_FP));
   const totale = netto + Math.floor(deduzione);
   const r = (etichetta, valore, cls, grassetto) =>
@@ -10133,7 +10624,8 @@ function riquadroRedditoLavoro(anno) {
     <div class="card">
       <h3>Reddito da Lavoro Dipendente ${anno}</h3>
       <div class="subtle">Riepilogo della macro-categoria Lavoro. Il netto è arrotondato per eccesso, la deduzione per difetto.</div>
-      ${r("Stipendio lordo", lordo)}
+      ${perEnte.map(x => r(`Stipendio lordo — ${x.ente}`, x.lordo)).join('')}
+      ${perEnte.length > 1 ? r("Totale lordo", lordo, "", true) : ''}
       ${r("· contributo pensionistico", -pens, "down")}
       ${r("· contributo sanitario", -san, "down")}
       ${r("· tassazione", -tassa, "down")}
