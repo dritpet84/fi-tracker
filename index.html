@@ -1003,17 +1003,23 @@ function bookAssetSale(o) {
   const currency = o.currency;
   const bankAccount = bankAccountForCurrency(currency);
   const saleId = uid();
+  // Codice titolo dalla posizione venduta, se disponibile: serve a collegare la
+  // ritenuta al titolo che l'ha generata (non solo al reddito), per il rendiconto.
+  const posVenduta = o.linkedPositionId ? data.portfolio.find(p => p.id === o.linkedPositionId) : null;
+  const codiceTitolo = (posVenduta && posVenduta.securityCode) || o.securityCode || null;
   data.portfolio.push({ id: uid(), type: o.portfolioType, macro: o.macro||null, amount: -c.valoreInvestito, currency, marketValue: null, date: o.saleDate, maturityDate: null, note: `${o.sellLabel}: ${o.name}` });
   createLiquidityAdjustment(bankAccount, c.valoreInvestito, o.saleDate, `Rimborso capitale: ${o.name}`, saleId);
-  const incomeEntry = { id: saleId, date: o.saleDate, amount: c.capitalGainLordo, currency, category: o.incomeCategory, macro: o.macro||null, paymentType: null, note: `Vendita ${o.name}` };
+  const incomeEntry = { id: saleId, date: o.saleDate, amount: c.capitalGainLordo, currency, category: o.incomeCategory, macro: o.macro||null, paymentType: null, note: `Vendita ${o.name}`, securityCode: codiceTitolo };
   if (o.linkedPositionId) incomeEntry.linkedBondId = o.linkedPositionId;
   data.income.push(incomeEntry);
   if (c.tassazione > 0) {
     if (!data.categories.expenses.includes(o.taxCategory)) data.categories.expenses.push(o.taxCategory);
-    data.expenses.push({ id: uid(), date: o.saleDate, amount: toALL(c.tassazione, currency), category: o.taxCategory, macro: o.macro||null, note: `Tassazione capital gain (${fmt(c.tassazione)} ${currency})` });
+    // linkedIncomeId punta esattamente alla riga di reddito che ha generato questa
+    // ritenuta: un abbinamento certo, non per euristica (stessa data/importo).
+    data.expenses.push({ id: uid(), date: o.saleDate, amount: toALL(c.tassazione, currency), category: o.taxCategory, macro: o.macro||null, note: `Tassazione capital gain (${fmt(c.tassazione)} ${currency})`, linkedBondId: o.linkedPositionId||null, securityCode: codiceTitolo, linkedIncomeId: saleId });
   }
   if (c.commissione > 0) {
-    data.expenses.push({ id: uid(), date: o.saleDate, amount: toALL(c.commissione, currency), category: "Commissione vendita titoli", note: `${o.commissionLabel||'Commissione vendita'} (${fmt(c.commissione)} ${currency})` });
+    data.expenses.push({ id: uid(), date: o.saleDate, amount: toALL(c.commissione, currency), category: "Commissione vendita titoli", note: `${o.commissionLabel||'Commissione vendita'} (${fmt(c.commissione)} ${currency})`, linkedBondId: o.linkedPositionId||null, securityCode: codiceTitolo, linkedIncomeId: saleId });
   }
   createLiquidityAdjustment(bankAccount, c.capitalGainNetto, o.saleDate, `Plusvalenza netta vendita: ${o.name}`, saleId+"-gain");
   return saleId;
@@ -1177,7 +1183,7 @@ function emettiCedola(p, dateStr, isBondCoupon, freqObj) {
 
     if (p.currency === "ALL") {
       const taxExpId = uid();
-      data.expenses.push({ id: taxExpId, date: dateStr, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: code, securityCode: code||null });
+      data.expenses.push({ id: taxExpId, date: dateStr, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: code, linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId });
       // La ritenuta esce davvero dal conto: senza questo la liquidità risulta
       // gonfiata dell'importo della tassa a ogni cedola.
       createLiquidityAdjustment(bankAccount, -taxAmt, dateStr, `Tassazione ${cat} ${code}`.trim(), taxExpId);
@@ -1186,10 +1192,10 @@ function emettiCedola(p, dateStr, isBondCoupon, freqObj) {
       const taxAmtALL = taxAmt * fxInfo.rate;
       const taxExpId = uid();
       data.expenses.push({ id: taxExpId, date: dateStr, amount: taxAmtALL, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `${code} (${fmt(taxAmt)} ${p.currency} al cambio ${fxInfo.rate})`.trim(),
-        securityCode: code||null, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
+        linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
       createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione ${cat} ${code}`.trim(), taxExpId);
     }
-    if (commAmt > 0) data.expenses.push({ id: uid(), date: dateStr, amount: commAmt, currency: p.currency, category: "Commissione disbursement cedola", note: code, securityCode: code||null });
+    if (commAmt > 0) data.expenses.push({ id: uid(), date: dateStr, amount: commAmt, currency: p.currency, category: "Commissione disbursement cedola", note: code, linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId });
 }
 
 function addMonthsToDate(dateStr, n) {
@@ -1371,14 +1377,14 @@ function autoGenerateRentalIncome() {
     if (taxAmt > 0.005) {
       if (p.rentalCurrency === "ALL") {
         const taxId = uid();
-        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassa immobile", macro: "Real Estate", note: code, linkedBondId: p.id, securityCode: code||null });
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassa immobile", macro: "Real Estate", note: code, linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId });
         createLiquidityAdjustment("Banca", -taxAmt, dateStr, `Tassazione affitto ${code}`.trim(), taxId);
       } else {
         const fxInfo = getFxRateForDateDetailed(dateStr, p.rentalCurrency);
         const taxAmtALL = taxAmt * fxInfo.rate;
         const taxId = uid();
         data.expenses.push({ id: taxId, date: dateStr, amount: taxAmtALL, category: "Tassa immobile", macro: "Real Estate", note: `${code} (${fmt(taxAmt)} ${p.rentalCurrency} al cambio ${fxInfo.rate})`.trim(),
-          linkedBondId: p.id, securityCode: code||null, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.rentalCurrency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
+          linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.rentalCurrency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
         createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione affitto ${code}`.trim(), taxId);
       }
     }
@@ -1418,14 +1424,14 @@ function autoGenerateDividends() {
     if (taxAmt > 0.005) {
       if (p.currency === "ALL") {
         const taxId = uid();
-        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassazione dividendi", macro: "Stocks", note: code, linkedBondId: p.id, securityCode: code||null });
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassazione dividendi", macro: "Stocks", note: code, linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId });
         createLiquidityAdjustment("Banca", -taxAmt, dateStr, `Tassazione dividendo ${code}`.trim(), taxId);
       } else {
         const fxInfo = getFxRateForDateDetailed(dateStr, p.currency);
         const taxAmtALL = taxAmt * fxInfo.rate;
         const taxId = uid();
         data.expenses.push({ id: taxId, date: dateStr, amount: taxAmtALL, category: "Tassazione dividendi", macro: "Stocks", note: `${code} (${fmt(taxAmt)} ${p.currency} al cambio ${fxInfo.rate})`.trim(),
-          linkedBondId: p.id, securityCode: code||null, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
+          linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
         createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione dividendo ${code}`.trim(), taxId);
       }
     }
@@ -1528,7 +1534,7 @@ function autoMatureBondsAndDeposits() {
       const taxCat = ensureDepositTaxCategory(p.depositYears);
       const incId = uid();
       data.income.push({ id: incId, date: p.maturityDate, amount: grossInterest, category: "Interesse deposito", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Liquidazione finale ${code}`.trim(), linkedBondId: p.id, securityCode: code||null });
-      data.expenses.push({ id: uid(), date: p.maturityDate, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `Liquidazione ${code}`.trim() });
+      data.expenses.push({ id: uid(), date: p.maturityDate, amount: taxAmt, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `Liquidazione ${code}`.trim(), linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId });
       createLiquidityAdjustment("Banca", netInterest, p.maturityDate, `Liquidazione netta ${code}`.trim(), incId);
       // A scadenza il capitale torna disponibile e il deposito si chiude, come già
       // avviene per le obbligazioni. Senza questo il deposito restava aperto per
@@ -1559,7 +1565,7 @@ function autoMatureBondsAndDeposits() {
       data.income.push({ id: saleId, date: p.maturityDate, amount: capitalGainLordo, category: "Capital gain obbligazioni", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Rimborso a scadenza ${code}`.trim(), linkedBondId: p.id, securityCode: code||null });
       if (tassazione > 0) {
         const taxCat = ensureBondTaxCategory(p.bondYears, p.type);
-        data.expenses.push({ id: uid(), date: p.maturityDate, amount: tassazione, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `Rimborso ${code}`.trim() });
+        data.expenses.push({ id: uid(), date: p.maturityDate, amount: tassazione, category: taxCat, macro: "Tassazione da Titoli - Standard", note: `Rimborso ${code}`.trim(), linkedBondId: p.id, securityCode: code||null, linkedIncomeId: saleId });
       }
       createLiquidityAdjustment("Banca", capitalGainNetto, p.maturityDate, `Plusvalenza netta rimborso ${code}`.trim(), saleId+"-gain");
       changed = true;
@@ -1603,7 +1609,7 @@ function autoMatureBondsAndDeposits() {
         if (tassazione > 0) {
           data.expenses.push({ id: uid(), date: p.maturityDate, amount: tassazione,
             category: ensureBondTaxCategory(p.bondYears, p.type), macro: "Tassazione da Titoli - Standard",
-            note: `Rimborso ${code}`.trim() });
+            note: `Rimborso ${code}`.trim(), linkedBondId: p.id, securityCode: code||null, linkedIncomeId: refId });
         }
         createLiquidityAdjustment(bankAccountForCurrency(p.currency), capitalGainLordo - tassazione,
           p.maturityDate, `Plusvalenza netta rimborso ${code}`.trim(), refId + "-gain");
@@ -3686,9 +3692,9 @@ function registerBondCoupon(bondId) {
   const msg = `Cedola lorda: ${fmt(grossCoupon)} ALL\nTassazione (${taxRate}%): -${fmt(taxAmt)} ALL\nCommissione: -${fmt(commAmt)} ALL\nNetto accreditato in Banca: ${fmt(netCoupon)} ALL\n\nConfermi?`;
   if (!confirm(msg)) return;
   const incId = uid();
-  data.income.push({id:incId, date:dateStr, amount:grossCoupon, category:"Cedola", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Cedola ${bond.type}`, linkedBondId:bond.id});
-  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione cedola"});
-  if (commAmt > 0) data.expenses.push({id:uid(), date:dateStr, amount:commAmt, category:"Commissione disbursement cedola", note:"Commissione cedola"});
+  data.income.push({id:incId, date:dateStr, amount:grossCoupon, category:"Cedola", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Cedola ${bond.type}`, linkedBondId:bond.id, securityCode: bond.securityCode||null});
+  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione cedola", linkedBondId:bond.id, securityCode: bond.securityCode||null, linkedIncomeId: incId});
+  if (commAmt > 0) data.expenses.push({id:uid(), date:dateStr, amount:commAmt, category:"Commissione disbursement cedola", note:"Commissione cedola", linkedBondId:bond.id, securityCode: bond.securityCode||null, linkedIncomeId: incId});
   createLiquidityAdjustment("Banca", netCoupon, dateStr, `Cedola netta: ${bond.type}`, incId);
   saveData(); renderPortfolio();
 }
@@ -3707,8 +3713,8 @@ function registerDepositInterest(depId) {
   const msg = `Interesse lordo: ${fmt(grossInterest)} ALL\nTassazione (${taxRate}%): -${fmt(taxAmt)} ALL\nNetto accreditato in Banca: ${fmt(netInterest)} ALL\n\nConfermi?`;
   if (!confirm(msg)) return;
   const incId = uid();
-  data.income.push({id:incId, date:dateStr, amount:grossInterest, category:"Interesse deposito", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Interesse ${dep.type}`, linkedBondId:dep.id});
-  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione interesse deposito"});
+  data.income.push({id:incId, date:dateStr, amount:grossInterest, category:"Interesse deposito", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Interesse ${dep.type}`, linkedBondId:dep.id, securityCode: dep.securityCode||null});
+  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione interesse deposito", linkedBondId:dep.id, securityCode: dep.securityCode||null, linkedIncomeId: incId});
   createLiquidityAdjustment("Banca", netInterest, dateStr, `Interesse netto: ${dep.type}`, incId);
   saveData(); renderPortfolio();
 }
@@ -3728,8 +3734,8 @@ function registerDepositMaturity(depId) {
   const msg = `Deposito a pagamento finale — interesse semplice stimato su ${years} anni al ${rate}%.\nInteresse lordo: ${fmt(grossInterest)} ALL\nTassazione (${taxRate}%): -${fmt(taxAmt)} ALL\nNetto accreditato in Banca: ${fmt(netInterest)} ALL\n(Il capitale nominale resta registrato come posizione separata.)\n\nConfermi?`;
   if (!confirm(msg)) return;
   const incId = uid();
-  data.income.push({id:incId, date:dateStr, amount:grossInterest, category:"Interesse deposito", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Liquidazione finale ${dep.type}`, linkedBondId:dep.id});
-  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione liquidazione deposito"});
+  data.income.push({id:incId, date:dateStr, amount:grossInterest, category:"Interesse deposito", macro:"Interessi da Titoli - Standard", paymentType:null, note:`Liquidazione finale ${dep.type}`, linkedBondId:dep.id, securityCode: dep.securityCode||null});
+  data.expenses.push({id:uid(), date:dateStr, amount:taxAmt, category:taxCat, macro:"Tassazione da Titoli - Standard", note:"Tassazione liquidazione deposito", linkedBondId:dep.id, securityCode: dep.securityCode||null, linkedIncomeId: incId});
   createLiquidityAdjustment("Banca", netInterest, dateStr, `Liquidazione netta: ${dep.type}`, incId);
   saveData(); renderPortfolio();
 }
@@ -6224,9 +6230,9 @@ function renderFundsTab() {
       const saleId = uid();
       data.portfolio.push({ id: uid(), type: fund.type, macro: fund.macro||null, amount: -c.valoreInvestito, currency: fund.currency, marketValue: null, date: saleDate, maturityDate: null, note: `Vendita quote: ${fund.fundName||fund.type}` });
       createLiquidityAdjustment("Banca", c.valoreInvestito, saleDate, `Rimborso capitale: ${fund.fundName||fund.type}`, saleId);
-      data.income.push({ id: saleId, date: saleDate, amount: c.capitalGainLordo, category: "Capital gain fondi", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Vendita ${fund.fundName||fund.type}`, linkedBondId: fund.id });
-      if (c.tassazione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: c.tassazione, category: "Tassazione capital gain fondi", macro: "Tassazione da Titoli - Standard", note: "Tassazione capital gain fondo" });
-      if (c.commissione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: c.commissione, category: "Commissione vendita titoli", note: "Commissione vendita fondo" });
+      data.income.push({ id: saleId, date: saleDate, amount: c.capitalGainLordo, category: "Capital gain fondi", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Vendita ${fund.fundName||fund.type}`, linkedBondId: fund.id, securityCode: fund.securityCode||null });
+      if (c.tassazione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: c.tassazione, category: "Tassazione capital gain fondi", macro: "Tassazione da Titoli - Standard", note: "Tassazione capital gain fondo", linkedBondId: fund.id, securityCode: fund.securityCode||null, linkedIncomeId: saleId });
+      if (c.commissione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: c.commissione, category: "Commissione vendita titoli", note: "Commissione vendita fondo", linkedBondId: fund.id, securityCode: fund.securityCode||null, linkedIncomeId: saleId });
       createLiquidityAdjustment("Banca", c.capitalGainNetto, saleDate, `Plusvalenza netta vendita: ${fund.fundName||fund.type}`, saleId+"-gain");
       saveData(); renderFundsTab();
     });
@@ -6865,12 +6871,12 @@ function renderBondsTab() {
       const saleId = uid();
       data.portfolio.push({ id: uid(), type: bond.type, macro: bond.macro||null, amount: -nominal, currency: bond.currency, marketValue: null, date: saleDate, maturityDate: null, note: `Vendita/rimborso obbligazione` });
       createLiquidityAdjustment("Banca", nominal, saleDate, `Rimborso capitale: ${bond.type}`, saleId);
-      data.income.push({ id: saleId, date: saleDate, amount: capitalGainLordo, category: "Capital gain obbligazioni", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Vendita ${bond.type}`, linkedBondId: bond.id });
+      data.income.push({ id: saleId, date: saleDate, amount: capitalGainLordo, category: "Capital gain obbligazioni", macro: "Interessi da Titoli - Standard", paymentType: null, note: `Vendita ${bond.type}`, linkedBondId: bond.id, securityCode: bond.securityCode||null });
       if (tassazione > 0) {
         const taxCat = ensureBondTaxCategory(bond.bondYears, bond.type);
-        data.expenses.push({ id: uid(), date: saleDate, amount: tassazione, category: taxCat, macro: "Tassazione da Titoli - Standard", note: "Tassazione capital gain" });
+        data.expenses.push({ id: uid(), date: saleDate, amount: tassazione, category: taxCat, macro: "Tassazione da Titoli - Standard", note: "Tassazione capital gain", linkedBondId: bond.id, securityCode: bond.securityCode||null, linkedIncomeId: saleId });
       }
-      if (commissione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: commissione, category: "Commissione vendita titoli", note: "Commissione vendita" });
+      if (commissione > 0) data.expenses.push({ id: uid(), date: saleDate, amount: commissione, category: "Commissione vendita titoli", note: "Commissione vendita", linkedBondId: bond.id, securityCode: bond.securityCode||null, linkedIncomeId: saleId });
       createLiquidityAdjustment("Banca", capitalGainNetto, saleDate, `Plusvalenza netta vendita: ${bond.type}`, saleId+"-gain");
       saveData(); renderBondsTab();
     });
@@ -7141,13 +7147,13 @@ function renderRealEstateTab() {
     const code = property.securityCode || "";
     const bankAccount = bankAccountForCurrency(property.currency);
     const saleId = uid();
-    data.income.push({ id: uid(), date: saleDate, amount: saleValue, currency: property.currency, category: "Vendita immobile", macro: "Real Estate", note: `${code} · plusvalenza ${fmt(capitalGain)}`, securityCode: code||null });
+    data.income.push({ id: saleId, date: saleDate, amount: saleValue, currency: property.currency, category: "Vendita immobile", macro: "Real Estate", note: `${code} · plusvalenza ${fmt(capitalGain)}`, linkedBondId: property.id, securityCode: code||null });
     if (taxAmt > 0) {
       if (!data.categories.expenses.includes("Tassazione plusvalenza immobile")) data.categories.expenses.push("Tassazione plusvalenza immobile");
-      data.expenses.push({ id: uid(), date: saleDate, amount: taxAmt, category: "Tassazione plusvalenza immobile", macro: "Real Estate", note: code, securityCode: code||null });
+      data.expenses.push({ id: uid(), date: saleDate, amount: taxAmt, category: "Tassazione plusvalenza immobile", macro: "Real Estate", note: code, linkedBondId: property.id, securityCode: code||null, linkedIncomeId: saleId });
     }
     if (agencyFeeAmt > 0) {
-      data.expenses.push({ id: uid(), date: saleDate, amount: agencyFeeAmt, category: "Commissione agenzia affitto", macro: "Real Estate", note: `${code} · vendita`, securityCode: code||null });
+      data.expenses.push({ id: uid(), date: saleDate, amount: agencyFeeAmt, category: "Commissione agenzia affitto", macro: "Real Estate", note: `${code} · vendita`, linkedBondId: property.id, securityCode: code||null, linkedIncomeId: saleId });
     }
     createLiquidityAdjustment(bankAccount, netProceeds, saleDate, `Vendita immobile ${code} (netto)`.trim(), saleId);
     deletePortfolioPosition(propertyId);
@@ -8859,6 +8865,22 @@ function renderDrive() {
       <label style="margin-top:4px;">Importa backup</label>
       <input type="file" id="importFile" accept=".json,application/json,text/plain">
     </div>
+    <div class="card">
+      <h3>Rendiconto annuale</h3>
+      <div class="subtle">Un Excel con quattro fogli: riepilogo, redditi analitici collegati al titolo, ritenute e oneri, patrimonio al 31/12. Solo le voci con rilevanza fiscale (non le spese personali).</div>
+      ${(()=>{
+        const anni = [...new Set([...data.income, ...data.expenses].map(e => e.date && e.date.slice(0,4)).filter(Boolean))]
+          .map(Number).filter(y => isFinite(y)).sort((a,b)=>b-a);
+        if (!anni.length) anni.push(thisYearNum);
+        return `<div class="row2" style="align-items:flex-end;">
+          <div style="flex:1;"><label>Anno</label><select id="rendicontoYearSelect">
+            ${anni.map(y=>`<option value="${y}">${y}</option>`).join('')}
+          </select></div>
+          <button class="primary" type="button" id="rendicontoExportBtn" style="flex:1;">Scarica rendiconto (Excel)</button>
+        </div>`;
+      })()}
+      <div id="rendicontoStatus" class="subtle" style="margin-top:8px;"></div>
+    </div>
     ${(data.trash||[]).length>0 ? `<div class="card">
       <h3>Cestino</h3>
       <div class="subtle">Le ultime ${TRASH_MAX} eliminazioni. Ripristinabili finché restano qui.</div>
@@ -8900,6 +8922,19 @@ function renderDrive() {
     data.settings.backupReminderDismissedOn = null;
     saveData();
     if (typeof renderDrive === "function" && currentTabId === "drive") renderDrive();
+  });
+  const rendicontoBtn = document.getElementById("rendicontoExportBtn");
+  if (rendicontoBtn) rendicontoBtn.addEventListener("click", ()=>{
+    const yearSel = document.getElementById("rendicontoYearSelect");
+    const year = Number(yearSel.value);
+    const statusEl = document.getElementById("rendicontoStatus");
+    statusEl.textContent = "Genero il file...";
+    try {
+      const ok = esportaRendicontoAnnuale(year);
+      statusEl.textContent = ok ? `Rendiconto ${year} scaricato.` : "Non è stato possibile generare il file.";
+    } catch (e) {
+      statusEl.textContent = "Errore durante la generazione: " + (e.message||e);
+    }
   });
   document.getElementById("importFile").addEventListener("change", ev=>{
     const file = ev.target.files[0]; if (!file) return;
@@ -10690,6 +10725,164 @@ function multiYearTaxCard() {
           </div>
         </div>`).join('')}
     </div>`;
+}
+
+// ===== Rendiconto annuale esportabile =====
+// Solo ciò che ha rilevanza fiscale: le stesse categorie che i motori automatici
+// già gestiscono (cedole, dividendi, affitti, plusvalenze, stipendio) più le
+// trattenute collegate. Le spese/entrate personali (supermercato, bar...) restano
+// fuori: per la dichiarazione non servono, e mischiarle renderebbe il file inutile
+// per un commercialista.
+function categorieRedditoFiscale() {
+  const set = new Set([CAT_RLD, CAT_DEDUZIONE_FP]);
+  return { has: cat => set.has(cat) || isAutoManagedIncomeCategory(cat) };
+}
+function categorieOneriFiscali() {
+  const set = new Set([CAT_CONTR_PENS, CAT_CONTR_SAN, CAT_TASSA_RLD]);
+  return { has: cat => set.has(cat) || isAutoManagedExpenseCategory(cat) };
+}
+// Codice/ente di una voce: prima quelli registrati direttamente sulla voce, poi
+// quelli della posizione collegata. Per i dati vecchi (prima del collegamento
+// diretto) questo è l'unico modo di risalire al titolo.
+function risolviTitoloVoce(v) {
+  const pos = v.linkedBondId ? data.portfolio.find(p => p.id === v.linkedBondId) : null;
+  return {
+    codice: v.securityCode || (pos && pos.securityCode) || "",
+    ente: v.issuerName || (pos && pos.issuerName) || ""
+  };
+}
+
+function calcolaRendicontoAnnuale(year) {
+  const yStr = String(year);
+  const yPrevStr = String(year - 1);
+  const catRed = categorieRedditoFiscale();
+  const catOneri = categorieOneriFiscali();
+
+  const redditi = data.income.filter(i => i.date && i.date.slice(0,4) === yStr && catRed.has(i.category));
+  const oneri = data.expenses.filter(e => e.date && e.date.slice(0,4) === yStr && catOneri.has(e.category));
+  const redditiPrec = data.income.filter(i => i.date && i.date.slice(0,4) === yPrevStr && catRed.has(i.category));
+  const oneriPrec = data.expenses.filter(e => e.date && e.date.slice(0,4) === yPrevStr && catOneri.has(e.category));
+
+  const sommaPerCategoria = (arr, isIncome) => {
+    const out = {};
+    arr.forEach(v => {
+      const all = isIncome ? toALL(Number(v.amount)||0, v.currency||"ALL") : (Number(v.amount)||0);
+      out[v.category] = (out[v.category]||0) + all;
+    });
+    return out;
+  };
+  const redPerNatura = sommaPerCategoria(redditi, true);
+  const redPerNaturaPrec = sommaPerCategoria(redditiPrec, true);
+  const oneriPerTipo = sommaPerCategoria(oneri, false);
+  const oneriPerTipoPrec = sommaPerCategoria(oneriPrec, false);
+
+  const totRedditi = Object.values(redPerNatura).reduce((s,v)=>s+v,0);
+  const totRedditiPrec = Object.values(redPerNaturaPrec).reduce((s,v)=>s+v,0);
+  const totOneri = Object.values(oneriPerTipo).reduce((s,v)=>s+v,0);
+  const totOneriPrec = Object.values(oneriPerTipoPrec).reduce((s,v)=>s+v,0);
+
+  // Patrimonio al 31/12: si ricostruisce sommando, per strumento, tutti i movimenti
+  // di portafoglio fino a quella data (acquisti e vendite/rimborsi già registrati
+  // sono entrambi righe del ledger). È il saldo CONTABILE a quella data, non il
+  // valore di mercato: per obbligazioni, depositi e fondi coincide di norma col
+  // valore reale; per azioni/ETF/crypto non riflette il prezzo di fine anno, perché
+  // l'app non conserva uno storico dei prezzi per data passata.
+  const dataLimite = `${yStr}-12-31`;
+  const gruppi = {};
+  data.portfolio.forEach(p => {
+    if (!p.date || p.date > dataLimite || !p.amount) return;
+    if (isCreditCardType(p.type)) return;
+    const chiave = chiaveIdentitaStrumento(p) || ("singolo:" + (p.linkedTo || p.id));
+    if (!gruppi[chiave]) {
+      gruppi[chiave] = { chiave, tipo: p.type, macro: p.macro||"", ente: p.issuerName||"",
+        codice: p.securityCode||"", nome: nomeStrumento(p), rischio: normalizzaRischio(p.riskFactor, p),
+        saldoALL: 0 };
+    }
+    const g = gruppi[chiave];
+    if (!g.codice && p.securityCode) g.codice = p.securityCode;
+    if (!g.ente && p.issuerName) g.ente = p.issuerName;
+    g.saldoALL += netWorthSign(p) * toALL(Number(p.amount)||0, p.currency);
+  });
+  const patrimonio = Object.values(gruppi)
+    .filter(g => Math.abs(g.saldoALL) > 0.5)
+    .sort((a,b) => b.saldoALL - a.saldoALL);
+  const totPatrimonio = patrimonio.reduce((s,g)=>s+g.saldoALL, 0);
+
+  return { year, redditi, oneri, redPerNatura, redPerNaturaPrec, oneriPerTipo, oneriPerTipoPrec,
+    totRedditi, totRedditiPrec, totOneri, totOneriPrec, patrimonio, totPatrimonio };
+}
+
+// Esporta il rendiconto in un file Excel a quattro fogli. La libreria (SheetJS)
+// è già caricata da CDN per l'import Excel: nessuna nuova dipendenza.
+function esportaRendicontoAnnuale(year) {
+  if (typeof XLSX === "undefined" || !XLSX.utils) {
+    alert("Libreria Excel non disponibile in questo momento (verifica la connessione e riprova).");
+    return false;
+  }
+  const r = calcolaRendicontoAnnuale(year);
+  const wb = XLSX.utils.book_new();
+
+  // --- Foglio 1: Riepilogo ---
+  const righeRedditi = Object.keys(r.redPerNatura).sort((a,b)=>r.redPerNatura[b]-r.redPerNatura[a])
+    .map(c => [c, Math.round(r.redPerNatura[c]), Math.round(r.redPerNaturaPrec[c]||0)]);
+  const righeOneri = Object.keys(r.oneriPerTipo).sort((a,b)=>r.oneriPerTipo[b]-r.oneriPerTipo[a])
+    .map(c => [c, Math.round(r.oneriPerTipo[c]), Math.round(r.oneriPerTipoPrec[c]||0)]);
+  const riepilogoRows = [
+    [`Rendiconto annuale ${r.year} — Regjistri FI`],
+    [`Generato il ${todayISO}. Somma di quanto registrato nell'app: non è un calcolo fiscale ufficiale.`],
+    [],
+    ["REDDITI PER NATURA (ALL)", r.year, r.year-1],
+    ...righeRedditi,
+    ["Totale redditi fiscalmente rilevanti", Math.round(r.totRedditi), Math.round(r.totRedditiPrec)],
+    [],
+    ["RITENUTE E ONERI PER TIPO (ALL)", r.year, r.year-1],
+    ...righeOneri,
+    ["Totale ritenute e oneri", Math.round(r.totOneri), Math.round(r.totOneriPrec)],
+    [],
+    ["Reddito netto (redditi − ritenute/oneri)", Math.round(r.totRedditi-r.totOneri), Math.round(r.totRedditiPrec-r.totOneriPrec)],
+    [],
+    ["PATRIMONIO AL 31/12 (ALL, saldo contabile)"],
+    ["Totale posizioni", Math.round(r.totPatrimonio)]
+  ];
+  const wsRiepilogo = XLSX.utils.aoa_to_sheet(riepilogoRows);
+  wsRiepilogo["!cols"] = [{wch:42},{wch:16},{wch:16}];
+  XLSX.utils.book_append_sheet(wb, wsRiepilogo, "Riepilogo");
+
+  // --- Foglio 2: Redditi analitici ---
+  const redditiRows = [["Data","Natura","Codice titolo","Società/Ente","Importo (valuta orig.)","Valuta","Importo (ALL)","Nota"]];
+  r.redditi.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(i => {
+    const t = risolviTitoloVoce(i);
+    const cur = i.currency || "ALL";
+    redditiRows.push([i.date, i.category, t.codice, t.ente, Number(i.amount)||0, cur, Math.round(toALL(Number(i.amount)||0, cur)), i.note||""]);
+  });
+  redditiRows.push(["","","","","","Totale", Math.round(r.totRedditi), ""]);
+  const wsRedditi = XLSX.utils.aoa_to_sheet(redditiRows);
+  wsRedditi["!cols"] = [{wch:11},{wch:32},{wch:12},{wch:32},{wch:18},{wch:8},{wch:14},{wch:36}];
+  XLSX.utils.book_append_sheet(wb, wsRedditi, "Redditi analitici");
+
+  // --- Foglio 3: Ritenute e oneri ---
+  const oneriRows = [["Data","Categoria","Codice titolo","Società/Ente","Importo (ALL)","Reddito collegato","Nota"]];
+  r.oneri.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(e => {
+    const t = risolviTitoloVoce(e);
+    const redditoLink = e.linkedIncomeId ? data.income.find(i => i.id === e.linkedIncomeId) : null;
+    const collegato = redditoLink ? `${redditoLink.category} · ${redditoLink.date}` : (e.linkedBondId ? "solo titolo (dato precedente al collegamento)" : "—");
+    oneriRows.push([e.date, e.category, t.codice, t.ente, Math.round(Number(e.amount)||0), collegato, e.note||""]);
+  });
+  oneriRows.push(["","","","Totale","", Math.round(r.totOneri), ""]);
+  const wsOneri = XLSX.utils.aoa_to_sheet(oneriRows);
+  wsOneri["!cols"] = [{wch:11},{wch:32},{wch:12},{wch:32},{wch:14},{wch:38},{wch:36}];
+  XLSX.utils.book_append_sheet(wb, wsOneri, "Ritenute e oneri");
+
+  // --- Foglio 4: Patrimonio al 31/12 ---
+  const patrimonioRows = [["Codice titolo","Strumento","Categoria","Società/Ente","Rischio (1-7)","Valore al 31/12 (ALL)"]];
+  r.patrimonio.forEach(g => patrimonioRows.push([g.codice, g.nome, g.macro||g.tipo, g.ente, g.rischio, Math.round(g.saldoALL)]));
+  patrimonioRows.push(["","","","Totale","", Math.round(r.totPatrimonio)]);
+  const wsPatrimonio = XLSX.utils.aoa_to_sheet(patrimonioRows);
+  wsPatrimonio["!cols"] = [{wch:12},{wch:32},{wch:16},{wch:32},{wch:12},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, wsPatrimonio, "Patrimonio 31-12");
+
+  XLSX.writeFile(wb, `fi-tracker-rendiconto-${r.year}.xlsx`);
+  return true;
 }
 
 // --- Allocazione obiettivo -------------------------------------------------
