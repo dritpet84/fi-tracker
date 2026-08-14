@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.24</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.29</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -210,8 +210,8 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 // ---------- Constants ----------
 const thisYearNum = new Date().getFullYear();
 const STORE_KEY = "fiTrackerData_v1";
-const AUTO_MANAGED_INCOME_CATEGORIES = ["Cedola", "Interesse deposito", "Capital gain obbligazioni", "Capital gain fondi", "Affitto immobile", "Vendita immobile", "Dividendo", "Capital gain azioni", "Capital gain materie prime", "Capital gain crypto"];
-const AUTO_MANAGED_EXPENSE_CATEGORIES = ["Commissione collocamento titoli", "Commissione disbursement cedola", "Commissione vendita titoli", "Commissione titoli custodia", "Tassa immobile", "Commissione agenzia affitto", "Tassazione plusvalenza immobile", "Interessi carta di credito", "Interessi prestiti", "Commissione prestito", "Assicurazione prestito", "Tassazione capital gain fondi", "Tassazione dividendi", "Penale chiusura deposito", "Tassazione capital gain azioni", "Tassazione capital gain materie prime", "Tassazione capital gain crypto"];
+const AUTO_MANAGED_INCOME_CATEGORIES = ["Cedola", "Interesse deposito", "Capital gain obbligazioni", "Capital gain fondi", "Affitto immobile", "Capital gain immobile", "Dividendo", "Capital gain azioni", "Capital gain materie prime", "Capital gain crypto"];
+const AUTO_MANAGED_EXPENSE_CATEGORIES = ["Commissione collocamento titoli", "Commissione disbursement cedola", "Commissione vendita titoli", "Commissione titoli custodia", "Tassa immobile", "Commissione agenzia affitto", "Tassazione plusvalenza immobile", "Interessi carta di credito", "Interessi prestiti", "Interessi MPC", "Commissione prestito", "Assicurazione prestito", "Tassazione capital gain fondi", "Tassazione dividendi", "Penale chiusura deposito", "Tassazione capital gain azioni", "Tassazione capital gain materie prime", "Tassazione capital gain crypto"];
 function isAutoManagedIncomeCategory(cat) {
   return AUTO_MANAGED_INCOME_CATEGORIES.includes(cat) || (data.taxDeductions||[]).some(d=>d.name===cat);
 }
@@ -741,6 +741,9 @@ function deletePortfolioPosition(id, opts) {
   }
   data.portfolio = data.portfolio.filter(p => p.id !== id);
   removeLiquidityAdjustment(id);
+  // Un debito collegato a questo immobile (linkedPropertyId) non deve restare a
+  // puntare su un id che non esiste più — si scollega, non si cancella il debito.
+  data.portfolio.forEach(p => { if (p.linkedPropertyId === id) p.linkedPropertyId = null; });
   const before = data.recurring.income.length;
   data.recurring.income = data.recurring.income.filter(r => r.linkedBondId !== id);
   return before !== data.recurring.income.length;
@@ -767,6 +770,26 @@ function ensureBondDepositCategories() {
   if (data.categoryMacroMap.expenses["Tassazione capital gain fondi"] !== "Tassazione da Titoli - Standard") { data.categoryMacroMap.expenses["Tassazione capital gain fondi"] = "Tassazione da Titoli - Standard"; changed = true; }
   if (!data.macroCategories.income.includes("Interessi da Titoli - Standard")) { data.macroCategories.income.push("Interessi da Titoli - Standard"); changed = true; }
   if (!data.macroCategories.expenses.includes("Tassazione da Titoli - Standard")) { data.macroCategories.expenses.push("Tassazione da Titoli - Standard"); changed = true; }
+  // Azionari/Altri: stesso schema del livello Standard, ma per azioni/dividendi
+  // (Azionari) e per ETF/commodity/crypto (Altri) — prima condividevano il macro
+  // generico della classe di asset (es. "Stocks"), non distinguibile dalle spese
+  // ordinarie di portafoglio nei filtri fiscali.
+  ["Interessi da Titoli - Azionari","Interessi da Titoli - Altri"].forEach(m=>{
+    if (!data.macroCategories.income.includes(m)) { data.macroCategories.income.push(m); changed = true; }
+  });
+  ["Tassazione da Titoli - Azionari","Tassazione da Titoli - Altri","Interessi da Debiti"].forEach(m=>{
+    if (!data.macroCategories.expenses.includes(m)) { data.macroCategories.expenses.push(m); changed = true; }
+  });
+  if (data.categoryMacroMap.income["Dividendo"] !== "Interessi da Titoli - Azionari") { data.categoryMacroMap.income["Dividendo"] = "Interessi da Titoli - Azionari"; changed = true; }
+  if (!data.categoryMacroMap.expenses) data.categoryMacroMap.expenses = {};
+  if (data.categoryMacroMap.expenses["Tassazione dividendi"] !== "Tassazione da Titoli - Azionari") { data.categoryMacroMap.expenses["Tassazione dividendi"] = "Tassazione da Titoli - Azionari"; changed = true; }
+  if (data.categoryMacroMap.expenses["Interessi prestiti"] !== "Interessi da Debiti") { data.categoryMacroMap.expenses["Interessi prestiti"] = "Interessi da Debiti"; changed = true; }
+  if (data.categoryMacroMap.expenses["Interessi carta di credito"] !== "Interessi da Debiti") { data.categoryMacroMap.expenses["Interessi carta di credito"] = "Interessi da Debiti"; changed = true; }
+  // Mutuo prima casa: categoria e macro proprie, separate dai prestiti generici
+  // (vantaggi fiscali tipicamente riservati alla prima casa, non a un investimento).
+  ensureCat("expenses", "Interessi MPC");
+  if (!data.macroCategories.expenses.includes("Interessi da Mutuo Prima Casa")) { data.macroCategories.expenses.push("Interessi da Mutuo Prima Casa"); changed = true; }
+  if (data.categoryMacroMap.expenses["Interessi MPC"] !== "Interessi da Mutuo Prima Casa") { data.categoryMacroMap.expenses["Interessi MPC"] = "Interessi da Mutuo Prima Casa"; changed = true; }
   if (!data.categoryMacroMap.income) data.categoryMacroMap.income = {};
   ["Cedola","Capital gain obbligazioni","Interesse deposito"].forEach(c=>{
     if (data.categoryMacroMap.income[c] !== "Interessi da Titoli - Standard") { data.categoryMacroMap.income[c] = "Interessi da Titoli - Standard"; changed = true; }
@@ -1007,16 +1030,24 @@ function bookAssetSale(o) {
   // ritenuta al titolo che l'ha generata (non solo al reddito), per il rendiconto.
   const posVenduta = o.linkedPositionId ? data.portfolio.find(p => p.id === o.linkedPositionId) : null;
   const codiceTitolo = (posVenduta && posVenduta.securityCode) || o.securityCode || null;
+  // o.macro resta il macro della POSIZIONE in portafoglio (es. "Stocks"), namespace
+  // diverso dal macro di reddito/spesa. o.macroReddito è il macro fiscale del flusso
+  // (es. "Interessi da Titoli - Azionari"): se non specificato, ricade sul vecchio
+  // comportamento (stesso valore di o.macro) per non rompere chiamate esistenti.
+  // Il macro della tassa si deriva da quello del reddito con la stessa convenzione
+  // già in uso per bond/fondi (Interessi↔Tassazione, stesso suffisso).
+  const macroReddito = o.macroReddito || o.macro || null;
+  const macroTassazione = o.macroTassazione || (macroReddito ? macroReddito.replace("Interessi da Titoli", "Tassazione da Titoli") : macroReddito);
   data.portfolio.push({ id: uid(), type: o.portfolioType, macro: o.macro||null, amount: -c.valoreInvestito, currency, marketValue: null, date: o.saleDate, maturityDate: null, note: `${o.sellLabel}: ${o.name}` });
   createLiquidityAdjustment(bankAccount, c.valoreInvestito, o.saleDate, `Rimborso capitale: ${o.name}`, saleId);
-  const incomeEntry = { id: saleId, date: o.saleDate, amount: c.capitalGainLordo, currency, category: o.incomeCategory, macro: o.macro||null, paymentType: null, note: `Vendita ${o.name}`, securityCode: codiceTitolo };
+  const incomeEntry = { id: saleId, date: o.saleDate, amount: c.capitalGainLordo, currency, category: o.incomeCategory, macro: macroReddito, paymentType: null, note: `Vendita ${o.name}`, securityCode: codiceTitolo };
   if (o.linkedPositionId) incomeEntry.linkedBondId = o.linkedPositionId;
   data.income.push(incomeEntry);
   if (c.tassazione > 0) {
     if (!data.categories.expenses.includes(o.taxCategory)) data.categories.expenses.push(o.taxCategory);
     // linkedIncomeId punta esattamente alla riga di reddito che ha generato questa
     // ritenuta: un abbinamento certo, non per euristica (stessa data/importo).
-    data.expenses.push({ id: uid(), date: o.saleDate, amount: toALL(c.tassazione, currency), category: o.taxCategory, macro: o.macro||null, note: `Tassazione capital gain (${fmt(c.tassazione)} ${currency})`, linkedBondId: o.linkedPositionId||null, securityCode: codiceTitolo, linkedIncomeId: saleId });
+    data.expenses.push({ id: uid(), date: o.saleDate, amount: toALL(c.tassazione, currency), category: o.taxCategory, macro: macroTassazione, note: `Tassazione capital gain (${fmt(c.tassazione)} ${currency})`, linkedBondId: o.linkedPositionId||null, securityCode: codiceTitolo, linkedIncomeId: saleId });
   }
   if (c.commissione > 0) {
     data.expenses.push({ id: uid(), date: o.saleDate, amount: toALL(c.commissione, currency), category: "Commissione vendita titoli", note: `${o.commissionLabel||'Commissione vendita'} (${fmt(c.commissione)} ${currency})`, linkedBondId: o.linkedPositionId||null, securityCode: codiceTitolo, linkedIncomeId: saleId });
@@ -1239,9 +1270,10 @@ function processLoanInstallments() {
       createLiquidityAdjustment(p.type, inst.capital, inst.dueDate, `Rata prestito: capitale`, payId);
       createLiquidityAdjustment("Banca", -(inst.capital+inst.interest), inst.dueDate, `Rata prestito ${p.type}`, payId+"-bank");
       if (inst.interest > 0.005) {
-        const cat = "Interessi prestiti";
+        const cat = p.primaCasa ? "Interessi MPC" : "Interessi prestiti";
+        const macroInteresse = p.primaCasa ? "Interessi da Mutuo Prima Casa" : "Interessi da Debiti";
         if (!data.categories.expenses.includes(cat)) data.categories.expenses.push(cat);
-        data.expenses.push({ id: uid(), date: inst.dueDate, amount: inst.interest, category: cat, paymentType: null, note: `${p.type} · rata` });
+        data.expenses.push({ id: uid(), date: inst.dueDate, amount: inst.interest, category: cat, macro: macroInteresse, paymentType: null, note: `${p.type} · rata`, linkedBondId: p.id, securityCode: p.securityCode||null, issuerName: p.issuerName||"" });
       }
       inst.processed = true;
       changed = true;
@@ -1286,7 +1318,7 @@ function processCreditCardBilling() {
       createLiquidityAdjustment(cardName, -totalInterest, billingDate, `Interessi su utilizzo non ripagato (${billingMonthStr})`, uid());
       const interestCat = "Interessi carta di credito";
       if (!data.categories.expenses.includes(interestCat)) data.categories.expenses.push(interestCat);
-      data.expenses.push({ id: uid(), date: billingDate, amount: totalInterest, category: interestCat, paymentType: null, note: `${cardName} · utilizzo ${billingMonthStr} non ripagato` });
+      data.expenses.push({ id: uid(), date: billingDate, amount: totalInterest, category: interestCat, macro: "Interessi da Debiti", paymentType: null, note: `${cardName} · utilizzo ${billingMonthStr} non ripagato`, securityCode: cc.securityCode||null, issuerName: cc.bank||"" });
     }
     data.creditCardDebts = data.creditCardDebts || [];
     data.creditCardDebts.push({ id: uid(), paymentType: cardName, billingMonth: billingMonthStr, principal: stillOwed, totalInterest, schedule });
@@ -1418,19 +1450,19 @@ function autoGenerateDividends() {
     if (grossAmt<=0) return;
     const taxAmt = grossAmt * (p.dividendTaxPct||0)/100;
     const incId = uid();
-    data.income.push({ id: incId, date: dateStr, amount: grossAmt, currency: p.currency, category: "Dividendo", macro: "Stocks", paymentType: null, note: code, linkedBondId: p.id, securityCode: code||null });
+    data.income.push({ id: incId, date: dateStr, amount: grossAmt, currency: p.currency, category: "Dividendo", macro: "Interessi da Titoli - Azionari", paymentType: null, note: code, linkedBondId: p.id, securityCode: code||null });
     const bankAccount = bankAccountForCurrency(p.currency);
     createLiquidityAdjustment(bankAccount, grossAmt, dateStr, `Dividendo netto ${code}`.trim(), incId);
     if (taxAmt > 0.005) {
       if (p.currency === "ALL") {
         const taxId = uid();
-        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassazione dividendi", macro: "Stocks", note: code, linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId });
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmt, category: "Tassazione dividendi", macro: "Tassazione da Titoli - Azionari", note: code, linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId });
         createLiquidityAdjustment("Banca", -taxAmt, dateStr, `Tassazione dividendo ${code}`.trim(), taxId);
       } else {
         const fxInfo = getFxRateForDateDetailed(dateStr, p.currency);
         const taxAmtALL = taxAmt * fxInfo.rate;
         const taxId = uid();
-        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmtALL, category: "Tassazione dividendi", macro: "Stocks", note: `${code} (${fmt(taxAmt)} ${p.currency} al cambio ${fxInfo.rate})`.trim(),
+        data.expenses.push({ id: taxId, date: dateStr, amount: taxAmtALL, category: "Tassazione dividendi", macro: "Tassazione da Titoli - Azionari", note: `${code} (${fmt(taxAmt)} ${p.currency} al cambio ${fxInfo.rate})`.trim(),
           linkedBondId: p.id, securityCode: code||null, linkedIncomeId: incId, fxRateApprox: !fxInfo.exact, fxRateUsedDate: fxInfo.usedDate, fxOrigCurrency: p.currency, fxOrigAmount: taxAmt, fxTargetDate: dateStr });
         createLiquidityAdjustment("Banca", -taxAmtALL, dateStr, `Tassazione dividendo ${code}`.trim(), taxId);
       }
@@ -1627,6 +1659,23 @@ function migrateFireRatesDefault() {
   }
 }
 
+// v2.27: «Vendita immobile» rinominata «Capital gain immobile» — più corretto,
+// dato che dal fix precedente registra solo la plusvalenza, non l'intero valore
+// di vendita. Rinomina anche le voci già registrate, non solo le nuove.
+function migrateCapitalGainImmobile() {
+  let changed = false;
+  data.income.forEach(i => { if (i.category === "Vendita immobile") { i.category = "Capital gain immobile"; changed = true; } });
+  const idx = data.categories.income.indexOf("Vendita immobile");
+  if (idx !== -1) { data.categories.income.splice(idx, 1, "Capital gain immobile"); changed = true; }
+  else if (!data.categories.income.includes("Capital gain immobile")) { data.categories.income.push("Capital gain immobile"); changed = true; }
+  if (data.categoryMacroMap.income && data.categoryMacroMap.income["Vendita immobile"]) {
+    data.categoryMacroMap.income["Capital gain immobile"] = data.categoryMacroMap.income["Vendita immobile"];
+    delete data.categoryMacroMap.income["Vendita immobile"];
+    changed = true;
+  }
+  if (changed) saveData();
+}
+
 function ensureLiquidityCategories() {
   let changed = false;
   // Migrazione: i vecchi tipi "Obbligazione statale 7Y/10Y/15Y/20Y" diventano un solo
@@ -1803,14 +1852,57 @@ function strumentiPerRischio() {
     g.valore += valoreDiRischio(p);
     g.quante++;
   });
-  return Object.values(gruppi).sort((a,b) => b.valore - a.valore);
+  const risultato = Object.values(gruppi);
+  // Lo stipendio non è una posizione in portafoglio (è un flusso, non uno stock),
+  // ma è comunque una fonte esposta a rischio: qui, e SOLO qui, entra come previsione
+  // di quanto manca da incassare entro fine anno. Non deve mai toccare il patrimonio.
+  risultato.push(...stipendioAttesoResiduoAnno());
+  return risultato.sort((a,b) => b.valore - a.valore);
+}
+// Netto atteso da qui a fine anno per ogni stipendio attivo, contando solo i
+// mesi il cui giorno di paga non è ancora passato oggi. Se sono in agosto e il
+// giorno paga (es. 10) è già passato, il conteggio parte da settembre.
+function stipendioAttesoResiduoAnno() {
+  const attivi = stipendiAttivi();
+  if (!attivi.length) return [];
+  const calc = calcolaBustePagaCumulate(attivi);
+  const perId = {};
+  calc.righe.forEach(r => { perId[r.stipendio.id] = r; });
+  const anno = now.getFullYear();
+  return attivi.map(s => {
+    const r = perId[s.id];
+    if (!r) return null;
+    const giorno = Math.min(Math.max(Number(s.giornoPaga) || 10, 1), 28);
+    let mesiResidui = 0;
+    for (let m = now.getMonth() + 1; m <= 12; m++) {
+      const dataPaga = `${anno}-${String(m).padStart(2,"0")}-${String(giorno).padStart(2,"0")}`;
+      if (dataPaga > todayISO) mesiResidui++;
+    }
+    if (mesiResidui === 0 || !(r.netto > 0)) return null;
+    return {
+      chiave: "stipendio:" + s.id, ids: [], isForecast: true, mesiResidui,
+      nome: `Stipendio atteso (resto ${anno})`, tipo: "Reddito da lavoro", macro: MACRO_LAVORO,
+      ente: s.issuerName || "", codice: s.securityCode || "",
+      rischio: normalizzaRischio(s.riskFactor, { type: "reddito" }),
+      valore: mesiResidui * r.netto, quante: mesiResidui
+    };
+  }).filter(Boolean);
 }
 function nomeStrumento(p) {
   return p.fundName || p.stockTicker || p.commodityName || p.cryptoSymbol
     || p.propertyType || p.type || "senza nome";
 }
-// Applica un fattore a tutte le posizioni dello stesso strumento.
+// Applica un fattore a tutte le posizioni dello stesso strumento. Per la riga
+// sintetica dello stipendio atteso, aggiorna invece il rischio del rapporto di
+// lavoro stesso: si riflette anche nei prossimi flussi generati da RLD.
 function applicaRischioAStrumento(chiave, valore) {
+  if (String(chiave).startsWith("stipendio:")) {
+    const id = chiave.slice("stipendio:".length);
+    const s = stipendiLavoro().find(x => x.id === id);
+    if (!s) return 0;
+    s.riskFactor = normalizzaRischio(valore, { type: "reddito" });
+    return 1;
+  }
   let tocc = 0;
   data.portfolio.forEach(p => {
     const k = chiaveIdentitaStrumento(p) || ("singolo:" + p.id);
@@ -1826,7 +1918,7 @@ function riquadroMasterRischio() {
   if (!gruppi.length) return "";
   const righe = gruppi.map(g => `
     <div class="stat-row" style="display:grid; grid-template-columns:1.5fr .8fr .9fr .9fr; gap:6px; align-items:center;">
-      <span class="label" style="font-size:11px;">${g.nome}${g.codice?' <span class="pill">'+g.codice+'</span>':''}${g.quante>1?' <span class="subtle" style="font-size:9px;">('+g.quante+' acquisti)</span>':''}</span>
+      <span class="label" style="font-size:11px;">${g.isForecast?'<span class="pill" style="background:#3F6E5E22;color:#3F6E5E;border-color:#3F6E5E;">previsione</span> ':''}${g.nome}${g.codice?' <span class="pill">'+g.codice+'</span>':''}${g.isForecast?' <span class="subtle" style="font-size:9px;">('+g.mesiResidui+' mes'+(g.mesiResidui===1?'e':'i')+' residui)</span>':(g.quante>1?' <span class="subtle" style="font-size:9px;">('+g.quante+' acquisti)</span>':'')}</span>
       <span class="subtle" style="font-size:10px;">${g.macro || g.tipo}</span>
       <span class="subtle" style="font-size:10px;">${g.ente || "—"}</span>
       <select class="master-rischio" data-chiave="${escAttr(g.chiave)}" style="font-size:11px; padding:3px;">
@@ -1838,7 +1930,8 @@ function riquadroMasterRischio() {
     <div class="card">
       <h3>Fattore di rischiosità per strumento</h3>
       <div class="subtle">Un valore per strumento, non per singolo acquisto: modificandolo qui si
-        aggiorna ovunque. Obbligazioni, depositi e immobili restano distinti anche a parità di emittente.</div>
+        aggiorna ovunque. Obbligazioni, depositi e immobili restano distinti anche a parità di emittente.
+        Lo stipendio atteso è una previsione: conta ai fini di questa tabella ma non entra mai nel patrimonio.</div>
       <div class="stat-row" style="display:grid; grid-template-columns:1.5fr .8fr .9fr .9fr; gap:6px;">
         <span class="subtle" style="font-size:10px;">STRUMENTO</span>
         <span class="subtle" style="font-size:10px;">CATEGORIA</span>
@@ -1867,7 +1960,7 @@ function riquadroRendimentoRischio() {
   const peggiori = righe.filter(r => r.perUnita < 0).slice(-3).reverse();
 
   const riga = r => `<div class="stat-row">
-      <span class="label">${pallinoRischio(r.pos)} ${r.nome}</span>
+      <span class="label">${pallinoRischio(r.pos)} ${r.nome}${r.quante>1?' <span class="subtle" style="font-size:9px;">('+r.quante+' acquisti)</span>':''}</span>
       <span class="val ${r.perUnita>=0?'up':'down'}">${r.rendimento.toFixed(1)}% → ${r.perUnita.toFixed(2)}</span>
     </div>`;
 
@@ -1994,14 +2087,45 @@ function tassoPrivoDiRischio() {
   return 2;
 }
 
-// Classifica delle posizioni per rendimento per unità di rischio.
+// Classifica per rendimento per unità di rischio, aggregata per STRUMENTO — la
+// stessa chiave d'identità del Master Rischio. Tre acquisti dello stesso fondo
+// devono essere una riga sola: altrimenti lo stesso strumento affolla la classifica
+// e il confronto fra strumenti diversi (non fra acquisti dello stesso strumento)
+// diventa illeggibile.
 function classificaRendimentoRischio() {
   const rf = tassoPrivoDiRischio();
-  return posizioniRischiose(false).map(p => {
-    const r = rendimentoCorrettoPerRischio(p, rf);
-    if (!r) return null;
-    return Object.assign({ pos: p, valore: valoreDiRischio(p),
-      nome: p.fundName || p.stockTicker || p.commodityName || p.cryptoSymbol || p.propertyType || p.type }, r);
+  const gruppi = {};
+  posizioniRischiose(false).forEach(p => {
+    const chiave = chiaveIdentitaStrumento(p) || ("singolo:" + p.id);
+    if (!gruppi[chiave]) gruppi[chiave] = { chiave, ids: [], nome: nomeStrumento(p), rischio: normalizzaRischio(p.riskFactor, p) };
+    gruppi[chiave].ids.push(p.id);
+  });
+  return Object.values(gruppi).map(g => {
+    const lots = g.ids.map(id => data.portfolio.find(p => p.id === id)).filter(Boolean);
+    const investito = lots.reduce((s,p) => s + toALL(Number(p.amount)||0, p.currency), 0);
+    if (investito <= 0) return null;
+    const valore = lots.reduce((s,p) => s + valoreDiRischio(p), 0);
+    const proventi = (data.income || [])
+      .filter(i => g.ids.includes(i.linkedBondId))
+      .reduce((s,i) => s + toALL(Number(i.amount) || 0, i.currency || "ALL"), 0);
+    const totale = valore + proventi;
+    // Età media ponderata sull'importo investito di ciascun acquisto: un acquisto
+    // grande e recente pesa di più di uno piccolo e vecchio, invece di prendere
+    // arbitrariamente la data di un solo lotto.
+    let pesoAnni = 0;
+    lots.forEach(p => {
+      if (!p.date) return;
+      const anni = Math.max((Date.now() - new Date(p.date).getTime()) / (365.25*86400000), 0.08);
+      pesoAnni += anni * toALL(Number(p.amount)||0, p.currency);
+    });
+    const anni = investito > 0 ? pesoAnni / investito : null;
+    if (!anni || !isFinite(totale) || totale <= 0) return null;
+    const complessivo = totale / investito;
+    if (complessivo <= 0) return null;
+    const rendimento = (Math.pow(complessivo, 1/anni) - 1) * 100;
+    const rischio = g.rischio;
+    return { pos: lots[0], nome: g.nome, quante: lots.length, valore,
+      rendimento, rischio, extra: rendimento - rf, perUnita: (rendimento - rf) / rischio };
   }).filter(Boolean).sort((a,b) => b.perUnita - a.perUnita);
 }
 
@@ -2330,6 +2454,24 @@ function listEditHeader(titolo, key) {
       <button class="secondary" type="button" data-listedit="${key}" style="width:auto; padding:4px 10px; font-size:11px; ${attivo?'border-color:#C9A227; color:#C9A227;':''}">${attivo?'Fatto':'✎ Modifica'}</button>
     </div>`;
 }
+const LISTA_MAX_VOCI = 20;
+// Le liste di voci registrate (reddito, spese, posizioni) non devono allungare la
+// pagina all'infinito: si limitano alle più recenti e si mettono in un contenitore
+// che scorre verticalmente. Non tocca l'ordinamento se l'array è già ordinato
+// (es. reddito/spese, già dal più recente); altrimenti ordina per data prima di
+// tagliare, così le 20 mostrate sono sempre le più recenti, non le prime inserite.
+function capListaVoci(arr, opts) {
+  opts = opts || {};
+  const dateField = opts.dateField || "date";
+  const alreadySorted = !!opts.alreadySorted;
+  const sorted = alreadySorted ? arr : [...arr].sort((a,b) => new Date(b[dateField]||0) - new Date(a[dateField]||0));
+  return { shown: sorted.slice(0, LISTA_MAX_VOCI), total: arr.length, truncated: arr.length > LISTA_MAX_VOCI };
+}
+function scrollableListaWrap(innerHtml, cap, emptyHtml) {
+  if (!cap.total) return emptyHtml || '<div class="empty">Nessuna voce registrata.</div>';
+  return `<div style="max-height:480px; overflow-y:auto; padding-right:2px;">${innerHtml}</div>` +
+    (cap.truncated ? `<div class="subtle" style="margin-top:8px; text-align:center;">Mostrate le ${LISTA_MAX_VOCI} più recenti su ${cap.total} — usa i filtri o la ricerca globale per le altre.</div>` : '');
+}
 let portfolioEditModeActive = false;
 let editingIncomeId = null;
 let editingExpenseId = null;
@@ -2505,6 +2647,7 @@ function renderDashboard() {
   backfillMacroFromMapping();
   ensureLiquidityCategories();
   migrateFireRatesDefault();
+  migrateCapitalGainImmobile();
   ensureBondDepositCategories();
   migraLavoroDipendente();
   autoGenerateLavoroDipendente();
@@ -2842,6 +2985,8 @@ function renderIncomeEditForm(e) {
     </div>
     <div><label>Categoria</label>${categorySelect("income", e.category)}</div>
     <div><label>Macro-categoria</label>${macroSelect("income", e.macro)}</div>
+    <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" value="${escAttr(e.issuerName||'')}" placeholder="chi emette/gestisce"></div>
+    <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${escAttr(e.securityCode||'')}" placeholder="vuoto se non collegato a un titolo"></div>
     <div><label>Ricevuto su</label>${paymentTypeSelect(e.paymentType)}</div>
     <div><label>Nota</label><input type="text" name="note" value="${e.note||''}"></div>
     <div class="row2">
@@ -2923,15 +3068,16 @@ function renderIncome() {
         <div><label>Filtra per categoria</label><select id="incomeFilterSelect">${incomeFilterOptions}</select></div>
         <div><label>Filtra per macro-categoria</label><select id="incomeMacroFilterSelect">${incomeMacroFilterOptions}</select></div>
       </div>
-      ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=> editingIncomeId===e.id ? renderIncomeEditForm(e) : `
+      ${(() => { const cap = capListaVoci(filtered, {alreadySorted:true});
+        return scrollableListaWrap(cap.shown.map(e=> editingIncomeId===e.id ? renderIncomeEditForm(e) : `
         <div class="list-item">
-          <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}${e.taxApplied?` <span class=\"pill\">netto, lordo ${fmt(e.grossAmount)}</span>`:''}</span><span class="li-date">${e.date}</span></div>
+          <div class="li-main"><span class="li-cat">${e.category}${e.securityCode?' <span class=\"pill\">'+e.securityCode+'</span>':''}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}${e.taxApplied?` <span class=\"pill\">netto, lordo ${fmt(e.grossAmount)}</span>`:''}</span><span class="li-date">${e.date}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt">${fmt(e.amount)} ALL</span>
             <button data-editincome="${e.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
             <button class="li-del" data-del-income="${e.id}">✕</button>
           </div>
-        </div>`).join('')}
+        </div>`).join(''), cap, '<div class="empty">Nessuna voce con questo filtro.</div>'); })()}
       ${storicoTotalsBlock("income", incomeCategoryFilter, incomeMacroFilter, thisYear)}
       ${(() => { const r = computeRischioReddito(thisYear);
         if (r.media === null) return "";
@@ -3050,6 +3196,8 @@ function renderIncome() {
       entry.macro = form.querySelector(".macro-select").value || null;
       entry.paymentType = f.get("paymentType") || null;
       entry.note = f.get("note") || "";
+      entry.issuerName = f.get("issuerName") || "";
+      entry.securityCode = f.get("securityCode") || null;
       resyncLiquidityAdjustment(id, entry.paymentType, entry.amount, entry.date, `Reddito: ${entry.category}`);
       editingIncomeId = null;
       saveData(); renderIncome();
@@ -3241,6 +3389,8 @@ function renderExpenseEditForm(e) {
     </div>
     <div><label>Categoria</label>${categorySelect("expenses", e.category)}</div>
     <div><label>Macro-categoria</label>${macroSelect("expenses", e.macro)}</div>
+    <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" value="${escAttr(e.issuerName||'')}" placeholder="chi emette/gestisce"></div>
+    <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${escAttr(e.securityCode||'')}" placeholder="vuoto se non collegato a un titolo"></div>
     <div><label>Pagato con</label>${paymentTypeSelect(e.paymentType)}</div>
     <div><label>Nota</label><input type="text" name="note" value="${e.note||''}"></div>
     <div class="row2">
@@ -3405,15 +3555,16 @@ function renderExpenses() {
         <div><label>Filtra per categoria</label><select id="expenseFilterSelect">${expenseFilterOptions}</select></div>
         <div><label>Filtra per macro-categoria</label><select id="expenseMacroFilterSelect">${expenseMacroFilterOptions}</select></div>
       </div>
-      ${filtered.length===0 ? '<div class="empty">Nessuna voce con questo filtro.</div>' : filtered.map(e=> editingExpenseId===e.id ? renderExpenseEditForm(e) : `
+      ${(() => { const cap = capListaVoci(filtered, {alreadySorted:true});
+        return scrollableListaWrap(cap.shown.map(e=> editingExpenseId===e.id ? renderExpenseEditForm(e) : `
         <div class="list-item">
-          <div class="li-main"><span class="li-cat">${e.category}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}</span><span class="li-date">${e.date}</span></div>
+          <div class="li-main"><span class="li-cat">${e.category}${e.securityCode?' <span class=\"pill\">'+e.securityCode+'</span>':''}${e.macro?' <span class=\"pill\">'+e.macro+'</span>':''}${e.paymentType?' <span class=\"pill\">'+e.paymentType+'</span>':''}${e.note?' · '+e.note:''}${e.recurringId?' <span class=\"pill\">ricorrente</span>':''}</span><span class="li-date">${e.date}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt exp">${fmt(e.amount)} ALL</span>
             <button data-editexpense="${e.id}" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
             <button class="li-del" data-del-expense="${e.id}">✕</button>
           </div>
-        </div>`).join('')}
+        </div>`).join(''), cap, '<div class="empty">Nessuna voce con questo filtro.</div>'); })()}
       ${storicoTotalsBlock("expenses", expenseCategoryFilter, expenseMacroFilter, thisYear)}
       <div class="section-total"><span>Totale ${thisYear}</span><span>${fmtDisplay(total)}</span></div>
     </div>
@@ -3578,6 +3729,8 @@ function renderExpenses() {
       entry.macro = form.querySelector(".macro-select").value || null;
       entry.paymentType = newPaymentType;
       entry.note = f.get("note") || "";
+      entry.issuerName = f.get("issuerName") || "";
+      entry.securityCode = f.get("securityCode") || null;
       resyncLiquidityAdjustment(id, entry.paymentType, -entry.amount, entry.date, `Spesa: ${entry.category}`);
       editingExpenseId = null;
       saveData(); renderExpenses();
@@ -3873,6 +4026,7 @@ function renderPortfolioEditForm(p) {
       ${p.rentalAgencyFeePaid ? `<div class="subtle">Rate già addebitate: ${p.rentalAgencyFeePaid}/${p.rentalAgencyFeeInstallments}</div>` : ''}
     </div>` : ''}
     ${isLoanDebt && propertyOptionsForEdit.length>0 ? `<div><label>Immobile collegato (opzionale, solo per report)</label><select name="linkedPropertyId"><option value="">— nessuno —</option>${propertyOptionsForEdit.map(x=>`<option value="${x.id}" ${p.linkedPropertyId===x.id?'selected':''}>${x.propertyType||x.type} ${x.securityCode||''}</option>`).join('')}</select></div>` : ''}
+    ${isLoanDebt ? `<div class="row2" style="align-items:center;"><label style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" name="primaCasa" ${p.primaCasa?'checked':''} style="width:auto;"> Mutuo prima casa (vantaggi fiscali)</label></div>` : ''}
     <div><label>Nota</label><input type="text" name="note" value="${p.note||''}"></div>
     <div class="row2">
       <button class="primary" type="submit">Salva</button>
@@ -4440,7 +4594,13 @@ function renderPortfolio() {
   const macroFilterOptions = ["all", ...data.macroCategories.portfolio].map(m=>`<option value="${m}" ${portfolioMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
   let filteredPositions = data.portfolio.filter(p=> portfolioTypeFilter==="all" || p.type===portfolioTypeFilter);
   if (portfolioMacroFilter !== "all") filteredPositions = filteredPositions.filter(p=>p.macro===portfolioMacroFilter);
-  filteredPositions = filteredPositions.filter(p => !isDebtType(p.type, p.macro) && !isCreditCardType(p.type) && !isStockType(p.type, p.macro) && !isDerivativeType(p.type, p.macro) && !data.paymentTypes.includes(p.type) && !(p.type||"").toLowerCase().includes("deposito") && !isFundEntry(p) && !(p.type||"").toLowerCase().includes("obbligazione") && !isRealEstateType(p.type, p.macro) && !isCommodityType(p.type, p.macro) && !isCryptoType(p.type, p.macro) && !isETFType(p.type, p.macro));
+  // Debiti e carte di credito hanno una scheda dedicata (Debiti) con la propria
+  // logica di segno: restano fuori da qui, come già succede nel grafico di
+  // allocazione. Tutto il resto (fondi, obbligazioni, depositi, azioni, ETF,
+  // crypto, commodity, immobili, liquidità) DEVE poter comparire: il filtro qui
+  // sotto li escludeva tutti, lasciando la lista sempre vuota anche quando il
+  // filtro "per tipo" selezionava esplicitamente uno di questi tipi.
+  filteredPositions = filteredPositions.filter(p => !isDebtType(p.type, p.macro) && !isCreditCardType(p.type));
 
   document.getElementById("main").innerHTML = `
     <div class="card">
@@ -4768,7 +4928,8 @@ function renderPortfolio() {
           return `<div class="subtle" style="margin-bottom:8px;">Solo riepilogo — i singoli movimenti di liquidità si trovano nella sezione Spese/Reddito.</div>` +
             Object.keys(grouped).map(t=>`<div class="stat-row"><span class="label">${t}</span><span class="val ${grouped[t]>=0?'':'down'}">${fmt(grouped[t])} ALL</span></div>`).join('');
         }
-        return filteredPositions.length===0 ? '<div class="empty">Nessuna posizione con questo filtro.</div>' : filteredPositions.map(p=>{
+        const cap = capListaVoci(filteredPositions);
+        return scrollableListaWrap(cap.shown.map(p=>{
         const eligibleForPencil = portfolioEditModeActive && (portfolioTypeFilter==="all" || p.type===portfolioTypeFilter) && (portfolioMacroFilter==="all" || p.macro===portfolioMacroFilter);
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
@@ -4792,7 +4953,7 @@ function renderPortfolio() {
           </div>
           ${autoNote}
         </div>`;
-        }).join('');
+        }).join(''), cap, '<div class="empty">Nessuna posizione con questo filtro.</div>');
       })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
       <div class="section-total" style="font-size:11px; opacity:0.7;"><span></span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} € · ${fmt(totalALL/data.settings.fxUsd)} $</span></div>
@@ -5607,7 +5768,7 @@ function renderAssets() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "stocks")}
-      ${assetPositions.length===0 ? '<div class="empty">Nessuna azione o derivato registrati.</div>' : assetPositions.map(p=>{
+      ${(() => { const cap = capListaVoci(assetPositions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
@@ -5618,7 +5779,7 @@ function renderAssets() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessuna azione o derivato registrati.</div>'); })()}
     </div>
     ${stockSummary.length>0 ? `<div class="card">
       <h3>Vendita azione</h3>
@@ -5765,7 +5926,7 @@ function renderAssets() {
         salePrice: c.salePrice, taxRate: c.taxRate, saleDate, purchaseDate: stock.date, unitLabel: "azioni" })) return;
       if (!confirm("Confermi la vendita?")) return;
       bookAssetSale({ calc: c, currency: stock.currency, name: stock.stockTicker||stock.type, saleDate,
-        portfolioType: stock.type, macro: stock.macro||"Stocks", sellLabel: "Vendita azioni",
+        portfolioType: stock.type, macro: stock.macro||"Stocks", macroReddito: "Interessi da Titoli - Azionari", sellLabel: "Vendita azioni",
         incomeCategory: "Capital gain azioni", taxCategory: "Tassazione capital gain azioni",
         commissionLabel: "Commissione vendita azioni", linkedPositionId: stock.id });
       saveData(); renderAssets();
@@ -5851,14 +6012,15 @@ function renderLiquidityTab() {
     </div>
     <div class="card">
       ${listEditHeader("Movimenti registrati", "liquidita")}
-      ${positions.length===0 ? '<div class="empty">Nessun movimento registrato.</div>' : positions.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(p=>`
+      ${(() => { const sortedPos = positions.slice().sort((a,b)=>b.date.localeCompare(a.date)); const cap = capListaVoci(sortedPos, {alreadySorted:true});
+        return scrollableListaWrap(cap.shown.map(p=>`
         <div class="list-item">
           <div class="li-main"><span class="li-cat">${p.type}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}</span></div>
           <div style="display:flex;align-items:center;">
             <span class="li-amt ${p.amount<0?'down':''}">${fmt(p.amount)} ${p.currency}</span>
             ${listEditMode["liquidita"] ? `<button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
-        </div>`).join('')}
+        </div>`).join(''), cap, '<div class="empty">Nessun movimento registrato.</div>'); })()}
     </div>
     <div class="card">
       <h3>Trasferimento liquidità</h3>
@@ -5984,7 +6146,7 @@ function renderFundsTab() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "fondi")}
-      ${positions.length===0 ? '<div class="empty">Nessun fondo registrato.</div>' : positions.map(p=>{
+      ${(() => { const cap = capListaVoci(positions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
@@ -5995,7 +6157,7 @@ function renderFundsTab() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessun fondo registrato.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
     ${positions.length>0 ? `<div class="card">
@@ -6603,7 +6765,7 @@ function renderBondsTab() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "bonds")}
-      ${bondPositions.length===0 ? '<div class="empty">Nessuna obbligazione registrata.</div>' : bondPositions.map(p=>{
+      ${(() => { const cap = capListaVoci(bondPositions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
@@ -6615,7 +6777,7 @@ function renderBondsTab() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessuna obbligazione registrata.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
     ${bondPositions.length>0 ? `<div class="card">
@@ -6983,7 +7145,7 @@ function renderRealEstateTab() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "realestate")}
-      ${positions.length===0 ? '<div class="empty">Nessun immobile registrato.</div>' : positions.map(p=>{
+      ${(() => { const cap = capListaVoci(positions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
@@ -6994,7 +7156,7 @@ function renderRealEstateTab() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessun immobile registrato.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
     ${realEstateSummary.length>0 ? `<div class="card">
@@ -7142,12 +7304,19 @@ function renderRealEstateTab() {
     const saleAgencyFeePct = Number(f.get("saleAgencyFeePct"))||0;
     const capitalGain = Math.max(0, saleValue - property.amount);
     const taxAmt = capitalGain * saleTaxPct/100;
+    // Invariata: sempre sul valore di vendita, mai sulla plusvalenza. Non tocco
+    // questo calcolo — la commissione d'agenzia non deve dipendere da come
+    // registro il reddito.
     const agencyFeeAmt = saleValue * saleAgencyFeePct/100;
     const netProceeds = saleValue - taxAmt - agencyFeeAmt;
     const code = property.securityCode || "";
     const bankAccount = bankAccountForCurrency(property.currency);
     const saleId = uid();
-    data.income.push({ id: saleId, date: saleDate, amount: saleValue, currency: property.currency, category: "Vendita immobile", macro: "Real Estate", note: `${code} · plusvalenza ${fmt(capitalGain)}`, linkedBondId: property.id, securityCode: code||null });
+    // Reddito registrato = SOLA plusvalenza lorda, come per ogni altro titolo
+    // (bond, fondi, azioni, ETF, commodity, crypto passano tutti da bookAssetSale
+    // con lo stesso principio). Il capitale che rientra non è reddito: prima veniva
+    // contato l'intero valore di vendita, gonfiando qualunque KPI che somma redditi.
+    data.income.push({ id: saleId, date: saleDate, amount: capitalGain, currency: property.currency, category: "Capital gain immobile", macro: "Real Estate", note: `${code} · vendita a ${fmt(saleValue)} (costo ${fmt(property.amount)})`, linkedBondId: property.id, securityCode: code||null });
     if (taxAmt > 0) {
       if (!data.categories.expenses.includes("Tassazione plusvalenza immobile")) data.categories.expenses.push("Tassazione plusvalenza immobile");
       data.expenses.push({ id: uid(), date: saleDate, amount: taxAmt, category: "Tassazione plusvalenza immobile", macro: "Real Estate", note: code, linkedBondId: property.id, securityCode: code||null, linkedIncomeId: saleId });
@@ -7155,7 +7324,16 @@ function renderRealEstateTab() {
     if (agencyFeeAmt > 0) {
       data.expenses.push({ id: uid(), date: saleDate, amount: agencyFeeAmt, category: "Commissione agenzia affitto", macro: "Real Estate", note: `${code} · vendita`, linkedBondId: property.id, securityCode: code||null, linkedIncomeId: saleId });
     }
-    createLiquidityAdjustment(bankAccount, netProceeds, saleDate, `Vendita immobile ${code} (netto)`.trim(), saleId);
+    // Liquidità in due movimenti separati, come per gli altri titoli: capitale
+    // rientrato (non reddito) + plusvalenza netta (dopo tasse e commissione). La
+    // somma dei due resta ESATTAMENTE netProceeds di prima: stesso totale in banca,
+    // cambia solo come viene raccontato nei due bucket. Con min() invece di usare
+    // sempre property.amount, funziona anche se vendi in perdita (capitale rientrato
+    // non può superare quanto hai davvero incassato).
+    const capitaleRimborsato = Math.min(saleValue, property.amount);
+    const plusvalenzaNetta = netProceeds - capitaleRimborsato;
+    createLiquidityAdjustment(bankAccount, capitaleRimborsato, saleDate, `Rimborso capitale: ${property.propertyType||'immobile'} ${code}`.trim(), saleId);
+    createLiquidityAdjustment(bankAccount, plusvalenzaNetta, saleDate, `Plusvalenza netta vendita: ${property.propertyType||'immobile'} ${code}`.trim(), saleId+"-gain");
     deletePortfolioPosition(propertyId);
     saveData(); renderRealEstateTab();
     alert(`Vendita registrata: ${fmt(netProceeds)} ${property.currency} netti accreditati su ${bankAccount}.`);
@@ -7197,7 +7375,7 @@ function renderCommoditiesTab() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "commodities")}
-      ${positions.length===0 ? '<div class="empty">Nessuna materia prima registrata.</div>' : positions.map(p=>{
+      ${(() => { const cap = capListaVoci(positions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
@@ -7208,7 +7386,7 @@ function renderCommoditiesTab() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessuna materia prima registrata.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
     ${commoditySummary.length>0 ? `<div class="card">
@@ -7313,7 +7491,7 @@ function renderCommoditiesTab() {
         salePrice: c.salePrice, taxRate: c.taxRate, saleDate, unitLabel: g.unit || "unità" })) return;
       if (!confirm("Confermi la vendita?")) return;
       bookAssetSale({ calc: c, currency: g.currency, name: g.name, saleDate,
-        portfolioType: "Commodity", macro: "Commodities", sellLabel: "Vendita",
+        portfolioType: "Commodity", macro: "Commodities", macroReddito: "Interessi da Titoli - Altri", sellLabel: "Vendita",
         incomeCategory: "Capital gain materie prime", taxCategory: "Tassazione capital gain materie prime" });
       saveData(); renderCommoditiesTab();
     });
@@ -7391,7 +7569,7 @@ function renderCryptoTab() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "crypto")}
-      ${positions.length===0 ? '<div class="empty">Nessuna crypto registrata.</div>' : positions.map(p=>{
+      ${(() => { const cap = capListaVoci(positions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
@@ -7402,7 +7580,7 @@ function renderCryptoTab() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessuna crypto registrata.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
     ${cryptoSummary.length>0 ? `<div class="card">
@@ -7511,7 +7689,7 @@ function renderCryptoTab() {
         salePrice: c.salePrice, taxRate: c.taxRate, saleDate, unitLabel: g.symbol || "unità" })) return;
       if (!confirm("Confermi la vendita?")) return;
       bookAssetSale({ calc: c, currency: g.currency, name: g.symbol||g.name, saleDate,
-        portfolioType: "Crypto", macro: "Crypto", sellLabel: "Vendita",
+        portfolioType: "Crypto", macro: "Crypto", macroReddito: "Interessi da Titoli - Altri", sellLabel: "Vendita",
         incomeCategory: "Capital gain crypto", taxCategory: "Tassazione capital gain crypto" });
       saveData(); renderCryptoTab();
     });
@@ -7639,7 +7817,7 @@ function renderETFTab() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "etf")}
-      ${positions.length===0 ? '<div class="empty">Nessun ETF registrato.</div>' : positions.map(p=>{
+      ${(() => { const cap = capListaVoci(positions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
@@ -7650,7 +7828,7 @@ function renderETFTab() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessun ETF registrato.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
     ${etfSummary.length>0 ? `<div class="card">
@@ -7808,7 +7986,7 @@ function renderETFTab() {
         salePrice: c.salePrice, taxRate: c.taxRate, saleDate, purchaseDate: etf.date, unitLabel: "quote" })) return;
       if (!confirm("Confermi la vendita?")) return;
       bookAssetSale({ calc: c, currency: etf.currency, name: etf.stockTicker||etf.type, saleDate,
-        portfolioType: etf.type, macro: "ETF",
+        portfolioType: etf.type, macro: "ETF", macroReddito: "Interessi da Titoli - Altri",
         incomeCategory: "Capital gain azioni", taxCategory: "Tassazione capital gain azioni",
         commissionLabel: "Commissione vendita ETF", linkedPositionId: etf.id, sellLabel: "Vendita ETF" });
       saveData(); renderETFTab();
@@ -7856,7 +8034,7 @@ function renderDepositsTab() {
     </div>
     <div class="card">
       ${listEditHeader("Posizioni registrate", "depositi")}
-      ${positions.length===0 ? '<div class="empty">Nessun deposito registrato.</div>' : positions.map(p=>{
+      ${(() => { const cap = capListaVoci(positions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         return `<div class="list-item">
@@ -7867,7 +8045,7 @@ function renderDepositsTab() {
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
           </div>
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessun deposito registrato.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
     ${positions.length>0 ? `<div class="card">
@@ -8019,6 +8197,7 @@ function renderDebts() {
         </div>
         <div><label>Data di partenza</label><input type="date" name="date" value="${todayISO}"></div>
         ${propertyOptions.length>0 ? `<div><label>Immobile collegato (opzionale, solo per report)</label><select name="linkedPropertyId"><option value="">— nessuno —</option>${propertyOptions.map(p=>`<option value="${p.id}">${p.propertyType||p.type} ${p.securityCode||''}</option>`).join('')}</select></div>` : ''}
+        <div class="row2" style="align-items:center;"><label style="display:flex; align-items:center; gap:6px; margin:0;"><input type="checkbox" name="primaCasa" style="width:auto;"> Mutuo prima casa (vantaggi fiscali)</label></div>
         <div><label>Nota</label><input type="text" name="note" placeholder="es. prestito auto"></div>
         <div style="border:1px solid #2E4159; border-radius:6px; padding:10px;">
           <label style="color:#C9A227;">Piano di ammortamento (se è un prestito/mutuo, non una carta)</label>
@@ -8045,14 +8224,14 @@ function renderDebts() {
     </div>
     <div class="card">
       ${listEditHeader("Voci registrate", "debiti")}
-      ${debtPositions.length===0 ? '<div class="empty">Nessun debito o carta registrati.</div>' : debtPositions.map(p=>{
+      ${(() => { const cap = capListaVoci(debtPositions); return scrollableListaWrap(cap.shown.map(p=>{
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const nextInst = p.schedule ? p.schedule.find(i=>!i.processed) : null;
         const remaining = p.schedule ? p.schedule.filter(i=>!i.processed).reduce((s,i)=>s+i.capital,0) : null;
         const linkedProp = p.linkedPropertyId ? data.portfolio.find(x=>x.id===p.linkedPropertyId) : null;
         return `<div class="list-item" style="flex-direction:column; align-items:stretch;">
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div class="li-main"><span class="li-cat">${p.type}${p.issuer?' · '+p.issuer:''}${linkedProp?' · immobile: '+(linkedProp.propertyType||linkedProp.type):''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
+            <div class="li-main"><span class="li-cat">${p.type}${p.primaCasa?' <span class="pill" style="background:#3F6E5E22;color:#3F6E5E;border-color:#3F6E5E;">prima casa</span>':''}${p.issuer?' · '+p.issuer:''}${linkedProp?' · immobile: '+(linkedProp.propertyType||linkedProp.type):''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date}${p.maturityDate?' · scad. '+p.maturityDate:''}</span></div>
             <div style="display:flex;align-items:center;">
               <span class="li-amt ${p.amount<0?'down':''}">${fmt(p.amount)} ${p.currency}</span>
               ${listEditMode["debiti"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
@@ -8061,7 +8240,7 @@ function renderDebts() {
           </div>
           ${p.schedule ? `<div class="subtle" style="margin-top:4px;">${p.amortizationType==='italiana'?"All'italiana":'Alla francese'} · ${p.termMonths} mesi · capitale residuo: ${fmt(remaining)} ${p.currency}${nextInst?' · prossima rata '+nextInst.dueDate+': '+fmt(nextInst.capital+nextInst.interest)+' '+p.currency:' · piano completato'}</div>` : ''}
         </div>`;
-      }).join('')}
+      }).join(''), cap, '<div class="empty">Nessun debito o carta registrati.</div>'); })()}
     </div>
     ${debtsSummary.length>0 ? `<div class="card">
       <h3>Riepilogo debiti</h3>
@@ -8100,6 +8279,7 @@ function renderDebts() {
     const posId = uid();
     const isLoan = isDebtType(type, macro) && !isCreditCardType(type);
     const posObj = { id: posId, type, macro, amount, currency, marketValue: null, date, maturityDate: null, note: f.get("note")||"", issuer: (f.get("issuerName")||"").trim() || null, linkedPropertyId: f.get("linkedPropertyId")||null,
+      primaCasa: isLoan ? (f.get("primaCasa")==="on") : false,
       securityCode: assegnaCodiceTitolo(f.get("securityCode"), datiIdentitaDaForm(f, type, macro)),
       riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor")),
       issuerName: (f.get("issuerName")||"").trim() };
@@ -8137,13 +8317,13 @@ function renderDebts() {
       if (commissionAmt > 0) {
         const commId = uid();
         if (!data.categories.expenses.includes("Commissione prestito")) data.categories.expenses.push("Commissione prestito");
-        data.expenses.push({ id: commId, date, amount: commissionAmt, category: "Commissione prestito", paymentType: null, note: type });
+        data.expenses.push({ id: commId, date, amount: commissionAmt, category: "Commissione prestito", paymentType: null, note: type, linkedBondId: posObj.id, securityCode: posObj.securityCode||null, issuerName: posObj.issuerName||"" });
         createLiquidityAdjustment("Banca", -commissionAmt, date, `Commissione prestito: ${type}`, commId);
       }
       if (insuranceValue > 0) {
         const insId = uid();
         if (!data.categories.expenses.includes("Assicurazione prestito")) data.categories.expenses.push("Assicurazione prestito");
-        data.expenses.push({ id: insId, date, amount: insuranceValue, category: "Assicurazione prestito", paymentType: null, note: type });
+        data.expenses.push({ id: insId, date, amount: insuranceValue, category: "Assicurazione prestito", paymentType: null, note: type, linkedBondId: posObj.id, securityCode: posObj.securityCode||null, issuerName: posObj.issuerName||"" });
         createLiquidityAdjustment("Banca", -insuranceValue, date, `Assicurazione prestito: ${type}`, insId);
       }
     } else {
@@ -8173,6 +8353,7 @@ function renderDebts() {
       pos.currency = f.get("currency");
       pos.date = f.get("date") || pos.date;
       if (f.has("linkedPropertyId")) pos.linkedPropertyId = f.get("linkedPropertyId") || null;
+      if (isDebtType(pos.type, pos.macro) && !isCreditCardType(pos.type)) pos.primaCasa = f.get("primaCasa") === "on";
       pos.note = f.get("note") || "";
       editingPortfolioId = null;
       saveData(); renderDebts();
@@ -9591,6 +9772,12 @@ function renderSettings() {
       ${paymentTypesManageBlock()}
     </div>
     <div class="card">
+      <h3>Codice titolo</h3>
+      <div class="subtle">Prossimo codice che verrà proposto per una nuova posizione: <b>T${String(data.settings.nextSecurityCodeSeq||1).padStart(7,"0")}</b>.
+        Azzerarlo lo riporta a T0000001: non tocca i codici già assegnati alle posizioni esistenti, che restano quelli che sono — se ci sono duplicati vanno sistemati a mano.</div>
+      <button class="secondary" type="button" id="resetCodiceTitoloBtn" style="margin-top:8px;">Azzera contatore (riparti da 1)</button>
+    </div>
+    <div class="card">
       <h3>Gestisci categorie</h3>
       <div class="subtle">Modifica nome e budget annuo di ciascuna voce, elimina quelle che non ti servono più, o aggiungine di nuove — indipendentemente per Reddito, Spese e Patrimonio. Ricorda di premere "Salva modifiche" dopo aver cambiato un nome.</div>
       ${categoryManageBlock("income", "Reddito")}
@@ -9805,6 +9992,14 @@ function renderSettings() {
     });
     saveData();
     alert("Metodi di pagamento aggiornati.");
+    renderSettings();
+  });
+
+  const resetCodiceBtn = document.getElementById("resetCodiceTitoloBtn");
+  if (resetCodiceBtn) resetCodiceBtn.addEventListener("click", ()=>{
+    if (!confirm("Azzerare il contatore del codice titolo? Il prossimo codice proposto sarà T0000001. Le posizioni già registrate mantengono il codice che hanno.")) return;
+    data.settings.nextSecurityCodeSeq = 1;
+    saveData();
     renderSettings();
   });
 
@@ -10348,23 +10543,52 @@ function autoGenerateLavoroDipendente() {
       const mesePrec = `${prec.getFullYear()}-${String(prec.getMonth()+1).padStart(2,"0")}`;
       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
       if (dataPaga > todayISO) continue;
-
-      const gia = data.income.some(i => i.category === CAT_DEDUZIONE_FP && i.date && i.date.slice(0,7) === meseKey)
-        || eraStataCancellata("dedfp", meseKey);
-      if (gia) continue;
+      if (eraStataCancellata("dedfp", meseKey)) continue;
 
       const ded = calcolaDeduzioneFondoPensione(mesePrec);
-      if (!(ded.risparmio > 0)) continue;
-      const idDed = uid();
-      data.income.push({ id: idDed, date: dataPaga, amount: ded.risparmio, currency: "ALL",
-        category: CAT_DEDUZIONE_FP, macro: MACRO_LAVORO, paymentType: primo.paymentType || "Banca",
-        note: `Su ${fmt(ded.ammesso)} versati nel ${mesePrec}`,
-        securityCode: primo.securityCode || null, issuerName: primo.issuerName || "",
-        riskFactor: normalizzaRischio(primo.riskFactor, { type:"reddito" }),
-        generatoDaRLD: true });
-      createLiquidityAdjustment(primo.paymentType || "Banca", ded.risparmio, dataPaga,
-        "Deduzione fiscale fondo pensione", idDed);
-      changed = true;
+      const esistente = data.income.find(i => i.category === CAT_DEDUZIONE_FP && i.date && i.date.slice(0,7) === meseKey);
+
+      if (!esistente) {
+        if (!(ded.risparmio > 0)) continue;
+        const idDed = uid();
+        data.income.push({ id: idDed, date: dataPaga, amount: ded.risparmio, currency: "ALL",
+          category: CAT_DEDUZIONE_FP, macro: MACRO_LAVORO, paymentType: primo.paymentType || "Banca",
+          note: `Su ${fmt(ded.ammesso)} versati nel ${mesePrec}`, meseVersamenti: mesePrec,
+          securityCode: primo.securityCode || null, issuerName: primo.issuerName || "",
+          riskFactor: normalizzaRischio(primo.riskFactor, { type:"reddito" }),
+          generatoDaRLD: true });
+        createLiquidityAdjustment(primo.paymentType || "Banca", ded.risparmio, dataPaga,
+          "Deduzione fiscale fondo pensione", idDed);
+        changed = true;
+        continue;
+      }
+
+      // Non toccare una voce inserita a mano: l'auto-correzione vale solo per
+      // quelle che il motore stesso ha generato.
+      if (!esistente.generatoDaRLD) continue;
+
+      if (!(ded.risparmio > 0)) {
+        // I versamenti di quel mese non giustificano più una deduzione (es. tolti
+        // dopo la generazione): si rimuove la voce e l'accredito collegato.
+        removeLiquidityAdjustment(esistente.id);
+        data.income = data.income.filter(i => i.id !== esistente.id);
+        changed = true;
+        continue;
+      }
+
+      // Voce già generata ma l'importo corretto oggi è diverso da quello congelato
+      // allora: succede quando arriva un versamento retroattivo per un mese già
+      // "chiuso" (es. uno storico importato dopo). Si corregge sul posto — stesso
+      // id, stesso spirito di retroactiveFxCorrection — non si duplica la voce.
+      if (Math.abs(Number(esistente.amount) - ded.risparmio) > 0.5) {
+        esistente.amount = ded.risparmio;
+        esistente.note = `Su ${fmt(ded.ammesso)} versati nel ${mesePrec}`;
+        esistente.meseVersamenti = mesePrec;
+        removeLiquidityAdjustment(esistente.id);
+        createLiquidityAdjustment(primo.paymentType || "Banca", ded.risparmio, dataPaga,
+          "Deduzione fiscale fondo pensione (corretta)", esistente.id);
+        changed = true;
+      }
     }
   }
   if (changed) saveData();
@@ -10673,7 +10897,7 @@ function riquadroRedditoLavoro(anno) {
 function computeAnnualTaxSummary(year) {
   const isTax = c => c.startsWith("Tassa") || c.startsWith("Tassazione");
   const isCommission = c => c.startsWith("Commissione");
-  const isOtherFee = c => ["Interessi carta di credito","Interessi prestiti","Assicurazione prestito","Penale chiusura deposito"].includes(c);
+  const isOtherFee = c => ["Interessi carta di credito","Interessi prestiti","Interessi MPC","Assicurazione prestito","Penale chiusura deposito","Contributo Pensionistico da RLD","Contributo Sanitario da RLD"].includes(c);
   const yearExpenses = data.expenses.filter(e => e.date && e.date.slice(0,4) === String(year));
   const byCategory = {};
   yearExpenses.forEach(e => {
