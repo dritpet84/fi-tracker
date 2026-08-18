@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.29</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.41</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -211,13 +211,19 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 const thisYearNum = new Date().getFullYear();
 const STORE_KEY = "fiTrackerData_v1";
 const AUTO_MANAGED_INCOME_CATEGORIES = ["Cedola", "Interesse deposito", "Capital gain obbligazioni", "Capital gain fondi", "Affitto immobile", "Capital gain immobile", "Dividendo", "Capital gain azioni", "Capital gain materie prime", "Capital gain crypto"];
-const AUTO_MANAGED_EXPENSE_CATEGORIES = ["Commissione collocamento titoli", "Commissione disbursement cedola", "Commissione vendita titoli", "Commissione titoli custodia", "Tassa immobile", "Commissione agenzia affitto", "Tassazione plusvalenza immobile", "Interessi carta di credito", "Interessi prestiti", "Interessi MPC", "Commissione prestito", "Assicurazione prestito", "Tassazione capital gain fondi", "Tassazione dividendi", "Penale chiusura deposito", "Tassazione capital gain azioni", "Tassazione capital gain materie prime", "Tassazione capital gain crypto"];
+const AUTO_MANAGED_EXPENSE_CATEGORIES = ["Commissione collocamento titoli", "Commissione disbursement cedola", "Commissione vendita titoli", "Commissione titoli custodia", "Tassa immobile", "Commissione agenzia affitto", "Tassazione plusvalenza immobile", "Interessi carta di credito", "Interessi prestiti", "Interessi MPC", "Commissione prestito", "Assicurazione prestito", "Tassazione capital gain fondi", "Tassazione dividendi", "Penale chiusura deposito", "Tassazione capital gain azioni", "Tassazione capital gain materie prime", "Tassazione capital gain crypto", "Contributo Pensionistico da RLD", "Contributo Sanitario da RLD", "Tassazione da RLD"];
 function isAutoManagedIncomeCategory(cat) {
   return AUTO_MANAGED_INCOME_CATEGORIES.includes(cat) || (data.taxDeductions||[]).some(d=>d.name===cat);
 }
 function isAutoManagedExpenseCategory(cat) {
   return AUTO_MANAGED_EXPENSE_CATEGORIES.includes(cat) || cat.startsWith("Tassa titoli obbligazioni") || cat.startsWith("Tassa depositi");
 }
+// Spese "di vita" vs oneri automatici (tasse, contributi, commissioni, interessi):
+// una decisione di spesa che prendi ogni mese è cosa diversa da una trattenuta che
+// non scegli. Usato sia per i KPI di ritmo di spesa in Panoramica sia per i totali
+// della scheda Spese quando gli oneri automatici sono nascosti.
+function spesePersonali(arr) { return arr.filter(e => !isAutoManagedExpenseCategory(e.category)); }
+function speseAutoGestite(arr) { return arr.filter(e => isAutoManagedExpenseCategory(e.category)); }
 const DEFAULT_CATEGORIES = {
   income: ["Reddito principale","Interessi","Altro"],
   expenses: ["Palestra","Assicurazione auto","Tasse auto","Caffè ufficio","Bar","Acqua","Luce","Telefono","Riparazioni auto","Tagliando auto","Supermercato","Gite/concerti","Vestiti","Vacanze","Ristoranti/uscite","Arredamento casa","Auto (acquisto)","Altro"],
@@ -242,7 +248,7 @@ const DEFAULT_DATA = {
         { fino: 200000, sottrai: 30000,  aliquota: 13,   fisso: 0 },
         { fino: null,   sottrai: 200000, aliquota: 23,   fisso: 22100 }
       ]
-    }, targetAllocation: {}, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL", tabOrder: null, hiddenTabs: [] },
+    }, targetAllocation: {}, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL", tabOrder: null, hiddenTabs: [], speseMostraAutoGestite: false, savingsRateProjectionMode: "reale", montecarloDevStd: 10, montecarloAnniPrelievo: 30, montecarloStrategiaPrelievo: "fissa", scenariComparativi: [] },
   income: [],
   expenses: [],
   portfolio: [],
@@ -263,54 +269,169 @@ const DEFAULT_DATA = {
 };
 
 // ---------- Storage ----------
-function loadData() {
+// Dà forma ai dati grezzi (da localStorage o da IndexedDB) applicando i default:
+// stessa logica, qualunque sia la fonte, così le due strade restano coerenti.
+function normalizeLoadedData(parsed) {
   const base = JSON.parse(JSON.stringify(DEFAULT_DATA));
+  if (!parsed) return base;
+  return {
+    settings: Object.assign({}, base.settings, parsed.settings || {}),
+    income: parsed.income || [],
+    expenses: parsed.expenses || [],
+    portfolio: parsed.portfolio || [],
+    categories: {
+      income: (parsed.categories && parsed.categories.income) || base.categories.income,
+      expenses: (parsed.categories && parsed.categories.expenses) || base.categories.expenses,
+      portfolio: (parsed.categories && parsed.categories.portfolio) || base.categories.portfolio
+    },
+    categoryBudgets: {
+      income: (parsed.categoryBudgets && parsed.categoryBudgets.income) || {},
+      expenses: (parsed.categoryBudgets && parsed.categoryBudgets.expenses) || {},
+      portfolio: (parsed.categoryBudgets && parsed.categoryBudgets.portfolio) || {}
+    },
+    macroCategories: {
+      income: (parsed.macroCategories && parsed.macroCategories.income) || [],
+      expenses: (parsed.macroCategories && parsed.macroCategories.expenses) || [],
+      portfolio: (parsed.macroCategories && parsed.macroCategories.portfolio) || []
+    },
+    categoryMacroMap: {
+      income: (parsed.categoryMacroMap && parsed.categoryMacroMap.income) || {},
+      expenses: (parsed.categoryMacroMap && parsed.categoryMacroMap.expenses) || {},
+      portfolio: (parsed.categoryMacroMap && parsed.categoryMacroMap.portfolio) || {}
+    },
+    recurring: {
+      income: (parsed.recurring && parsed.recurring.income) || [],
+      expenses: (parsed.recurring && parsed.recurring.expenses) || [],
+      portfolio: (parsed.recurring && parsed.recurring.portfolio) || []
+    },
+    snapshots: parsed.snapshots || [],
+    fxHistory: parsed.fxHistory || [],
+    fxDatabase: parsed.fxDatabase || {},
+    paymentTypes: (parsed.paymentTypes && parsed.paymentTypes.length) ? parsed.paymentTypes : base.paymentTypes,
+    creditCardSettings: parsed.creditCardSettings || {},
+    creditCardDebts: parsed.creditCardDebts || [],
+    marketYieldCurve: parsed.marketYieldCurve || null,
+    taxDeductions: parsed.taxDeductions || [],
+    trash: parsed.trash || [],
+    deletedGenerated: parsed.deletedGenerated || []
+  };
+}
+function loadData() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return base;
-    const parsed = JSON.parse(raw);
-    return {
-      settings: Object.assign({}, base.settings, parsed.settings || {}),
-      income: parsed.income || [],
-      expenses: parsed.expenses || [],
-      portfolio: parsed.portfolio || [],
-      categories: {
-        income: (parsed.categories && parsed.categories.income) || base.categories.income,
-        expenses: (parsed.categories && parsed.categories.expenses) || base.categories.expenses,
-        portfolio: (parsed.categories && parsed.categories.portfolio) || base.categories.portfolio
-      },
-      categoryBudgets: {
-        income: (parsed.categoryBudgets && parsed.categoryBudgets.income) || {},
-        expenses: (parsed.categoryBudgets && parsed.categoryBudgets.expenses) || {},
-        portfolio: (parsed.categoryBudgets && parsed.categoryBudgets.portfolio) || {}
-      },
-      macroCategories: {
-        income: (parsed.macroCategories && parsed.macroCategories.income) || [],
-        expenses: (parsed.macroCategories && parsed.macroCategories.expenses) || [],
-        portfolio: (parsed.macroCategories && parsed.macroCategories.portfolio) || []
-      },
-      categoryMacroMap: {
-        income: (parsed.categoryMacroMap && parsed.categoryMacroMap.income) || {},
-        expenses: (parsed.categoryMacroMap && parsed.categoryMacroMap.expenses) || {},
-        portfolio: (parsed.categoryMacroMap && parsed.categoryMacroMap.portfolio) || {}
-      },
-      recurring: {
-        income: (parsed.recurring && parsed.recurring.income) || [],
-        expenses: (parsed.recurring && parsed.recurring.expenses) || [],
-        portfolio: (parsed.recurring && parsed.recurring.portfolio) || []
-      },
-      snapshots: parsed.snapshots || [],
-      fxHistory: parsed.fxHistory || [],
-      fxDatabase: parsed.fxDatabase || {},
-      paymentTypes: (parsed.paymentTypes && parsed.paymentTypes.length) ? parsed.paymentTypes : base.paymentTypes,
-      creditCardSettings: parsed.creditCardSettings || {},
-      creditCardDebts: parsed.creditCardDebts || [],
-      marketYieldCurve: parsed.marketYieldCurve || null,
-      taxDeductions: parsed.taxDeductions || [],
-      trash: parsed.trash || [],
-      deletedGenerated: parsed.deletedGenerated || []
+    if (!raw) return JSON.parse(JSON.stringify(DEFAULT_DATA));
+    return normalizeLoadedData(JSON.parse(raw));
+  } catch (e) { return JSON.parse(JSON.stringify(DEFAULT_DATA)); }
+}
+
+// IndexedDB: fonte primaria da v2.31, senza il tetto dei ~5MB di localStorage e
+// con transazioni vere. localStorage resta come migrazione automatica una tantum
+// (se IndexedDB è vuoto la prima volta) e come rete di sicurezza se IndexedDB non
+// è disponibile (es. alcune modalità di navigazione privata lo bloccano).
+// Da v2.33, un secondo "cassetto" (backupHistory) tiene istantanee automatiche
+// periodiche — una terza rete di sicurezza indipendente da Drive, per lo scenario
+// già vissuto (registro cancellazioni perso in un import da Drive).
+const IDB_DB_NAME = "fiTrackerDB", IDB_DB_VERSION = 2, IDB_STORE_NAME = "kv", IDB_DATA_KEY = "data", IDB_BACKUP_STORE = "backupHistory";
+let idbAvailable = true;
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) { reject(new Error("IndexedDB non disponibile in questo browser")); return; }
+    const req = indexedDB.open(IDB_DB_NAME, IDB_DB_VERSION);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(IDB_STORE_NAME)) req.result.createObjectStore(IDB_STORE_NAME);
+      if (!req.result.objectStoreNames.contains(IDB_BACKUP_STORE)) req.result.createObjectStore(IDB_BACKUP_STORE);
     };
-  } catch (e) { return base; }
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("Apertura IndexedDB fallita"));
+  });
+}
+function idbGet(key) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE_NAME, "readonly");
+    const req = tx.objectStore(IDB_STORE_NAME).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("Lettura IndexedDB fallita"));
+  }));
+}
+function idbSet(key, value) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE_NAME, "readwrite");
+    tx.objectStore(IDB_STORE_NAME).put(value, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error("Scrittura IndexedDB fallita"));
+  }));
+}
+function idbBackupPut(key, value) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_BACKUP_STORE, "readwrite");
+    tx.objectStore(IDB_BACKUP_STORE).put(value, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error("Scrittura backup automatico fallita"));
+  }));
+}
+function idbBackupGetAll() {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_BACKUP_STORE, "readonly");
+    const store = tx.objectStore(IDB_BACKUP_STORE);
+    const keysReq = store.getAllKeys();
+    keysReq.onsuccess = () => {
+      const keys = keysReq.result;
+      const valsReq = store.getAll();
+      valsReq.onsuccess = () => resolve(keys.map((k, i) => ({ key: k, value: valsReq.result[i] })));
+      valsReq.onerror = () => reject(valsReq.error);
+    };
+    keysReq.onerror = () => reject(keysReq.error);
+  }));
+}
+function idbBackupDelete(key) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_BACKUP_STORE, "readwrite");
+    tx.objectStore(IDB_BACKUP_STORE).delete(key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+// Chiamata una sola volta, all'avvio, prima di ogni rendering: legge da IndexedDB;
+// se è vuoto (primo avvio dopo l'aggiornamento, o mai usato prima) migra quello
+// che trova in localStorage, senza cancellarlo — resta lì come rete di sicurezza.
+async function loadDataAsync() {
+  try {
+    const fromIdb = await idbGet(IDB_DATA_KEY);
+    if (fromIdb) return normalizeLoadedData(fromIdb);
+  } catch (e) {
+    idbAvailable = false;
+    console.warn("IndexedDB non disponibile, si continua con localStorage:", e.message || e);
+  }
+  const legacy = loadData();
+  if (idbAvailable) {
+    try { await idbSet(IDB_DATA_KEY, legacy); } catch (e) { idbAvailable = false; }
+  }
+  return legacy;
+}
+// Istantanea automatica periodica, silenziosa: se sono passati abbastanza giorni
+// dall'ultima (e ci sono abbastanza dati da valere la pena), ne salva una nuova e
+// tiene solo le ultime AUTO_BACKUP_MAX_SNAPSHOTS, eliminando le più vecchie.
+// Nessuna interazione richiesta — a differenza del promemoria di backup manuale,
+// questo non chiede nulla all'utente.
+const AUTO_BACKUP_INTERVAL_DAYS = 7;
+const AUTO_BACKUP_MAX_SNAPSHOTS = 8;
+async function autoLocalBackupCheck() {
+  if (!idbAvailable) return;
+  const entries = (data.income||[]).length + (data.expenses||[]).length + (data.portfolio||[]).length;
+  if (entries < 5) return;
+  const last = data.settings.lastAutoBackupSnapshot;
+  const daysSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : Infinity;
+  if (daysSince < AUTO_BACKUP_INTERVAL_DAYS) return;
+  try {
+    const key = new Date().toISOString();
+    await idbBackupPut(key, data);
+    data.settings.lastAutoBackupSnapshot = key;
+    saveData();
+    const all = await idbBackupGetAll();
+    const ordinati = all.sort((a,b) => a.key.localeCompare(b.key));
+    const daEliminare = ordinati.slice(0, Math.max(0, ordinati.length - AUTO_BACKUP_MAX_SNAPSHOTS));
+    for (const s of daEliminare) await idbBackupDelete(s.key);
+  } catch (e) { /* silenzioso: se fallisce, il promemoria di backup manuale resta comunque attivo */ }
 }
 let saveFailureNotified = false;
 function emergencyBackupDownload() {
@@ -325,27 +446,45 @@ function emergencyBackupDownload() {
     return true;
   } catch (e) { return false; }
 }
-// Writes to localStorage and reports failure instead of throwing silently.
-// Returns true on success, false on failure.
+// Scrive su entrambi: localStorage resta come rete di sicurezza rapida e
+// sincrona (utile anche per i browser senza IndexedDB), IndexedDB è la fonte
+// primaria — senza il tetto dei ~5MB. La scrittura IndexedDB è per natura
+// asincrona: l'esito arriva dopo, il banner di errore compare comunque, solo
+// con qualche istante di ritardo invece che nello stesso istante.
 function writeStore() {
+  let localOk = true, localErr = null;
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(data));
-    if (saveFailureNotified) {
-      saveFailureNotified = false;
-      showSaveBanner(false);
-    }
-    return true;
   } catch (err) {
-    const isQuota = err && (err.name === "QuotaExceededError" || err.name === "NS_ERROR_DOM_QUOTA_REACHED" || /quota/i.test(String(err.message||"")));
-    showSaveBanner(true, isQuota);
-    if (!saveFailureNotified) {
-      saveFailureNotified = true;
-      const msg = isQuota
-        ? "ATTENZIONE: spazio di archiviazione esaurito. Le ultime modifiche NON sono state salvate su questo dispositivo.\n\nPremi OK per scaricare subito un backup di sicurezza, così non perdi nulla."
-        : "ATTENZIONE: non è stato possibile salvare su questo dispositivo (il browser ha bloccato l'archiviazione, es. navigazione privata).\n\nPremi OK per scaricare subito un backup di sicurezza.";
-      if (confirm(msg)) emergencyBackupDownload();
-    }
-    return false;
+    localOk = false; localErr = err;
+  }
+  if (idbAvailable) {
+    idbSet(IDB_DATA_KEY, data).then(() => {
+      if (saveFailureNotified) { saveFailureNotified = false; showSaveBanner(false); }
+    }).catch(err => {
+      idbAvailable = false;
+      // Se anche localStorage ha fallito, ora nessuna delle due strade ha
+      // salvato: è il momento di avvisare, con lo stesso banner di prima.
+      if (!localOk) segnalaErroreSalvataggio(localErr || err);
+    });
+  } else if (!localOk) {
+    segnalaErroreSalvataggio(localErr);
+  } else if (saveFailureNotified) {
+    saveFailureNotified = false; showSaveBanner(false);
+  }
+  // Ottimistico: a differenza di prima l'esito reale può arrivare un istante dopo
+  // (IndexedDB è asincrono). Il banner di errore, se serve, compare comunque.
+  return true;
+}
+function segnalaErroreSalvataggio(err) {
+  const isQuota = err && (err.name === "QuotaExceededError" || err.name === "NS_ERROR_DOM_QUOTA_REACHED" || /quota/i.test(String(err.message||"")));
+  showSaveBanner(true, isQuota);
+  if (!saveFailureNotified) {
+    saveFailureNotified = true;
+    const msg = isQuota
+      ? "ATTENZIONE: spazio di archiviazione esaurito. Le ultime modifiche NON sono state salvate su questo dispositivo.\n\nPremi OK per scaricare subito un backup di sicurezza, così non perdi nulla."
+      : "ATTENZIONE: non è stato possibile salvare su questo dispositivo (il browser ha bloccato l'archiviazione, es. navigazione privata).\n\nPremi OK per scaricare subito un backup di sicurezza.";
+    if (confirm(msg)) emergencyBackupDownload();
   }
 }
 function showSaveBanner(show, isQuota) {
@@ -380,7 +519,11 @@ function scheduleAutoUpload() {
   clearTimeout(autoUploadTimer);
   autoUploadTimer = setTimeout(()=> silentUploadToDrive(), 2500);
 }
-let data = loadData();
+// Placeholder finché il caricamento asincrono (IndexedDB/localStorage, in fondo al
+// file) non ha risposto. Nessun rendering avviene prima di allora, quindi non è mai
+// letto con questo valore: serve solo perché la variabile deve esistere da subito,
+// dato che tutte le funzioni la referenziano in chiusura fin dalla loro definizione.
+let data = JSON.parse(JSON.stringify(DEFAULT_DATA));
 
 const fmt = n => Math.round(n).toLocaleString("it-IT");
 const fmt2 = n => Number(n).toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -601,6 +744,61 @@ function computeRunwayMonths() {
 
 // Concentrazione: quanto pesa la posizione più grande, la valuta prevalente e
 // l'esposizione ai titoli di Stato. Rende numerico un rischio che spesso si intuisce.
+// TWR (rendimento ponderato nel tempo) tra snapshot consecutivi, metodo Modified
+// Dietz: isola il rendimento vero dai versamenti/prelievi esterni (stipendio,
+// spese di vita), che altrimenti farebbero sembrare "rendimento" un capitale che
+// hai solo spostato dentro o fuori dal patrimonio tracciato.
+// Flusso esterno = reddito NON da investimento (stipendio, regali...) meno spese
+// personali (non tasse/commissioni/interessi: quelle riducono il rendimento vero,
+// restano nel calcolo, non sono un prelievo). Ogni flusso pesato per i giorni
+// rimanenti nel sotto-periodo (Modified Dietz), non solo sommato in blocco.
+// Le categorie auto-gestite (cedole, dividendi, capital gain, affitti, tasse,
+// commissioni, interessi) sono già isolate dal lavoro fatto per il punto 1(b) —
+// qui si riusano, non si reinventano. Un bonifico da un conto che l'app non
+// traccia verso uno che traccia non è distinguibile da un rendimento: è il
+// limite onesto del metodo.
+function computeTWR(dataInizio) {
+  const snap = [...data.snapshots].filter(s => !dataInizio || s.date >= dataInizio).sort((a,b) => a.date.localeCompare(b.date));
+  if (snap.length < 2) return null;
+  let prodotto = 1;
+  const dettaglio = [];
+  for (let i = 1; i < snap.length; i++) {
+    const inizio = snap[i-1], fine = snap[i];
+    const bmv = inizio.wealth, emv = fine.wealth;
+    if (!(bmv > 0)) continue;
+    const giorniTotali = (new Date(fine.date) - new Date(inizio.date)) / 86400000;
+    if (giorniTotali <= 0) continue;
+    const flussi = [];
+    data.income.forEach(e => {
+      if (!e.date || e.date <= inizio.date || e.date > fine.date) return;
+      if (isAutoManagedIncomeCategory(e.category)) return;
+      flussi.push({ date: e.date, importo: toALL(Number(e.amount)||0, e.currency||"ALL") });
+    });
+    data.expenses.forEach(e => {
+      if (!e.date || e.date <= inizio.date || e.date > fine.date) return;
+      if (isAutoManagedExpenseCategory(e.category)) return;
+      flussi.push({ date: e.date, importo: -(Number(e.amount)||0) });
+    });
+    let cfTotale = 0, sommaPesata = 0;
+    flussi.forEach(f => {
+      const giorniRimanenti = (new Date(fine.date) - new Date(f.date)) / 86400000;
+      const peso = Math.max(0, Math.min(1, giorniRimanenti / giorniTotali));
+      cfTotale += f.importo;
+      sommaPesata += f.importo * peso;
+    });
+    const denom = bmv + sommaPesata;
+    if (!(denom > 0)) continue;
+    const rendimentoPeriodo = (emv - bmv - cfTotale) / denom;
+    prodotto *= (1 + rendimentoPeriodo);
+    dettaglio.push({ da: inizio.date, a: fine.date, BMV: bmv, EMV: emv, CF: cfTotale, rendimento: rendimentoPeriodo*100 });
+  }
+  if (!dettaglio.length) return null;
+  const anni = (new Date(snap[snap.length-1].date) - new Date(snap[0].date)) / (365.25*86400000);
+  const twrAnnualizzato = anni > 0.08 ? (Math.pow(prodotto, 1/anni) - 1)*100 : null;
+  return { twrTotale: (prodotto-1)*100, twrAnnualizzato, periodi: dettaglio.length, dettaglio,
+    dataInizio: snap[0].date, dataFine: snap[snap.length-1].date, anni };
+}
+
 function computeConcentration() {
   const total = portfolioTotalALL();
   if (total <= 0) return null;
@@ -613,7 +811,7 @@ function computeConcentration() {
     byCurrency[p.currency] = (byCurrency[p.currency] || 0) + v;
     const m = p.macro || p.type;
     byMacro[m] = (byMacro[m] || 0) + v;
-    if ((p.type||"").toLowerCase().includes("obbligazione statale")) govBonds += v;
+    if ((p.type||"").toLowerCase().includes("obbligazione governativa")) govBonds += v;
     if (v > largest.value) largest = { label: p.securityCode || p.fundName || p.stockTicker || p.type, value: v };
   });
   const topCurrency = Object.entries(byCurrency).sort((a,b)=>b[1]-a[1])[0] || ["—",0];
@@ -623,6 +821,37 @@ function computeConcentration() {
     topMacro: { name: topMacro[0], value: topMacro[1], pct: topMacro[1]/total*100 },
     govBonds: { value: govBonds, pct: govBonds/total*100 },
     largest: { ...largest, pct: largest.value/total*100 } };
+}
+
+// Costo totale annuo di GESTIONE del patrimonio — commissioni e interessi, non
+// tasse e non contributi da stipendio (concettualmente un'altra cosa: qui
+// interessa solo quanto costa avere e muovere gli investimenti, non quanto se ne
+// va in imposte). Punto 10 della lista di suggerimenti.
+const CATEGORIE_COSTO_GESTIONE = ["Commissione collocamento titoli", "Commissione disbursement cedola",
+  "Commissione vendita titoli", "Commissione titoli custodia", "Commissione agenzia affitto",
+  "Interessi carta di credito", "Interessi prestiti", "Interessi MPC", "Commissione prestito",
+  "Assicurazione prestito", "Penale chiusura deposito"];
+function costoGestioneAnnuo(year) {
+  const y = String(year);
+  const voci = data.expenses.filter(e => e.date && e.date.slice(0,4) === y && CATEGORIE_COSTO_GESTIONE.includes(e.category));
+  const totale = voci.reduce((s,e) => s + (Number(e.amount)||0), 0);
+  const perCategoria = {};
+  voci.forEach(e => { perCategoria[e.category] = (perCategoria[e.category]||0) + Number(e.amount); });
+  const patrimonio = portfolioTotalALL();
+  return { totale, perCategoria, patrimonio, pctSuPatrimonio: patrimonio>0 ? totale/patrimonio*100 : null };
+}
+function costoGestioneCard() {
+  const c = costoGestioneAnnuo(thisYear);
+  if (c.totale <= 0) return "";
+  const righe = Object.entries(c.perCategoria).sort((a,b)=>b[1]-a[1]);
+  return `
+    <div class="card">
+      <h3>Costo di gestione ${thisYear}</h3>
+      <div class="subtle">Commissioni e interessi pagati per avere e muovere gli investimenti — non le tasse, quelle sono nel Riepilogo fiscale qui sotto.</div>
+      <div class="stat-row"><span class="label">Totale</span><span class="val down">${fmt(c.totale)} ALL</span></div>
+      ${c.pctSuPatrimonio!=null ? `<div class="stat-row"><span class="label">· sul patrimonio attuale</span><span class="val">${c.pctSuPatrimonio.toFixed(2)}%</span></div>` : ''}
+      ${righe.map(([cat,val])=>`<div class="stat-row"><span class="label" style="font-size:11px;">· ${cat}</span><span class="val" style="font-size:11px;">${fmt(val)} ALL</span></div>`).join('')}
+    </div>`;
 }
 
 function freqLabel(key) { return (FREQUENCIES.find(f=>f.key===key)||FREQUENCIES[0]).label; }
@@ -1117,6 +1346,85 @@ function chiaveIdentitaStrumento(dati) {
   return null;
 }
 
+// ===== Controllo di integrità dei dati (su richiesta, da Assunzioni) =====
+// Non risolve nulla da solo — dice cosa guardare, invece di scoprirlo per caso
+// mesi dopo (com'è successo con il riferimento pendente linkedPropertyId e col
+// registro cancellazioni perso nell'import, entrambi trovati solo con controlli
+// manuali mirati).
+function controllaIntegritaDati() {
+  const problemi = [];
+  const portfolioIds = new Set(data.portfolio.map(p => p.id));
+  const incomeIds = new Set(data.income.map(i => i.id));
+
+  // 1) Riferimenti pendenti: puntano a un id che non esiste più in portafoglio/reddito.
+  data.income.forEach(i => {
+    if (i.linkedBondId && !portfolioIds.has(i.linkedBondId)) {
+      problemi.push({ tipo: "Riferimento pendente", gravita: "media",
+        msg: `Reddito "${i.category}" del ${i.date} (${fmt(i.amount)} ${i.currency||'ALL'}) è collegato a una posizione che non esiste più.` });
+    }
+  });
+  data.expenses.forEach(e => {
+    if (e.linkedBondId && !portfolioIds.has(e.linkedBondId)) {
+      problemi.push({ tipo: "Riferimento pendente", gravita: "media",
+        msg: `Spesa "${e.category}" del ${e.date} (${fmt(e.amount)} ALL) è collegata a una posizione che non esiste più.` });
+    }
+    if (e.linkedIncomeId && !incomeIds.has(e.linkedIncomeId)) {
+      problemi.push({ tipo: "Riferimento pendente", gravita: "bassa",
+        msg: `Spesa "${e.category}" del ${e.date} punta a un reddito collegato che non esiste più (l'abbinamento certo si è perso, resta solo il collegamento al titolo se presente).` });
+    }
+  });
+  data.portfolio.forEach(p => {
+    if (p.linkedPropertyId && !portfolioIds.has(p.linkedPropertyId)) {
+      problemi.push({ tipo: "Riferimento pendente", gravita: "bassa",
+        msg: `"${p.type}" del ${p.date} è collegato a un immobile che non esiste più.` });
+    }
+  });
+
+  // 2) Saldo netto negativo per strumenti che non dovrebbero mai poterlo avere
+  // (debiti e carte hanno una convenzione di segno propria, qui escluse apposta).
+  const saldiPerStrumento = {};
+  data.portfolio.forEach(p => {
+    if (isDebtType(p.type, p.macro) || isCreditCardType(p.type) || data.paymentTypes.includes(p.type)) return;
+    const chiave = chiaveIdentitaStrumento(p) || ("singolo:" + p.id);
+    saldiPerStrumento[chiave] = (saldiPerStrumento[chiave] || { nome: nomeStrumento(p), saldo: 0 });
+    saldiPerStrumento[chiave].saldo += toALL(Number(p.amount) || 0, p.currency);
+  });
+  Object.values(saldiPerStrumento).forEach(g => {
+    if (g.saldo < -0.5) {
+      problemi.push({ tipo: "Saldo anomalo", gravita: "alta",
+        msg: `"${g.nome}" ha un saldo netto negativo (${fmt(g.saldo)} ALL) — non dovrebbe essere possibile per questo tipo di strumento.` });
+    }
+  });
+
+  // 3) Posizioni senza codice titolo, per i tipi che normalmente ne hanno uno.
+  data.portfolio.forEach(p => {
+    if (data.paymentTypes.includes(p.type)) return;
+    if (!p.securityCode) {
+      problemi.push({ tipo: "Dati incompleti", gravita: "bassa",
+        msg: `"${p.type}" del ${p.date} (${fmt(p.amount)} ${p.currency}) non ha un codice titolo assegnato.` });
+    }
+  });
+
+  // 4) Duplicati sospetti: stessa data, stesso importo, stessa categoria.
+  function trovaDuplicati(arr, nomeGruppo) {
+    const visti = {};
+    arr.forEach(e => {
+      const chiave = `${e.date}|${Number(e.amount)}|${e.category}`;
+      (visti[chiave] = visti[chiave] || []).push(e);
+    });
+    Object.values(visti).filter(g => g.length > 1).forEach(g => {
+      problemi.push({ tipo: "Possibile duplicato", gravita: "media",
+        msg: `${g.length} voci identiche in ${nomeGruppo}: "${g[0].category}", ${fmt(g[0].amount)} ALL, ${g[0].date}.` });
+    });
+  }
+  trovaDuplicati(data.income, "Reddito");
+  trovaDuplicati(data.expenses, "Spese");
+
+  const ordineGravita = { alta: 0, media: 1, bassa: 2 };
+  problemi.sort((a, b) => ordineGravita[a.gravita] - ordineGravita[b.gravita]);
+  return problemi;
+}
+
 // Codice già assegnato a uno strumento con la stessa identità, se esiste.
 function codiceEsistentePerStrumento(dati) {
   const chiave = chiaveIdentitaStrumento(dati);
@@ -1193,6 +1501,34 @@ function scadenzeCedolariMaturate(anchorDate, mesiPasso, maturityDate, minDate) 
   return out;
 }
 
+// ===== Punto 16: rateo d'interesse maturato =====
+// Quanto interesse hai già "guadagnato" dall'ultima cedola pagata (o dall'emissione,
+// se non ne è mai stata pagata una) fino a oggi — utile se compri/vendi sul mercato
+// secondario, dove il prezzo si scambia di solito "corso secco" e il rateo si regola
+// a parte tra le due parti.
+function calcolaRateoInteresse(p) {
+  const typeLower = String(p.type||"").toLowerCase();
+  const isBond = typeLower.includes("obbligazione") && p.bondMode === "cedola";
+  const isDeposit = typeLower.includes("deposito") && p.depositMode === "cedola";
+  if (!isBond && !isDeposit) return null;
+  const rate = Number(isBond ? p.couponRate : p.depositRate) || 0;
+  if (rate <= 0) return null;
+  const freqObj = FREQUENCIES.find(f => f.key === (p.couponFrequency||"annual")) || FREQUENCIES.find(f=>f.key==="annual");
+  const anchorDate = p.issueDate || p.date;
+  if (!anchorDate) return null;
+  const scadute = scadenzeCedolariMaturate(anchorDate, freqObj.months, p.maturityDate, null);
+  const ultimaCedola = scadute.length ? scadute[scadute.length-1] : anchorDate;
+  const prossimaCedolaDate = new Date(ultimaCedola);
+  prossimaCedolaDate.setMonth(prossimaCedolaDate.getMonth() + freqObj.months);
+  const inizioPeriodo = new Date(ultimaCedola);
+  const giorniPeriodo = (prossimaCedolaDate - inizioPeriodo) / 86400000;
+  const giorniTrascorsi = (now - inizioPeriodo) / 86400000;
+  if (!(giorniPeriodo > 0) || giorniTrascorsi < 0) return null;
+  const cedolaPeriodo = p.amount * rate/100 * freqObj.months/12;
+  const rateo = cedolaPeriodo * Math.min(1, giorniTrascorsi/giorniPeriodo);
+  return { rateo, valuta: p.currency, dataUltimaCedola: ultimaCedola, dataProssimaCedola: localDateStr(prossimaCedolaDate),
+    giorniTrascorsi: Math.floor(giorniTrascorsi), giorniPeriodo: Math.round(giorniPeriodo) };
+}
 // Registra una singola cedola/interesse alla data indicata.
 function emettiCedola(p, dateStr, isBondCoupon, freqObj) {
     const nominal = p.amount;
@@ -2430,8 +2766,284 @@ function project(wealth0, income0, savingsRate, expense0, expenseGrowth, incomeG
   return {rows, hitYear, hitYearFrac};
 }
 
+// ===== Punto 15: simulatore what-if (sandbox) =====
+// Stessa identica logica di project(), con in più gli eventi una tantum — una
+// vendita, un'eredità, una spesa grossa in un anno preciso — che project() non sa
+// gestire. Non tocco project() (è testata e usata ovunque): questa è una
+// funzione a parte, per non rischiare di romperla.
+function projectWithEvents(wealth0, income0, savingsRate, expense0, expenseGrowth, incomeGrowth2y, ret, horizon, withdrawalRate, eventi) {
+  const multiplier = 100 / (withdrawalRate || 4);
+  const rows = []; let wealth = wealth0; let income = income0; let hitYear = null; let hitYearFrac = null;
+  const eventiPerAnno = {};
+  (eventi||[]).forEach(e => { eventiPerAnno[e.anno] = (eventiPerAnno[e.anno]||0) + Number(e.importo||0); });
+  for (let y=1; y<=horizon; y++) {
+    if (y>1 && (y-1)%2===0) income += incomeGrowth2y;
+    const expense = expense0 + expenseGrowth*(y-1);
+    const contribution = income * savingsRate;
+    const wealthStart = wealth;
+    wealth = wealth*(1+ret) + contribution + (eventiPerAnno[y]||0);
+    const target = expense*multiplier;
+    if (!hitYear && wealth >= target) {
+      hitYear = y;
+      const range = wealth - wealthStart;
+      const frac = range > 0 ? Math.max(0, Math.min(1, (target - wealthStart) / range)) : 0;
+      hitYearFrac = (y - 1) + frac;
+    }
+    rows.push({year:y, wealth, expense, target, evento: eventiPerAnno[y]||0});
+  }
+  return {rows, hitYear, hitYearFrac};
+}
+let scenarioWhatIfEventi = [];
+let scenarioWhatIfChartInstance = null;
+
+// ===== Proiezione dei flussi di cassa mese per mese =====
+// Prima computeFutureCashflows copriva solo cedole/rimborsi di bond e depositi —
+// non un vero cash flow. Qui si mette insieme tutto quello che già esiste altrove
+// (stipendio, affitti, voci ricorrenti, rate di mutuo) in un unico calendario,
+// invece di lasciarlo sparso in card diverse. Nessuna logica di calcolo nuova:
+// solo la stessa logica già usata da ciascun motore, applicata a mesi futuri.
+function computeCashFlowProjection(monthsAhead) {
+  const months = monthsAhead || 12;
+  const startY = now.getFullYear(), startM = now.getMonth()+1;
+  const mesi = [];
+  for (let i=0;i<months;i++) {
+    let y=startY, m=startM+i;
+    while (m>12) { m-=12; y++; }
+    mesi.push({ y, m, key: `${y}-${String(m).padStart(2,"0")}` });
+  }
+  const perMese = {};
+  mesi.forEach(mo => { perMese[mo.key] = { entrate:0, uscite:0, dettaglioEntrate:[], dettaglioUscite:[] }; });
+  function aggiungi(key, tipo, importo, label) {
+    if (!perMese[key] || !(importo > 0)) return;
+    if (tipo === "entrata") { perMese[key].entrate += importo; perMese[key].dettaglioEntrate.push({label, importo}); }
+    else { perMese[key].uscite += importo; perMese[key].dettaglioUscite.push({label, importo}); }
+  }
+
+  // 1) Cedole, interessi, rimborsi capitale di bond/depositi — già pronto.
+  computeFutureCashflows(months).rows.forEach(r => {
+    aggiungi(r.date.slice(0,7), "entrata", r.net, `${r.kind} ${r.label}`);
+  });
+
+  // 2) Stipendio netto atteso, per ogni rapporto di lavoro attivo — stessa logica
+  // di stipendioAttesoResiduoAnno() (punto 11), qui estesa a N mesi qualunque,
+  // non solo fino a fine anno.
+  const attivi = stipendiAttivi();
+  if (attivi.length) {
+    const calc = calcolaBustePagaCumulate(attivi);
+    attivi.forEach(s => {
+      const r = calc.righe.find(x => x.stipendio.id === s.id);
+      if (!r || !(r.netto > 0)) return;
+      const giorno = Math.min(Math.max(Number(s.giornoPaga)||10, 1), 28);
+      mesi.forEach(mo => {
+        const dataPaga = `${mo.key}-${String(giorno).padStart(2,"0")}`;
+        if (dataPaga > todayISO) aggiungi(mo.key, "entrata", r.netto, `Stipendio ${s.issuerName||""}`.trim());
+      });
+    });
+  }
+
+  // 3) Affitti attesi, per ogni immobile affittato — stessa regola di
+  // autoGenerateRentalIncome, proiettata invece che generata.
+  data.portfolio.forEach(p => {
+    if (!isRealEstateType(p.type, p.macro) || !p.isRented || !p.rentalAmount || !p.rentalStartDate) return;
+    const giorno = Math.min(new Date(p.rentalStartDate).getDate(), 28);
+    mesi.forEach(mo => {
+      if (p.rentalEndDate && mo.key > p.rentalEndDate.slice(0,7)) return;
+      const dataAffitto = `${mo.key}-${String(giorno).padStart(2,"0")}`;
+      if (dataAffitto < p.rentalStartDate) return;
+      const netto = toALL(p.rentalAmount * (1 - (p.rentalTaxPct||0)/100), p.rentalCurrency);
+      aggiungi(mo.key, "entrata", netto, `Affitto ${p.propertyType||p.type}`);
+    });
+  });
+
+  // 4) Voci ricorrenti (reddito e spese) — shouldGenerateForMonth() già esiste e
+  // accetta anno/mese qualunque: qui si riusa per proiettare avanti, non solo il
+  // mese corrente come fa generateRecurring().
+  ["income","expenses"].forEach(group => {
+    (data.recurring[group]||[]).forEach(rule => {
+      mesi.forEach(mo => {
+        if (!shouldGenerateForMonth(rule, mo.y, mo.m)) return;
+        const importo = toALL(Number(rule.amount)||0, rule.currency||"ALL");
+        aggiungi(mo.key, group==="income" ? "entrata" : "uscita", importo, rule.category);
+      });
+    });
+  });
+
+  // 5) Rate di mutuo/prestito non ancora pagate.
+  data.portfolio.forEach(p => {
+    if (!isDebtType(p.type, p.macro) || isCreditCardType(p.type) || !Array.isArray(p.schedule)) return;
+    p.schedule.filter(r => !r.processed && r.dueDate).forEach(r => {
+      aggiungi(r.dueDate.slice(0,7), "uscita", (Number(r.capital)||0) + (Number(r.interest)||0), `Rata ${p.type}`);
+    });
+  });
+
+  const liquiditaOggi = data.portfolio
+    .filter(p => data.paymentTypes.includes(p.type))
+    .reduce((s,p) => s + toALL(Number(p.amount)||0, p.currency), 0);
+  let saldoCumulato = liquiditaOggi;
+  return mesi.map(mo => {
+    const d = perMese[mo.key];
+    const netto = d.entrate - d.uscite;
+    saldoCumulato += netto;
+    return { mese: mo.key, entrate: d.entrate, uscite: d.uscite, netto, saldoCumulato,
+      dettaglioEntrate: d.dettaglioEntrate, dettaglioUscite: d.dettaglioUscite };
+  });
+}
+
 let chartInstance = null;
 let fireChartInstance = null;
+let wealthHistoryChartInstance = null;
+
+// ===== Simulazione Monte Carlo (punto 12) =====
+// A differenza delle 3 linee bear/central/bull (rendimento fisso ogni anno), qui
+// ogni anno il rendimento è casuale — cattura il rischio di sequenza: due
+// percorsi con la STESSA media possono finire molto diversamente a seconda di
+// QUANDO arrivano gli anni negativi, specialmente nella fase di prelievo. Il
+// risultato è una probabilità di successo, non un singolo numero "raggiunto sì/no".
+// Box-Muller: due numeri uniformi -> uno normale, senza librerie esterne.
+function randNormale(media, devStd) {
+  let u1 = 0, u2 = 0;
+  while (u1 === 0) u1 = Math.random();
+  u2 = Math.random();
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  return media + z * devStd;
+}
+// Tre strategie di prelievo, non solo quella fissa:
+// - "fissa": importo che cresce con l'inflazione, sempre lo stesso indipendentemente
+//   da come va il mercato — quella che c'era finora.
+// - "guardrails" (Guyton-Klinger semplificato): se il tasso di prelievo attuale
+//   (spesa/patrimonio) sale sopra il 120% di quello iniziale, si taglia la spesa
+//   del 10% quell'anno; se scende sotto l'80%, si aumenta del 10%. Riduce il
+//   rischio di rovina, al costo di una spesa meno prevedibile.
+// - "percentualeDinamica": si preleva sempre la stessa % del patrimonio CORRENTE,
+//   non un importo fisso — il patrimonio da solo non si esaurisce mai per il
+//   prelievo (può comunque crollare per un rendimento molto negativo), ma la
+//   spesa erogata oscilla di anno in anno insieme al mercato.
+function simulazioneMonteCarlo(opts) {
+  const { wealth0, income0, savingsRate, expense0, expenseGrowth, incomeGrowth2y,
+    meanRet, devStd, horizonAccumulo, annidiPrelievo, withdrawalRate, nSimulazioni, strategiaPrelievo } = opts;
+  const strategia = strategiaPrelievo || "fissa";
+  const n = nSimulazioni || 1000;
+  const multiplier = 100 / (withdrawalRate || 4);
+  let successi = 0, mancatoTraguardo = 0;
+  const patrimoniFinali = [];
+  const volatilitaPerSim = [];
+  for (let sim = 0; sim < n; sim++) {
+    let wealth = wealth0, income = income0, traguardoAnno = null, speseAlTraguardo = 0;
+    for (let y = 1; y <= horizonAccumulo; y++) {
+      if (y > 1 && (y-1) % 2 === 0) income += incomeGrowth2y;
+      const expense = expense0 + expenseGrowth * (y-1);
+      const contribution = income * savingsRate;
+      const ret = randNormale(meanRet, devStd);
+      wealth = wealth * (1 + ret) + contribution;
+      const target = expense * multiplier;
+      if (!traguardoAnno && wealth >= target) { traguardoAnno = y; speseAlTraguardo = expense; }
+    }
+    if (!traguardoAnno) { mancatoTraguardo++; patrimoniFinali.push(wealth); continue; }
+    // Fase di prelievo: il capitale deve reggere altri `annidiPrelievo` anni,
+    // con rendimenti ancora casuali — è qui che il rischio di sequenza pesa
+    // davvero, e dove le tre strategie si comportano diversamente.
+    let speseAnno = speseAlTraguardo;
+    const tassoIniziale = wealth > 0 ? speseAlTraguardo / wealth : 0;
+    let fallito = false;
+    const speseErogate = [];
+    for (let y = 1; y <= annidiPrelievo; y++) {
+      const ret = randNormale(meanRet, devStd);
+      let prelievo;
+      if (strategia === "percentualeDinamica") {
+        prelievo = wealth * tassoIniziale;
+      } else if (strategia === "guardrails") {
+        const tassoAttuale = wealth > 0 ? speseAnno / wealth : Infinity;
+        if (tassoAttuale > tassoIniziale * 1.20) speseAnno *= 0.90;
+        else if (tassoAttuale < tassoIniziale * 0.80) speseAnno *= 1.10;
+        else speseAnno += expenseGrowth;
+        prelievo = speseAnno;
+      } else {
+        prelievo = speseAnno;
+        speseAnno += expenseGrowth;
+      }
+      wealth = wealth * (1 + ret) - prelievo;
+      speseErogate.push(prelievo);
+      if (wealth < 0) { fallito = true; break; }
+    }
+    if (!fallito) {
+      successi++;
+      const media = speseErogate.reduce((s,v)=>s+v,0) / speseErogate.length;
+      if (media > 0) {
+        const varianza = speseErogate.reduce((s,v)=>s+(v-media)*(v-media),0) / speseErogate.length;
+        volatilitaPerSim.push(Math.sqrt(varianza) / media * 100);
+      }
+    }
+    patrimoniFinali.push(Math.max(0, wealth));
+  }
+  patrimoniFinali.sort((a,b) => a-b);
+  const percentile = p => patrimoniFinali[Math.floor(p * (patrimoniFinali.length-1))];
+  return {
+    percentualeSuccesso: successi / n * 100,
+    percentualeMancatoTraguardo: mancatoTraguardo / n * 100,
+    p10: percentile(0.10), p50: percentile(0.50), p90: percentile(0.90),
+    volatilitaSpesa: volatilitaPerSim.length ? volatilitaPerSim.reduce((s,v)=>s+v,0)/volatilitaPerSim.length : null,
+    strategia, n
+  };
+}
+function renderRisultatoMonteCarlo(r) {
+  const cls = r.percentualeSuccesso >= 85 ? "up" : r.percentualeSuccesso >= 60 ? "" : "down";
+  return `
+    <div class="stat-row"><span class="label">Probabilità di successo</span><span class="val ${cls}" style="font-size:18px;">${r.percentualeSuccesso.toFixed(1)}%</span></div>
+    <div class="subtle" style="margin-bottom:6px;">su ${r.n} scenari indipendenti, quanti non finiscono i soldi</div>
+    ${r.percentualeMancatoTraguardo>0 ? `<div class="stat-row"><span class="label">· non raggiunge nemmeno il traguardo</span><span class="val down">${r.percentualeMancatoTraguardo.toFixed(1)}%</span></div>` : ''}
+    ${r.volatilitaSpesa!=null ? `<div class="stat-row"><span class="label">Variabilità della spesa erogata</span><span class="val">±${r.volatilitaSpesa.toFixed(1)}%</span></div>` : ''}
+    <div class="stat-row"><span class="label">Patrimonio finale · scenario sfortunato (10°)</span><span class="val">${fmtDisplay(r.p10)}</span></div>
+    <div class="stat-row"><span class="label">Patrimonio finale · scenario mediano</span><span class="val">${fmtDisplay(r.p50)}</span></div>
+    <div class="stat-row"><span class="label">Patrimonio finale · scenario fortunato (90°)</span><span class="val">${fmtDisplay(r.p90)}</span></div>`;
+}
+function renderRisultatoWhatIf(attuale, scenario) {
+  const diffAnni = (scenario.hitYearFrac ?? null) !== null && (attuale.hitYearFrac ?? null) !== null
+    ? scenario.hitYearFrac - attuale.hitYearFrac : null;
+  const nonRaggiunto = "non raggiunto nell'orizzonte";
+  return `
+    <div class="stat-row"><span class="label">Piano attuale</span><span class="val">${attuale.hitYear ? attuale.hitYear+' anni' : nonRaggiunto}</span></div>
+    <div class="stat-row"><span class="label">Scenario</span><span class="val ${diffAnni!=null && diffAnni<=0 ? 'up':'down'}">${scenario.hitYear ? scenario.hitYear+' anni' : nonRaggiunto}</span></div>
+    ${diffAnni!=null ? `<div class="stat-row"><span class="label">Differenza</span><span class="val ${diffAnni<=0?'up':'down'}">${diffAnni<=0?'':'+'}${diffAnni.toFixed(1)} anni</span></div>` : ''}`;
+}
+
+// ===== Compare Mode: fino a 3 scenari salvati, a differenza del what-if sopra
+// (che si perde chiudendo la scheda), questi restano — persistiti in
+// data.settings come tutto il resto, per tornarci sopra in un altro momento.
+const SCENARI_COMPARATIVI_MAX = 3;
+const SCENARI_COMPARATIVI_COLORI = ['#C9A227', '#3F6E5E', '#8B5FBF'];
+function scenariComparativiCard() {
+  const scenari = data.settings.scenariComparativi || [];
+  if (!scenari.length) return "";
+  const s = data.settings;
+  const wealth0 = portfolioTotalALL();
+  const righe = scenari.map((sc, i) => {
+    const proj = projectWithEvents(wealth0, sc.income, sc.savingsRate/100, sc.expense,
+      s.expenseGrowth, s.incomeGrowth2y, sc.ret/100, sc.horizon, sc.withdrawal, sc.eventi||[]);
+    const finale = proj.rows.length ? proj.rows[proj.rows.length-1].wealth : wealth0;
+    return { nome: sc.nome, id: sc.id, colore: SCENARI_COMPARATIVI_COLORI[i%3], proj, finale, monteCarlo: sc.monteCarlo||null };
+  });
+  const etichetteStrategia = { fissa: "fissa", guardrails: "guardrails", percentualeDinamica: "% dinamica" };
+  return `
+    <div class="card">
+      <h3>Confronto scenari</h3>
+      <div class="subtle">${scenari.length} scenario/i salvati, calcolati con la stessa proiezione del piano attuale.</div>
+      ${righe.map(r => `<div class="stat-row" style="align-items:flex-start; flex-direction:column;">
+        <div style="display:flex; justify-content:space-between; width:100%; align-items:flex-start;">
+          <span class="label"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${r.colore}; margin-right:6px;"></span>${r.nome}</span>
+          <span class="val" style="text-align:right;">
+            ${r.proj.hitYear ? r.proj.hitYear+' anni' : 'non raggiunto'}
+            <br><span class="subtle" style="font-size:9px;">patrimonio a fine orizzonte: ${fmtDisplay(r.finale)}</span>
+          </span>
+          <button class="secondary" type="button" data-rimuovi-scenario="${r.id}" style="width:auto; padding:3px 8px; font-size:11px; margin-left:8px;">✕</button>
+        </div>
+        ${r.monteCarlo ? `<div class="subtle" style="font-size:10px; margin-top:4px; padding:6px; background:#0F1B2E; border-radius:4px; width:100%;">
+          🎲 Monte Carlo (${etichetteStrategia[r.monteCarlo.strategia]||r.monteCarlo.strategia}) — successo: <b style="color:${r.monteCarlo.percentualeSuccesso>=85?'#3F6E5E':r.monteCarlo.percentualeSuccesso>=60?'#C9A227':'#8B3A2F'};">${r.monteCarlo.percentualeSuccesso.toFixed(1)}%</b>${r.monteCarlo.volatilitaSpesa!=null?`, variabilità spesa ±${r.monteCarlo.volatilitaSpesa.toFixed(1)}%`:''}
+          <br>istantanea del ${new Date(r.monteCarlo.timestamp).toLocaleDateString("it-IT")} — <button type="button" data-rilancia-mc="${r.id}" style="background:none; border:none; color:#C9A227; cursor:pointer; text-decoration:underline; padding:0; font-size:10px;">rilancia</button>
+        </div>` : ''}
+      </div>`).join('')}
+      <div class="chart-wrap" style="margin-top:10px;"><canvas id="scenariComparativiChart" height="200"></canvas></div>
+    </div>`;
+}
 let categoryChartInstance = null;
 let macroCompareChartInstance = null;
 let monthlyTotalsChartInstance = null;
@@ -2472,7 +3084,73 @@ function scrollableListaWrap(innerHtml, cap, emptyHtml) {
   return `<div style="max-height:480px; overflow-y:auto; padding-right:2px;">${innerHtml}</div>` +
     (cap.truncated ? `<div class="subtle" style="margin-top:8px; text-align:center;">Mostrate le ${LISTA_MAX_VOCI} più recenti su ${cap.total} — usa i filtri o la ricerca globale per le altre.</div>` : '');
 }
+// ===== Esportazione CSV (Reddito/Spese/Patrimonio) =====
+// Stesso meccanismo di download del backup JSON, per coerenza. Il BOM UTF-8
+// serve perché Excel, senza, mostra male le lettere accentate.
+function toCsvValue(v) {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",;\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function arrayToCSV(headers, rows) {
+  return [headers, ...rows].map(r => r.map(toCsvValue).join(",")).join("\r\n");
+}
+function esportaCSV(nomeFile, csvContent) {
+  const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = nomeFile;
+  a.click(); URL.revokeObjectURL(url);
+  return true;
+}
+function esportaRedditoCSV() {
+  const headers = ["Data","Categoria","Macro-categoria","Importo","Valuta","Codice titolo","Società/Ente","Pagato su","Nota"];
+  const rows = data.income.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).map(i => [
+    i.date, i.category, i.macro||"", i.amount, i.currency||"ALL", i.securityCode||"", i.issuerName||"", i.paymentType||"", i.note||"" ]);
+  return esportaCSV(`fi-tracker-reddito-${todayISO}.csv`, arrayToCSV(headers, rows));
+}
+function esportaSpeseCSV() {
+  const headers = ["Data","Categoria","Macro-categoria","Importo (ALL)","Codice titolo","Società/Ente","Pagato con","Nota"];
+  const rows = data.expenses.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).map(e => [
+    e.date, e.category, e.macro||"", e.amount, e.securityCode||"", e.issuerName||"", e.paymentType||"", e.note||"" ]);
+  return esportaCSV(`fi-tracker-spese-${todayISO}.csv`, arrayToCSV(headers, rows));
+}
+function esportaPatrimonioCSV() {
+  const headers = ["Tipo","Macro-categoria","Data","Importo","Valuta","Valore di mercato","Codice titolo","Società/Ente","Scadenza","Nota"];
+  const rows = data.portfolio.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).map(p => [
+    p.type, p.macro||"", p.date||"", p.amount, p.currency, (p.marketValue!=null?p.marketValue:""), p.securityCode||"", p.issuerName||"", p.maturityDate||"", p.note||"" ]);
+  return esportaCSV(`fi-tracker-patrimonio-${todayISO}.csv`, arrayToCSV(headers, rows));
+}
 let portfolioEditModeActive = false;
+let ultimoControlloIntegrita = null;
+let ultimoRisultatoMonteCarlo = null;
+let elencoBackupAutomatici = null;
+function renderElencoBackupAutomatici(elenco) {
+  if (elenco === null) return '';
+  if (!elenco.length) return '<div class="subtle" style="margin-top:8px;">Nessun backup automatico ancora salvato — il primo viene creato al prossimo avvio, se ci sono almeno 5 voci registrate.</div>';
+  const ordinati = elenco.slice().sort((a,b) => b.key.localeCompare(a.key));
+  return '<div style="margin-top:8px;">' + ordinati.map(s => {
+    const d = new Date(s.key);
+    const n = (s.value.income||[]).length + (s.value.expenses||[]).length + (s.value.portfolio||[]).length;
+    return `<div class="stat-row">
+      <span class="label" style="font-size:12px;">${d.toLocaleDateString("it-IT")} ${d.toLocaleTimeString("it-IT",{hour:'2-digit',minute:'2-digit'})}</span>
+      <span style="display:flex; gap:6px; align-items:center;">
+        <span class="subtle" style="font-size:10px;">${n} voci</span>
+        <button class="secondary" type="button" data-scarica-backup="${escAttr(s.key)}" style="width:auto; padding:3px 8px; font-size:11px;">Scarica</button>
+        <button class="secondary" type="button" data-ripristina-backup="${escAttr(s.key)}" style="width:auto; padding:3px 8px; font-size:11px; border-color:#8B3A2F; color:#8B3A2F;">Ripristina</button>
+      </span>
+    </div>`;
+  }).join('') + '</div>';
+}
+function renderRisultatoIntegrita(problemi) {
+  if (!problemi.length) return `<div class="stat-row"><span class="val up">✓ Nessun problema trovato.</span></div>`;
+  const badgeColor = { alta: "#8B3A2F", media: "#C9A227", bassa: "#5C7089" };
+  return `<div class="subtle" style="margin-bottom:6px;">${problemi.length} cosa/e da guardare:</div>` +
+    problemi.map(p => `<div class="stat-row" style="align-items:flex-start;">
+      <span class="pill" style="background:${badgeColor[p.gravita]}22; color:${badgeColor[p.gravita]}; border-color:${badgeColor[p.gravita]}; white-space:nowrap;">${p.tipo}</span>
+      <span class="subtle" style="flex:1; text-align:left; margin-left:8px;">${p.msg}</span>
+    </div>`).join('');
+}
 let editingIncomeId = null;
 let editingExpenseId = null;
 let fundImportPreview = null; // {type, fundName, rows: [{date, amount, unitPrice, units}]}
@@ -2669,6 +3347,13 @@ function renderDashboard() {
   const expenseThisMonth = monthTotal(data.expenses, thisMonth);
   const incomeLastMonth = monthTotal(data.income, lastMonthStr);
   const expenseLastMonth = monthTotal(data.expenses, lastMonthStr);
+  // Solo spese di vita (non tasse/contributi/commissioni/interessi automatici):
+  // usate per il ritmo di spesa contro il budget, che il budget stesso non prevede
+  // di includere. Il tasso di risparmio invece resta sulle spese TOTALI qualche
+  // riga sotto: le tasse sono denaro che esce comunque, riducono per davvero
+  // quanto accumuli, quindi lì vanno contate.
+  const personalExpenseThisYear = yearTotal(spesePersonali(data.expenses), thisYear);
+  const personalExpenseThisMonth = monthTotal(spesePersonali(data.expenses), thisMonth);
 
   const effIncome = incomeThisYear > 0 ? incomeThisYear : null;
   const effExpense = expenseThisYear > 0 ? expenseThisYear : null;
@@ -2680,11 +3365,22 @@ function renderDashboard() {
   const wealth0 = portfolioTotalALL();
   const projIncome = effIncome || 0;
   const projExpenseBase = effExpense || s.expenseBase;
+  // La proiezione FI accumulava reddito × tasso OBIETTIVO impostato in Assunzioni,
+  // non quanto risparmi per davvero. Da qui usa il tasso reale quando c'è
+  // abbastanza storico per calcolarlo, l'obiettivo solo come riferimento iniziale
+  // (utente nuovo, ancora senza dati sufficienti).
+  // Due viste, come per la base di spesa (Budget/Proiezione): "reale" usa il tasso
+  // misurato sui dati quando c'è abbastanza storico (ricade sull'obiettivo solo se
+  // manca), "obiettivo" usa sempre quello impostato in Assunzioni, anche quando il
+  // reale è disponibile — utile per confrontare "dove sarei se rispettassi il piano"
+  // con "dove sto andando davvero".
+  const savingsRateMode = s.savingsRateProjectionMode || "reale";
+  const savingsRateForProjection = (savingsRateMode === "reale" && actualSavingsRate !== null) ? actualSavingsRate/100 : s.savingsRateTarget/100;
 
   const dayOfYearNow = Math.ceil((now - new Date(thisYear,0,1)) / 86400000) || 1;
   const annualBudgetVal = annualBudgetForYear(thisYear);
-  const monthsWithExpenseData = new Set(data.expenses.filter(e=>e.date && e.date.slice(0,4)===String(thisYear)).map(e=>e.date.slice(0,7))).size;
-  const projectedAnnualExpense = (expenseThisYear>0 && monthsWithExpenseData>0) ? (expenseThisYear/monthsWithExpenseData*12) : annualBudgetVal;
+  const monthsWithExpenseData = new Set(spesePersonali(data.expenses).filter(e=>e.date && e.date.slice(0,4)===String(thisYear)).map(e=>e.date.slice(0,7))).size;
+  const projectedAnnualExpense = (personalExpenseThisYear>0 && monthsWithExpenseData>0) ? (personalExpenseThisYear/monthsWithExpenseData*12) : annualBudgetVal;
   const fireBaseMode = s.fireExpenseBaseMode || "budget";
   const fireExpenseBase = fireBaseMode === "projected" ? projectedAnnualExpense : annualBudgetVal;
 
@@ -2693,14 +3389,14 @@ function renderDashboard() {
     {key:"central", ret:s.centralRet/100, color:"#C9A227", label:"Central"},
     {key:"bull", ret:(s.centralRet+1)/100, color:"#3F6E5E", label:"Bull"},
   ];
-  const results = scenarios.map(sc => ({...sc, ...project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, sc.ret, s.horizon, s.withdrawalRate||4)}));
+  const results = scenarios.map(sc => ({...sc, ...project(wealth0, projIncome, savingsRateForProjection, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, sc.ret, s.horizon, s.withdrawalRate||4)}));
   const central = results[1];
 
   // Rendimento reale secondo Fisher: (1+nominale)/(1+inflazione) − 1.
   // Serve a distinguere "il numero cresce" da "puoi comprare di più".
   const inflPct = s.inflationPct != null ? Number(s.inflationPct) : 3;
   const realRet = (1 + s.centralRet/100) / (1 + inflPct/100) - 1;
-  const centralReal = project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase,
+  const centralReal = project(wealth0, projIncome, savingsRateForProjection, fireExpenseBase,
     s.expenseGrowth, s.incomeGrowth2y, realRet, s.horizon, s.withdrawalRate||4);
   const wealthNominalEnd = central.rows.length ? central.rows[central.rows.length-1].wealth : wealth0;
   // Potere d'acquisto: quanto varrebbe oggi il patrimonio nominale finale.
@@ -2710,7 +3406,7 @@ function renderDashboard() {
   const fireHorizonExt = Math.max(s.horizon, 100);
   const fireNumbers = fireRates.map(rate => {
     const target = fireExpenseBase * 100/rate;
-    const proj = project(wealth0, projIncome, s.savingsRateTarget/100, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, fireHorizonExt, rate);
+    const proj = project(wealth0, projIncome, savingsRateForProjection, fireExpenseBase, s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, fireHorizonExt, rate);
     return { rate, target, years: proj.hitYearFrac };
   });
 
@@ -2729,9 +3425,9 @@ function renderDashboard() {
   const annualBudget = annualBudgetForYear(thisYear);
   const monthlyBudget = annualBudget/12;
   const dailyBudget = annualBudget/365;
-  const spentToday = dayTotal(data.expenses, todayISO);
-  const spentMonth = expenseThisMonth;
-  const spentYear = expenseThisYear;
+  const spentToday = dayTotal(spesePersonali(data.expenses), todayISO);
+  const spentMonth = personalExpenseThisMonth;
+  const spentYear = personalExpenseThisYear;
 
   // Recurring commitments (monthly)
   const recurringExpMonthly = (data.recurring.expenses||[]).reduce((sum,r)=>sum+Number(r.amount)/((FREQUENCIES.find(f=>f.key===(r.frequency||"monthly"))||FREQUENCIES[0]).months),0);
@@ -2856,14 +3552,90 @@ function renderDashboard() {
       <div class="stat-row"><span class="label">Totale (€)</span><span class="val">${fmt(wealth0/s.fx)} €</span></div>
       <div class="stat-row"><span class="label">Totale ($)</span><span class="val">${fmt(wealth0/s.fxUsd)} $</span></div>
     </div>
+    ${(() => {
+      const snap = [...data.snapshots].sort((a,b)=>a.date.localeCompare(b.date));
+      if (snap.length < 2) return '';
+      const primo = snap[0], ultimo = snap[snap.length-1];
+      const variazione = primo.wealth>0 ? ((ultimo.wealth/primo.wealth - 1) * 100) : null;
+      const twr = computeTWR();
+      return `<div class="card">
+        <h3>Patrimonio nel tempo</h3>
+        <div class="subtle">Un punto per mese, da quando l'app ha iniziato a registrarli.</div>
+        <div class="chart-wrap"><canvas id="wealthHistoryChart" height="180"></canvas></div>
+        ${variazione!=null ? `<div class="stat-row"><span class="label">Variazione nominale (da ${primo.date} a ${ultimo.date})</span><span class="val ${variazione>=0?'up':'down'}">${variazione>=0?'+':''}${variazione.toFixed(1)}%</span></div>` : ''}
+        ${twr ? `
+        <div class="stat-row"><span class="label">· di cui rendimento (TWR)</span><span class="val ${twr.twrTotale>=0?'up':'down'}">${twr.twrTotale>=0?'+':''}${twr.twrTotale.toFixed(1)}%</span></div>
+        ${twr.twrAnnualizzato!=null ? `<div class="stat-row"><span class="label">· annualizzato</span><span class="val ${twr.twrAnnualizzato>=0?'up':'down'}">${twr.twrAnnualizzato.toFixed(2)}%/anno</span></div>` : ''}
+        <div class="subtle" style="font-size:10px; margin-top:4px;">La variazione nominale include anche quanto hai versato/prelevato; il TWR lo scorpora, pesando ogni versamento/spesa in base al giorno esatto in cui è avvenuto — non un'approssimazione mensile.</div>` : ''}
+      </div>`;
+    })()}
     <div class="card">
       <h3>Proiezione FI</h3>
-      <div class="subtle">Target = 25× spesa annua. Reddito/spesa base presi dai dati registrati (o dal budget se ancora vuoti).</div>
+      <div class="subtle">Target = 25× spesa annua. Reddito/spesa base presi dai dati registrati (o dal budget se ancora vuoti). Tasso di risparmio usato: <b>${(savingsRateForProjection*100).toFixed(1)}%</b> (${savingsRateMode==='reale'?(actualSavingsRate!==null?'reale, dai tuoi dati':'obiettivo, dati reali non ancora sufficienti'):'obiettivo impostato in Assunzioni'}).</div>
+      <div class="row2" style="margin-bottom:10px;">
+        <button class="secondary" type="button" id="savingsRateModeReale" style="${savingsRateMode==='reale'?'border-color:#C9A227;color:#C9A227;':''}">Reale${actualSavingsRate!==null?' ('+actualSavingsRate.toFixed(1)+'%)':''}</button>
+        <button class="secondary" type="button" id="savingsRateModeObiettivo" style="${savingsRateMode==='obiettivo'?'border-color:#C9A227;color:#C9A227;':''}">Obiettivo (${s.savingsRateTarget}%)</button>
+      </div>
       <div class="chart-wrap"><canvas id="fiChart" height="200"></canvas></div>
       <div class="grid3" style="margin-top:12px;">
         ${results.map(r=>`<div style="text-align:center;"><div style="font-size:10px;color:#8FA3BF;text-transform:uppercase;">${r.label}</div><div style="font-family:'IBM Plex Mono',monospace;color:${r.color};font-size:15px;">${r.hitYear ?? '>'+s.horizon}</div></div>`).join('')}
       </div>
     </div>
+    <div class="card">
+      <h3>Simulazione Monte Carlo</h3>
+      <div class="subtle">Le 3 linee sopra usano un rendimento fisso ogni anno — non catturano il rischio di sequenza (due percorsi con la stessa media possono finire molto diversamente a seconda di QUANDO arrivano gli anni negativi, specialmente nei primi anni di prelievo). Qui ${data.settings.montecarloAnniPrelievo||30} scenari casuali indipendenti simulano l'intero percorso, accumulo più ${data.settings.montecarloAnniPrelievo||30} anni di prelievo, e si conta in quale percentuale il capitale regge fino in fondo.</div>
+      <div class="row2" style="margin:8px 0;">
+        <div><label>Deviazione standard rendimento (%/anno)</label><input type="number" id="montecarloDevStdInput" min="1" max="40" step="0.5" value="${data.settings.montecarloDevStd||10}"></div>
+        <div><label>Anni di prelievo da simulare</label><input type="number" id="montecarloAnniInput" min="5" max="60" step="1" value="${data.settings.montecarloAnniPrelievo||30}"></div>
+      </div>
+      <div style="margin-bottom:8px;">
+        <label>Strategia di prelievo</label>
+        <select id="montecarloStrategiaSelect">
+          <option value="fissa" ${(data.settings.montecarloStrategiaPrelievo||'fissa')==='fissa'?'selected':''}>Fissa — spesa che cresce con l'inflazione, sempre uguale</option>
+          <option value="guardrails" ${data.settings.montecarloStrategiaPrelievo==='guardrails'?'selected':''}>Guardrails — taglia/aumenta la spesa se il tasso di prelievo esce da una banda ±20%</option>
+          <option value="percentualeDinamica" ${data.settings.montecarloStrategiaPrelievo==='percentualeDinamica'?'selected':''}>Percentuale dinamica — preleva sempre la stessa % del patrimonio corrente</option>
+        </select>
+        <div class="subtle" style="font-size:10px; margin-top:3px;">Fissa è la più prevedibile ma la più a rischio di rovina; le altre due riducono quel rischio al costo di una spesa che varia di anno in anno.</div>
+      </div>
+      <button class="primary" type="button" id="eseguiMonteCarloBtn">Esegui 1.000 simulazioni</button>
+      <div id="monteCarloResultBox" style="margin-top:10px;">${ultimoRisultatoMonteCarlo ? renderRisultatoMonteCarlo(ultimoRisultatoMonteCarlo) : ''}</div>
+    </div>
+    <div class="card">
+      <h3>Simulatore what-if</h3>
+      <div class="subtle">Uno spazio per fare domande senza toccare le tue impostazioni vere: "cosa succede se..." Niente qui viene salvato — chiudi la scheda e sparisce tutto, a meno che tu non modifichi Assunzioni di proposito.</div>
+      <div class="row2" style="margin:8px 0;">
+        <div><label>Reddito annuo (ALL)</label><input type="number" id="whatIfIncome" value="${Math.round(projIncome)}"></div>
+        <div><label>Spesa annua (ALL)</label><input type="number" id="whatIfExpense" value="${Math.round(fireExpenseBase)}"></div>
+      </div>
+      <div class="row2" style="margin-bottom:8px;">
+        <div><label>Tasso di risparmio (%)</label><input type="number" id="whatIfSavingsRate" min="0" max="100" step="0.1" value="${(savingsRateForProjection*100).toFixed(1)}"></div>
+        <div><label>Rendimento atteso (%/anno)</label><input type="number" id="whatIfReturn" step="0.1" value="${s.centralRet}"></div>
+      </div>
+      <div class="row2" style="margin-bottom:8px;">
+        <div><label>Orizzonte (anni)</label><input type="number" id="whatIfHorizon" min="1" max="80" value="${s.horizon}"></div>
+        <div><label>Tasso di prelievo (%)</label><input type="number" id="whatIfWithdrawal" min="1" max="10" step="0.5" value="${s.withdrawalRate||4}"></div>
+      </div>
+      <div style="margin-top:10px;">
+        <label>Eventi una tantum (opzionali)</label>
+        <div id="whatIfEventiList">
+          ${scenarioWhatIfEventi.map((e,i)=>`<div class="row2" style="margin-bottom:6px; align-items:center;">
+            <input type="number" data-evento-anno="${i}" placeholder="anno" value="${e.anno}" style="flex:0.6;">
+            <input type="number" data-evento-importo="${i}" placeholder="importo (+ o −)" value="${e.importo}" style="flex:1;">
+            <button class="secondary" type="button" data-evento-rimuovi="${i}" style="width:auto; padding:6px 10px;">✕</button>
+          </div>`).join('')}
+        </div>
+        <button class="secondary" type="button" id="whatIfAggiungiEvento" style="margin-top:4px;">+ Aggiungi evento (es. vendita, eredità, spesa grossa)</button>
+      </div>
+      <button class="primary" type="button" id="whatIfCalcolaBtn" style="margin-top:12px;">Calcola scenario</button>
+      <div class="chart-wrap" style="margin-top:10px;"><canvas id="whatIfChart" height="200"></canvas></div>
+      <div id="whatIfResultBox"></div>
+      <div class="row2" style="margin-top:12px; align-items:center;">
+        <input type="text" id="whatIfNomeScenario" placeholder="nome dello scenario, es. 'Vendo casa nel 2030'" style="flex:1.5;">
+        <button class="secondary" type="button" id="whatIfSalvaScenarioBtn">Salva come scenario</button>
+      </div>
+      <div class="subtle" style="font-size:10px; margin-top:4px;">A differenza del calcolo sopra (che si perde chiudendo la scheda), uno scenario salvato resta — fino a 3, per confrontarli fianco a fianco qui sotto. Se hai appena girato la Simulazione Monte Carlo qui sopra, il risultato viene salvato insieme allo scenario.</div>
+    </div>
+    ${scenariComparativiCard()}
     <div class="card">
       <h3>In termini reali (inflazione ${inflPct}%)</h3>
       <div class="subtle">Il rendimento nominale dice quanto cresce il numero; quello reale dice quanto cresce ciò che puoi comprare. Con l'inflazione attesa impostata in Assunzioni.</div>
@@ -2875,6 +3647,7 @@ function renderDashboard() {
       <div class="stat-row"><span class="label">· potere d'acquisto di oggi</span><span class="val">${fmtDisplay(purchasingPower)}</span></div>
       ${realRet < 0 ? `<div class="alert-banner" style="margin-top:10px;">⚠ Con un rendimento del ${s.centralRet.toFixed(1)}% e inflazione al ${inflPct}%, il patrimonio investito perde potere d'acquisto nel tempo.</div>` : ''}
     </div>
+    ${costoGestioneCard()}
     ${taxSummary.total>0 ? `<div class="card">
       <h3>Riepilogo fiscale ${taxSummary.year}</h3>
       <div class="subtle">Tasse e commissioni pagate quest'anno su tutti gli asset insieme — utile come riferimento per la dichiarazione. Somma di ciò che è già stato registrato nell'app, non un calcolo fiscale ufficiale.</div>
@@ -2887,6 +3660,10 @@ function renderDashboard() {
       </div>
     </div>` : ''}
     ${allocationDriftCard()}
+    ${benchmarkCard()}
+    ${prezziScadutiCard()}
+    ${scadenzeCard()}
+    ${cashFlowProjectionCard()}
     ${portfolioReturnCard()}
     ${riquadroRischioPanoramica()}
     ${riquadroRendimentoRischio()}
@@ -2939,10 +3716,229 @@ function renderDashboard() {
     }
   });
 
+  const wealthCtx = document.getElementById("wealthHistoryChart");
+  if (wealthCtx) {
+    if (wealthHistoryChartInstance) wealthHistoryChartInstance.destroy();
+    const snapOrdinati = [...data.snapshots].sort((a,b)=>a.date.localeCompare(b.date));
+    wealthHistoryChartInstance = new Chart(wealthCtx, {
+      type: 'line',
+      data: { labels: snapOrdinati.map(sn=>sn.date), datasets: [{ label: `Patrimonio (${displaySymbol()})`,
+        data: snapOrdinati.map(sn=>toDisplay(sn.wealth)), borderColor:'#C9A227', backgroundColor:'#C9A22722', fill:true, tension:0.25, pointRadius:3, borderWidth:2 }] },
+      options: {
+        plugins: { legend: { display:false } },
+        scales: {
+          x: { ticks:{ color:'#6B7E99', font:{size:9} }, grid:{ color:'#1E2E47' } },
+          y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M' }, grid:{ color:'#1E2E47' } }
+        }
+      }
+    });
+  }
+
+  const cashFlowCtx = document.getElementById("cashFlowChart");
+  if (cashFlowCtx) {
+    if (cashFlowChartInstance) cashFlowChartInstance.destroy();
+    const proiezioneChart = computeCashFlowProjection(12);
+    cashFlowChartInstance = new Chart(cashFlowCtx, {
+      data: {
+        labels: proiezioneChart.map(m=>m.mese),
+        datasets: [
+          { type: 'bar', label: 'Netto mensile', data: proiezioneChart.map(m=>toDisplay(m.netto)),
+            backgroundColor: proiezioneChart.map(m=>m.netto>=0?'#3F6E5E99':'#8B3A2F99'), order: 2 },
+          { type: 'line', label: 'Saldo proiettato', data: proiezioneChart.map(m=>toDisplay(m.saldoCumulato)),
+            borderColor: '#C9A227', backgroundColor:'transparent', tension:0.2, pointRadius:2, borderWidth:2, order: 1 }
+        ]
+      },
+      options: {
+        plugins: { legend: { display:true, labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales: {
+          x: { ticks:{ color:'#6B7E99', font:{size:9} }, grid:{ color:'#1E2E47' } },
+          y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M' }, grid:{ color:'#1E2E47' } }
+        }
+      }
+    });
+  }
+
   bindBackupReminder(renderDashboard);
 
   document.getElementById("fireModeBudget").addEventListener("click", ()=>{ s.fireExpenseBaseMode = "budget"; saveData(); renderDashboard(); });
   document.getElementById("fireModeProjected").addEventListener("click", ()=>{ s.fireExpenseBaseMode = "projected"; saveData(); renderDashboard(); });
+  document.getElementById("savingsRateModeReale").addEventListener("click", ()=>{ s.savingsRateProjectionMode = "reale"; saveData(); renderDashboard(); });
+  document.getElementById("savingsRateModeObiettivo").addEventListener("click", ()=>{ s.savingsRateProjectionMode = "obiettivo"; saveData(); renderDashboard(); });
+  const monteCarloBtn = document.getElementById("eseguiMonteCarloBtn");
+  if (monteCarloBtn) monteCarloBtn.addEventListener("click", ()=>{
+    const devStd = Number(document.getElementById("montecarloDevStdInput").value) || 10;
+    const anniPrelievo = Number(document.getElementById("montecarloAnniInput").value) || 30;
+    const strategiaPrelievo = document.getElementById("montecarloStrategiaSelect").value || "fissa";
+    s.montecarloDevStd = devStd; s.montecarloAnniPrelievo = anniPrelievo; s.montecarloStrategiaPrelievo = strategiaPrelievo;
+    saveData();
+    monteCarloBtn.textContent = "Simulo...";
+    monteCarloBtn.disabled = true;
+    setTimeout(()=>{
+      ultimoRisultatoMonteCarlo = simulazioneMonteCarlo({
+        wealth0, income0: projIncome, savingsRate: savingsRateForProjection,
+        expense0: fireExpenseBase, expenseGrowth: s.expenseGrowth, incomeGrowth2y: s.incomeGrowth2y,
+        meanRet: s.centralRet/100, devStd: devStd/100,
+        horizonAccumulo: s.horizon, annidiPrelievo: anniPrelievo, withdrawalRate: s.withdrawalRate||4, nSimulazioni: 1000,
+        strategiaPrelievo
+      });
+      document.getElementById("monteCarloResultBox").innerHTML = renderRisultatoMonteCarlo(ultimoRisultatoMonteCarlo);
+      monteCarloBtn.textContent = "Esegui 1.000 simulazioni";
+      monteCarloBtn.disabled = false;
+    }, 30);
+  });
+
+  // Simulatore what-if: eventi una tantum gestiti in memoria (scenarioWhatIfEventi),
+  // niente si salva su data/saveData a meno che l'utente non tocchi Assunzioni.
+  document.getElementById("whatIfAggiungiEvento").addEventListener("click", ()=>{
+    scenarioWhatIfEventi.push({ anno: 1, importo: 0 });
+    renderDashboard();
+  });
+  document.querySelectorAll("[data-evento-rimuovi]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      scenarioWhatIfEventi.splice(Number(btn.dataset.eventoRimuovi), 1);
+      renderDashboard();
+    });
+  });
+  document.querySelectorAll("[data-evento-anno]").forEach(inp=>{
+    inp.addEventListener("change", ()=>{ scenarioWhatIfEventi[Number(inp.dataset.eventoAnno)].anno = Number(inp.value)||1; });
+  });
+  document.querySelectorAll("[data-evento-importo]").forEach(inp=>{
+    inp.addEventListener("change", ()=>{ scenarioWhatIfEventi[Number(inp.dataset.eventoImporto)].importo = Number(inp.value)||0; });
+  });
+  const whatIfBtn = document.getElementById("whatIfCalcolaBtn");
+  if (whatIfBtn) whatIfBtn.addEventListener("click", ()=>{
+    const inIncome = Number(document.getElementById("whatIfIncome").value) || 0;
+    const inExpense = Number(document.getElementById("whatIfExpense").value) || 0;
+    const inSavingsRate = (Number(document.getElementById("whatIfSavingsRate").value) || 0) / 100;
+    const inReturn = (Number(document.getElementById("whatIfReturn").value) || 0) / 100;
+    const inHorizon = Number(document.getElementById("whatIfHorizon").value) || s.horizon;
+    const inWithdrawal = Number(document.getElementById("whatIfWithdrawal").value) || 4;
+
+    // Piano attuale, stessi parametri reali di sempre, ma passato dallo stesso
+    // motore (projectWithEvents senza eventi) per un confronto omogeneo.
+    const attuale = projectWithEvents(wealth0, projIncome, savingsRateForProjection, fireExpenseBase,
+      s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, Math.max(inHorizon, s.horizon), s.withdrawalRate||4, []);
+    const scenario = projectWithEvents(wealth0, inIncome, inSavingsRate, inExpense,
+      s.expenseGrowth, s.incomeGrowth2y, inReturn, inHorizon, inWithdrawal, scenarioWhatIfEventi);
+
+    document.getElementById("whatIfResultBox").innerHTML = renderRisultatoWhatIf(attuale, scenario);
+
+    const ctx = document.getElementById("whatIfChart");
+    if (scenarioWhatIfChartInstance) scenarioWhatIfChartInstance.destroy();
+    scenarioWhatIfChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: scenario.rows.map(r=>thisYear+r.year),
+        datasets: [
+          { label: 'Piano attuale', data: attuale.rows.slice(0, scenario.rows.length).map(r=>toDisplay(r.wealth)), borderColor:'#5C7089', borderDash:[5,4], fill:false, pointRadius:0, borderWidth:2 },
+          { label: 'Scenario', data: scenario.rows.map(r=>toDisplay(r.wealth)), borderColor:'#C9A227', fill:false, pointRadius:0, borderWidth:2 }
+        ]
+      },
+      options: { plugins: { legend: { display:true, labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales: {
+          x: { ticks:{ color:'#6B7E99', font:{size:9} }, grid:{ color:'#1E2E47' } },
+          y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M' }, grid:{ color:'#1E2E47' } }
+        } }
+    });
+  });
+
+  const salvaScenarioBtn = document.getElementById("whatIfSalvaScenarioBtn");
+  if (salvaScenarioBtn) salvaScenarioBtn.addEventListener("click", ()=>{
+    const nome = (document.getElementById("whatIfNomeScenario").value || "").trim();
+    if (!nome) { alert("Dai un nome allo scenario, per riconoscerlo nel confronto."); return; }
+    const attuali = data.settings.scenariComparativi || [];
+    if (attuali.length >= SCENARI_COMPARATIVI_MAX) {
+      alert(`Puoi salvare al massimo ${SCENARI_COMPARATIVI_MAX} scenari — rimuovine uno prima di aggiungerne un altro.`);
+      return;
+    }
+    const nuovo = {
+      id: uid(), nome,
+      income: Number(document.getElementById("whatIfIncome").value) || 0,
+      expense: Number(document.getElementById("whatIfExpense").value) || 0,
+      savingsRate: Number(document.getElementById("whatIfSavingsRate").value) || 0,
+      ret: Number(document.getElementById("whatIfReturn").value) || 0,
+      horizon: Number(document.getElementById("whatIfHorizon").value) || s.horizon,
+      withdrawal: Number(document.getElementById("whatIfWithdrawal").value) || 4,
+      eventi: scenarioWhatIfEventi.slice(),
+      // Istantanea dell'ultimo Monte Carlo girato in questa sessione, se c'è —
+      // è uno scatto fotografico, non un valore fisso: essendo casuale, rilanciarlo
+      // dà un numero leggermente diverso ogni volta. Il pulsante "Rilancia" nella
+      // card di confronto lo aggiorna quando serve.
+      monteCarlo: ultimoRisultatoMonteCarlo ? {
+        percentualeSuccesso: ultimoRisultatoMonteCarlo.percentualeSuccesso,
+        percentualeMancatoTraguardo: ultimoRisultatoMonteCarlo.percentualeMancatoTraguardo,
+        volatilitaSpesa: ultimoRisultatoMonteCarlo.volatilitaSpesa,
+        p10: ultimoRisultatoMonteCarlo.p10, p50: ultimoRisultatoMonteCarlo.p50, p90: ultimoRisultatoMonteCarlo.p90,
+        strategia: ultimoRisultatoMonteCarlo.strategia,
+        devStd: Number(document.getElementById("montecarloDevStdInput").value) || 10,
+        anniPrelievo: Number(document.getElementById("montecarloAnniInput").value) || 30,
+        timestamp: new Date().toISOString()
+      } : null
+    };
+    if (!data.settings.scenariComparativi) data.settings.scenariComparativi = [];
+    data.settings.scenariComparativi.push(nuovo);
+    saveData();
+    renderDashboard();
+  });
+  document.querySelectorAll("[data-rimuovi-scenario]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      data.settings.scenariComparativi = (data.settings.scenariComparativi||[]).filter(sc => sc.id !== btn.dataset.rimuoviScenario);
+      saveData();
+      renderDashboard();
+    });
+  });
+  document.querySelectorAll("[data-rilancia-mc]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const sc = (data.settings.scenariComparativi||[]).find(x => x.id === btn.dataset.rilanciaMc);
+      if (!sc || !sc.monteCarlo) return;
+      const w0 = portfolioTotalALL();
+      const nuovoRisultato = simulazioneMonteCarlo({
+        wealth0: w0, income0: sc.income, savingsRate: sc.savingsRate/100, expense0: sc.expense,
+        expenseGrowth: s.expenseGrowth, incomeGrowth2y: s.incomeGrowth2y,
+        meanRet: sc.ret/100, devStd: sc.monteCarlo.devStd/100,
+        horizonAccumulo: sc.horizon, annidiPrelievo: sc.monteCarlo.anniPrelievo, withdrawalRate: sc.withdrawal, nSimulazioni: 1000,
+        strategiaPrelievo: sc.monteCarlo.strategia
+      });
+      sc.monteCarlo = {
+        percentualeSuccesso: nuovoRisultato.percentualeSuccesso,
+        percentualeMancatoTraguardo: nuovoRisultato.percentualeMancatoTraguardo,
+        volatilitaSpesa: nuovoRisultato.volatilitaSpesa,
+        p10: nuovoRisultato.p10, p50: nuovoRisultato.p50, p90: nuovoRisultato.p90,
+        strategia: nuovoRisultato.strategia,
+        devStd: sc.monteCarlo.devStd, anniPrelievo: sc.monteCarlo.anniPrelievo,
+        timestamp: new Date().toISOString()
+      };
+      saveData();
+      renderDashboard();
+    });
+  });
+
+  const scenariChartCtx = document.getElementById("scenariComparativiChart");
+  if (scenariChartCtx) {
+    if (scenariComparativiChartInstance) scenariComparativiChartInstance.destroy();
+    const scenariSalvati = data.settings.scenariComparativi || [];
+    const attualeConfronto = projectWithEvents(wealth0, projIncome, savingsRateForProjection, fireExpenseBase,
+      s.expenseGrowth, s.incomeGrowth2y, s.centralRet/100, s.horizon, s.withdrawalRate||4, []);
+    const maxAnni = Math.max(s.horizon, ...scenariSalvati.map(sc=>sc.horizon));
+    const datasets = [{ label: 'Piano attuale', data: attualeConfronto.rows.map(r=>toDisplay(r.wealth)),
+      borderColor:'#5C7089', borderDash:[5,4], fill:false, pointRadius:0, borderWidth:2 }];
+    scenariSalvati.forEach((sc,i) => {
+      const proj = projectWithEvents(wealth0, sc.income, sc.savingsRate/100, sc.expense,
+        s.expenseGrowth, s.incomeGrowth2y, sc.ret/100, maxAnni, sc.withdrawal, sc.eventi||[]);
+      datasets.push({ label: sc.nome, data: proj.rows.map(r=>toDisplay(r.wealth)),
+        borderColor: SCENARI_COMPARATIVI_COLORI[i%3], fill:false, pointRadius:0, borderWidth:2 });
+    });
+    scenariComparativiChartInstance = new Chart(scenariChartCtx, {
+      type: 'line',
+      data: { labels: Array.from({length:maxAnni}, (_,i)=>thisYear+i+1), datasets },
+      options: { plugins: { legend: { display:true, labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales: {
+          x: { ticks:{ color:'#6B7E99', font:{size:9} }, grid:{ color:'#1E2E47' } },
+          y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M' }, grid:{ color:'#1E2E47' } }
+        } }
+    });
+  }
+
   document.getElementById("fireRatesSave").addEventListener("click", ()=>{
     const val = document.getElementById("fireRatesInput").value;
     const parsed = val.split(",").map(x=>parseFloat(x.trim())).filter(n=>!isNaN(n) && n>0);
@@ -3452,7 +4448,16 @@ function storicoTotalsBlockEnd() { return ""; }
 
 function renderExpenses() {
   document.getElementById("headerTitle").textContent = "Spese";
-  const total = yearTotal(data.expenses, thisYear);
+  // b-1: di default i grafici/totali di questa scheda mostrano solo le spese di
+  // vita, non le tasse/contributi/commissioni/interessi automatici — altrimenti
+  // una singola tassa su una vendita può schiacciare Bar/Supermercato nei grafici.
+  // La scelta persiste tra una sessione e l'altra. La lista delle singole voci
+  // sotto NON è mai filtrata: mostra sempre tutto, indipendentemente da questo.
+  const mostraAutoGestite = !!data.settings.speseMostraAutoGestite;
+  const expensesPerTotali = mostraAutoGestite ? data.expenses : spesePersonali(data.expenses);
+  const nAutoGestite = data.expenses.length - spesePersonali(data.expenses).length;
+
+  const total = yearTotal(expensesPerTotali, thisYear);
   const sorted = [...data.expenses].sort((a,b)=> new Date(b.date)-new Date(a.date));
   let filtered = expenseCategoryFilter==="all" ? sorted : sorted.filter(e=>e.category===expenseCategoryFilter);
   if (expenseMacroFilter !== "all") filtered = filtered.filter(e=>e.macro===expenseMacroFilter);
@@ -3460,7 +4465,7 @@ function renderExpenses() {
   const expenseMacroFilterOptions = ["all", ...data.macroCategories.expenses].map(m=>`<option value="${m}" ${expenseMacroFilter===m?'selected':''}>${m==='all'?'Tutte le macro-categorie':m}</option>`).join('');
 
   const catsThisMonth = {}; const catsLastMonth = {};
-  data.expenses.forEach(e=>{
+  expensesPerTotali.forEach(e=>{
     if (e.date.slice(0,7)===thisMonth) catsThisMonth[e.category] = (catsThisMonth[e.category]||0)+Number(e.amount);
     if (e.date.slice(0,7)===lastMonthStr) catsLastMonth[e.category] = (catsLastMonth[e.category]||0)+Number(e.amount);
   });
@@ -3470,7 +4475,7 @@ function renderExpenses() {
     .slice(0,15);
 
   const macrosThisMonth = {}; const macrosLastMonth = {};
-  data.expenses.forEach(e=>{
+  expensesPerTotali.forEach(e=>{
     if (!e.macro) return;
     if (e.date.slice(0,7)===thisMonth) macrosThisMonth[e.macro] = (macrosThisMonth[e.macro]||0)+Number(e.amount);
     if (e.date.slice(0,7)===lastMonthStr) macrosLastMonth[e.macro] = (macrosLastMonth[e.macro]||0)+Number(e.amount);
@@ -3481,7 +4486,7 @@ function renderExpenses() {
     .slice(0,15);
 
   const monthlyTotalsThisYear = new Array(12).fill(0);
-  data.expenses.forEach(e=>{
+  expensesPerTotali.forEach(e=>{
     const d = new Date(e.date);
     if (d.getFullYear()===thisYear) monthlyTotalsThisYear[d.getMonth()] += Number(e.amount);
   });
@@ -3491,6 +4496,17 @@ function renderExpenses() {
   const monthlyAvgEffective = monthsWithData > 0 ? totalThisYearForAvg/monthsWithData : 0;
 
   document.getElementById("main").innerHTML = `
+    <div class="card" style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+      <div class="subtle" style="flex:1; min-width:200px;">
+        ${mostraAutoGestite
+          ? 'Totali e grafici qui sotto includono anche tasse, contributi, commissioni e interessi automatici.'
+          : `Totali e grafici qui sotto mostrano solo le spese di vita${nAutoGestite>0?` (${nAutoGestite} voci automatiche escluse — cedole, tasse, contributi, commissioni)`:''}. La lista in fondo alla pagina mostra comunque tutto.`}
+      </div>
+      <label style="display:flex; align-items:center; gap:6px; margin:0; width:auto;">
+        <input type="checkbox" id="mostraAutoGestiteToggle" ${mostraAutoGestite?'checked':''} style="width:auto;">
+        <span style="font-size:12px; white-space:nowrap;">Includi tasse e contributi</span>
+      </label>
+    </div>
     <div class="card">
       <h3>Nuova voce</h3>
       <form class="entry" id="expenseForm">
@@ -3588,6 +4604,12 @@ function renderExpenses() {
   if (macroManagerOpen.expenses) bindMacroManagement("expenses", renderExpenses);
   document.getElementById("toggleMacroAssign-expenses").addEventListener("click", ()=>{ macroAssignOpen.expenses = !macroAssignOpen.expenses; renderExpenses(); });
   if (macroAssignOpen.expenses) bindMacroAssign("expenses", renderExpenses);
+
+  document.getElementById("mostraAutoGestiteToggle").addEventListener("change", (ev)=>{
+    data.settings.speseMostraAutoGestite = ev.target.checked;
+    saveData();
+    renderExpenses();
+  });
 
   const expCatSelect = document.getElementById("expenseForm").querySelector(".cat-select");
   const expMacroSelect = document.getElementById("expenseForm").querySelector(".macro-select");
@@ -6769,13 +7791,17 @@ function renderBondsTab() {
         if (editingPortfolioId === p.id) return renderPortfolioEditForm(p);
         const mv = (p.marketValue!=null && p.marketValue!=="") ? p.marketValue : p.amount;
         const coupons = data.income.filter(i=>i.linkedBondId===p.id).reduce((s,i)=>s+Number(i.amount),0);
-        return `<div class="list-item">
-          <div class="li-main"><span class="li-cat">${pallinoRischio(p)} ${p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}${p.maturityDate?' · scad. '+p.maturityDate:''}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.bondYears?' · '+p.bondYears+'a':''}${p.macro?' · '+p.macro:''}${p.issuerName?' · '+p.issuerName:''}</span></div>
-          <div style="display:flex;align-items:center;">
-            <span class="li-amt">${fmt(mv)} ${p.currency}</span>
-            ${listEditMode["bonds"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
+        const rateo = calcolaRateoInteresse(p);
+        return `<div class="list-item" style="flex-direction:column; align-items:stretch;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="li-main"><span class="li-cat">${pallinoRischio(p)} ${p.type}${p.securityCode?' <span class="pill">'+p.securityCode+'</span>':''}${p.note?' · '+p.note:''}</span><span class="li-date">${p.date||''}${p.maturityDate?' · scad. '+p.maturityDate:''}${coupons>0?' · generato: '+fmt(coupons)+' ALL':''}${p.bondYears?' · '+p.bondYears+'a':''}${p.macro?' · '+p.macro:''}${p.issuerName?' · '+p.issuerName:''}</span></div>
+            <div style="display:flex;align-items:center;">
+              <span class="li-amt">${fmt(mv)} ${p.currency}</span>
+              ${listEditMode["bonds"] ? `<button data-editport="${p.id}" style="background:none;border:none;color:#C9A227;cursor:pointer;font-size:14px;padding:0 6px;">✎</button>
             <button class="li-del" data-del-port="${p.id}">✕</button>` : ''}
+            </div>
           </div>
+          ${rateo ? `<div class="subtle" style="margin-top:4px;">Rateo maturato: ${fmt(rateo.rateo)} ${rateo.valuta} (${rateo.giorniTrascorsi}/${rateo.giorniPeriodo}gg dall'ultima cedola del ${rateo.dataUltimaCedola}) — utile se vendi sul secondario prima della prossima cedola del ${rateo.dataProssimaCedola}.</div>` : ''}
         </div>`;
       }).join(''), cap, '<div class="empty">Nessuna obbligazione registrata.</div>'); })()}
       <div class="section-total"><span>Totale (mercato)</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
@@ -8973,7 +9999,8 @@ async function downloadFromDrive(silent) {
       creditCardDebts: parsed.creditCardDebts||[],
       marketYieldCurve: parsed.marketYieldCurve||null,
       taxDeductions: parsed.taxDeductions||[],
-      trash: parsed.trash||[]
+      trash: parsed.trash||[],
+      deletedGenerated: parsed.deletedGenerated||[]
     };
     // L'orario di sincronizzazione NON va preso dal file: il file viene caricato
     // prima che il mittente aggiorni il proprio orario, quindi contiene sempre un
@@ -9062,6 +10089,15 @@ function renderDrive() {
       })()}
       <div id="rendicontoStatus" class="subtle" style="margin-top:8px;"></div>
     </div>
+    <div class="card">
+      <h3>Esporta in CSV</h3>
+      <div class="subtle">Un file per scheda, tutte le voci senza filtri — per portarle altrove o analizzarle con uno strumento diverso da Excel.</div>
+      <div class="row2" style="margin-top:8px;">
+        <button class="secondary" type="button" id="csvRedditoBtn">Reddito</button>
+        <button class="secondary" type="button" id="csvSpeseBtn">Spese</button>
+        <button class="secondary" type="button" id="csvPatrimonioBtn">Patrimonio</button>
+      </div>
+    </div>
     ${(data.trash||[]).length>0 ? `<div class="card">
       <h3>Cestino</h3>
       <div class="subtle">Le ultime ${TRASH_MAX} eliminazioni. Ripristinabili finché restano qui.</div>
@@ -9081,6 +10117,12 @@ function renderDrive() {
   document.getElementById("driveDownloadBtn").addEventListener("click", ()=>{
     if (confirm("Questo sovrascriverà i dati presenti su questo dispositivo con quelli salvati su Drive. Continuare?")) downloadFromDrive();
   });
+  const csvReddito = document.getElementById("csvRedditoBtn");
+  if (csvReddito) csvReddito.addEventListener("click", esportaRedditoCSV);
+  const csvSpese = document.getElementById("csvSpeseBtn");
+  if (csvSpese) csvSpese.addEventListener("click", esportaSpeseCSV);
+  const csvPatrimonio = document.getElementById("csvPatrimonioBtn");
+  if (csvPatrimonio) csvPatrimonio.addEventListener("click", esportaPatrimonioCSV);
 
   document.querySelectorAll("[data-restore]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -9169,7 +10211,8 @@ function renderDrive() {
           creditCardDebts: parsed.creditCardDebts||[],
           marketYieldCurve: parsed.marketYieldCurve||null,
       taxDeductions: parsed.taxDeductions||[],
-      trash: parsed.trash||[]
+      trash: parsed.trash||[],
+      deletedGenerated: parsed.deletedGenerated||[]
         };
         ensureLiquidityCategories();
         saveData(); alert("Backup importato."); renderDrive();
@@ -9714,10 +10757,55 @@ async function importFxHistoryXLSX(file) {
   return count;
 }
 
+// ===== Multiple Plans (opzione A): profili di ipotesi salvabili =====
+// Non duplica i dati reali (reddito, spese, patrimonio restano gli stessi) — solo
+// le ipotesi con cui li proietti. Attivare un piano sovrascrive questi stessi campi
+// in data.settings: Proiezione FI, Monte Carlo, Numero FIRE continuano a leggerli
+// come hanno sempre fatto, senza bisogno di toccare quel codice.
+const CAMPI_PIANO_IPOTESI = ["savingsRateTarget","incomeGrowth2y","centralRet","withdrawalRate",
+  "tassoPrivoRischio","rischioObiettivo","inflationPct","horizon","expenseBase","expenseGrowth",
+  "fireExpenseBaseMode","fireRatesText","savingsRateProjectionMode","montecarloDevStd","montecarloAnniPrelievo","targetAllocation"];
+function salvaPianoIpotesi(nome, idEsistente) {
+  const s = data.settings;
+  const piano = { id: idEsistente || uid(), nome };
+  CAMPI_PIANO_IPOTESI.forEach(k => { piano[k] = (k === "targetAllocation") ? Object.assign({}, s[k]||{}) : s[k]; });
+  if (!s.pianiIpotesi) s.pianiIpotesi = [];
+  const idx = s.pianiIpotesi.findIndex(p => p.id === piano.id);
+  if (idx !== -1) s.pianiIpotesi[idx] = piano; else s.pianiIpotesi.push(piano);
+  s.pianoIpotesiAttivo = piano.id;
+  return piano;
+}
+function attivaPianoIpotesi(id) {
+  const piano = (data.settings.pianiIpotesi||[]).find(p => p.id === id);
+  if (!piano) return false;
+  CAMPI_PIANO_IPOTESI.forEach(k => { data.settings[k] = (k === "targetAllocation") ? Object.assign({}, piano[k]||{}) : piano[k]; });
+  data.settings.pianoIpotesiAttivo = id;
+  return true;
+}
+function eliminaPianoIpotesi(id) {
+  data.settings.pianiIpotesi = (data.settings.pianiIpotesi||[]).filter(p => p.id !== id);
+  if (data.settings.pianoIpotesiAttivo === id) data.settings.pianoIpotesiAttivo = null;
+}
+
 function renderSettings() {
   document.getElementById("headerTitle").textContent = "Assunzioni";
   const s = data.settings;
   document.getElementById("main").innerHTML = `
+    <div class="card">
+      <h3>Piani di ipotesi</h3>
+      <div class="subtle">Salva le ipotesi qui sotto (rendimento, orizzonte, tasso di risparmio, ecc.) sotto un nome, per confrontare interi scenari di pianificazione — es. "Prudente" vs "Ottimista". I tuoi dati reali (reddito, spese, patrimonio) restano sempre gli stessi: cambiano solo le ipotesi con cui li proietti.</div>
+      ${(s.pianiIpotesi||[]).length ? (s.pianiIpotesi||[]).map(p => `<div class="stat-row">
+        <span class="label">${p.id===s.pianoIpotesiAttivo?'● ':'○ '}${p.nome}${p.id===s.pianoIpotesiAttivo?' <span class="pill" style="background:#3F6E5E22;color:#3F6E5E;border-color:#3F6E5E;">attivo</span>':''}</span>
+        <span style="display:flex; gap:6px;">
+          ${p.id!==s.pianoIpotesiAttivo ? `<button class="secondary" type="button" data-attiva-piano="${p.id}" style="width:auto; padding:3px 8px; font-size:11px;">Attiva</button>` : `<button class="secondary" type="button" data-aggiorna-piano="${p.id}" style="width:auto; padding:3px 8px; font-size:11px;">Aggiorna con i valori attuali</button>`}
+          <button class="secondary" type="button" data-elimina-piano="${p.id}" style="width:auto; padding:3px 8px; font-size:11px; border-color:#8B3A2F; color:#8B3A2F;">✕</button>
+        </span>
+      </div>`).join('') : '<div class="subtle" style="margin-bottom:8px;">Nessun piano salvato — le ipotesi qui sotto sono "libere", non associate a un nome.</div>'}
+      <div class="row2" style="margin-top:10px; align-items:center;">
+        <input type="text" id="nomeNuovoPiano" placeholder="nome del piano, es. 'Prudente'" style="flex:1.5;">
+        <button class="primary" type="button" id="salvaNuovoPianoBtn">Salva come nuovo piano</button>
+      </div>
+    </div>
     <div class="card">
       <h3>Budget di riferimento</h3>
       <form class="entry" id="budgetForm">
@@ -9776,6 +10864,18 @@ function renderSettings() {
       <div class="subtle">Prossimo codice che verrà proposto per una nuova posizione: <b>T${String(data.settings.nextSecurityCodeSeq||1).padStart(7,"0")}</b>.
         Azzerarlo lo riporta a T0000001: non tocca i codici già assegnati alle posizioni esistenti, che restano quelli che sono — se ci sono duplicati vanno sistemati a mano.</div>
       <button class="secondary" type="button" id="resetCodiceTitoloBtn" style="margin-top:8px;">Azzera contatore (riparti da 1)</button>
+    </div>
+    <div class="card">
+      <h3>Controllo integrità dati</h3>
+      <div class="subtle">Verifica riferimenti tra voci che puntano a qualcosa di cancellato, saldi che non dovrebbero poter essere negativi, posizioni senza codice titolo, voci potenzialmente duplicate. Non corregge nulla da solo — dice cosa guardare.</div>
+      <button class="secondary" type="button" id="controllaIntegritaBtn" style="margin-top:8px;">Controlla i dati</button>
+      <div id="integritaResultBox" style="margin-top:10px;">${ultimoControlloIntegrita ? renderRisultatoIntegrita(ultimoControlloIntegrita) : ''}</div>
+    </div>
+    <div class="card">
+      <h3>Backup automatici locali</h3>
+      <div class="subtle">Ogni ${AUTO_BACKUP_INTERVAL_DAYS} giorni di utilizzo, senza che tu debba fare nulla, viene salvata un'istantanea completa — indipendente da Drive, restano le ultime ${AUTO_BACKUP_MAX_SNAPSHOTS}. Una terza rete di sicurezza, per quando anche localStorage/Drive dovessero avere un problema.</div>
+      <button class="secondary" type="button" id="mostraBackupAutoBtn" style="margin-top:8px;">Mostra backup disponibili</button>
+      <div id="backupAutoResultBox">${renderElencoBackupAutomatici(elencoBackupAutomatici)}</div>
     </div>
     <div class="card">
       <h3>Gestisci categorie</h3>
@@ -9995,6 +11095,40 @@ function renderSettings() {
     renderSettings();
   });
 
+  const salvaNuovoPianoBtn = document.getElementById("salvaNuovoPianoBtn");
+  if (salvaNuovoPianoBtn) salvaNuovoPianoBtn.addEventListener("click", ()=>{
+    const nome = (document.getElementById("nomeNuovoPiano").value || "").trim();
+    if (!nome) { alert("Dai un nome al piano, per riconoscerlo."); return; }
+    salvaPianoIpotesi(nome, null);
+    saveData();
+    renderSettings();
+    renderDashboard();
+  });
+  document.querySelectorAll("[data-attiva-piano]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      attivaPianoIpotesi(btn.dataset.attivaPiano);
+      saveData();
+      renderSettings();
+      renderDashboard();
+    });
+  });
+  document.querySelectorAll("[data-aggiorna-piano]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const piano = (data.settings.pianiIpotesi||[]).find(p=>p.id===btn.dataset.aggiornaPiano);
+      salvaPianoIpotesi(piano ? piano.nome : "Piano", btn.dataset.aggiornaPiano);
+      saveData();
+      renderSettings();
+    });
+  });
+  document.querySelectorAll("[data-elimina-piano]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      if (!confirm("Eliminare questo piano? Le ipotesi attuali restano quelle che sono, solo il nome salvato sparisce.")) return;
+      eliminaPianoIpotesi(btn.dataset.eliminaPiano);
+      saveData();
+      renderSettings();
+    });
+  });
+
   const resetCodiceBtn = document.getElementById("resetCodiceTitoloBtn");
   if (resetCodiceBtn) resetCodiceBtn.addEventListener("click", ()=>{
     if (!confirm("Azzerare il contatore del codice titolo? Il prossimo codice proposto sarà T0000001. Le posizioni già registrate mantengono il codice che hanno.")) return;
@@ -10002,6 +11136,50 @@ function renderSettings() {
     saveData();
     renderSettings();
   });
+
+  const controllaBtn = document.getElementById("controllaIntegritaBtn");
+  if (controllaBtn) controllaBtn.addEventListener("click", ()=>{
+    ultimoControlloIntegrita = controllaIntegritaDati();
+    document.getElementById("integritaResultBox").innerHTML = renderRisultatoIntegrita(ultimoControlloIntegrita);
+  });
+
+  const mostraBackupBtn = document.getElementById("mostraBackupAutoBtn");
+  if (mostraBackupBtn) mostraBackupBtn.addEventListener("click", async ()=>{
+    mostraBackupBtn.textContent = "Carico...";
+    try {
+      elencoBackupAutomatici = idbAvailable ? await idbBackupGetAll() : [];
+    } catch (e) { elencoBackupAutomatici = []; }
+    document.getElementById("backupAutoResultBox").innerHTML = renderElencoBackupAutomatici(elencoBackupAutomatici);
+    mostraBackupBtn.textContent = "Aggiorna elenco";
+    bindBackupAutoButtons();
+  });
+  bindBackupAutoButtons();
+  function bindBackupAutoButtons() {
+    document.querySelectorAll("[data-scarica-backup]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const voce = (elencoBackupAutomatici||[]).find(s=>s.key===btn.dataset.scaricaBackup);
+        if (!voce) return;
+        const blob = new Blob([JSON.stringify(voce.value,null,2)], {type:"application/json"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `fi-tracker-backup-auto-${voce.key.slice(0,10)}.json`;
+        a.click(); URL.revokeObjectURL(url);
+      });
+    });
+    document.querySelectorAll("[data-ripristina-backup]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const voce = (elencoBackupAutomatici||[]).find(s=>s.key===btn.dataset.ripristinaBackup);
+        if (!voce) return;
+        const current = describeDataset(data);
+        const target = describeDataset(voce.value);
+        if (!confirm(`Stai per SOSTITUIRE tutti i dati attuali con questa istantanea del ${new Date(voce.key).toLocaleString("it-IT")}.\n\nNell'istantanea: ${target}\nAdesso hai: ${current}\n\nProcedere?`)) return;
+        data = normalizeLoadedData(voce.value);
+        saveData();
+        alert("Dati ripristinati.");
+        switchTab("dashboard");
+      });
+    });
+  }
 
   document.getElementById("fetchBoaBtn").addEventListener("click", async ()=>{
     const statusEl = document.getElementById("boaFetchStatus");
@@ -11112,6 +12290,64 @@ function esportaRendicontoAnnuale(year) {
 // --- Allocazione obiettivo -------------------------------------------------
 // Confronta la ripartizione attuale per macro-categoria con i pesi obiettivo
 // impostati in Assunzioni, e dice quanto spostare per riallinearsi.
+// ===== Punto 13: confronto col benchmark (titolo di Stato a 10 anni) =====
+// Usa la curva dei rendimenti già importata (aste del Ministero) e il TWR già
+// calcolato: non serve altro dato, solo mettere insieme due cose che esistono già.
+function confrontoRendimentoBenchmark() {
+  const curva = data.marketYieldCurve && data.marketYieldCurve.points;
+  if (!curva || !curva.length) return null;
+  const punto10y = curva.slice().sort((a,b) => Math.abs(a.maturity-10) - Math.abs(b.maturity-10))[0];
+  if (!punto10y || !isFinite(punto10y.cutoffYield)) return null;
+  const twr = computeTWR();
+  if (!twr || twr.twrAnnualizzato == null) return null;
+  return {
+    rendimentoPortafoglio: twr.twrAnnualizzato,
+    rendimentoBenchmark: punto10y.cutoffYield,
+    scadenzaBenchmark: punto10y.maturity,
+    differenza: twr.twrAnnualizzato - punto10y.cutoffYield
+  };
+}
+function benchmarkCard() {
+  const c = confrontoRendimentoBenchmark();
+  if (!c) return "";
+  return `
+    <div class="card">
+      <h3>Rendimento vs titolo di Stato</h3>
+      <div class="subtle">Il tuo TWR annualizzato confrontato con un'obbligazione governativa a ${c.scadenzaBenchmark} anni — il riferimento "senza rischiare nulla" per il tuo mercato.</div>
+      <div class="stat-row"><span class="label">Il tuo portafoglio (TWR)</span><span class="val">${c.rendimentoPortafoglio.toFixed(2)}%/anno</span></div>
+      <div class="stat-row"><span class="label">Titolo di Stato ${c.scadenzaBenchmark} anni</span><span class="val">${c.rendimentoBenchmark.toFixed(2)}%/anno</span></div>
+      <div class="stat-row"><span class="label">Differenza</span><span class="val ${c.differenza>=0?'up':'down'}">${c.differenza>=0?'+':''}${c.differenza.toFixed(2)} punti</span></div>
+      <div class="subtle" style="font-size:10px; margin-top:4px;">${c.differenza>=0?"Il rischio che ti sei preso ha reso più del non rischiare nulla.":"Il rischio che ti sei preso ha reso MENO del non rischiare nulla — vale la pena capire perché."}</div>
+    </div>`;
+}
+
+// ===== Punto 14: ribilanciamento operativo =====
+// computeAllocationDrift() dice già "aggiungi X" o "riduci Y" per ogni categoria
+// separatamente — qui si abbinano gli eccessi ai difetti in istruzioni dirette
+// ("sposta X da A a B"), invece di lasciare che sia l'utente a ricomporle a mente.
+const RIBILANCIAMENTO_SOGLIA_MINIMA = 10000;
+function suggerimentiRibilanciamento() {
+  const drift = computeAllocationDrift();
+  if (!drift) return [];
+  const eccessi = drift.rows.filter(r => r.adjust < -RIBILANCIAMENTO_SOGLIA_MINIMA)
+    .map(r => ({ macro: r.macro, importo: -r.adjust })).sort((a,b) => b.importo - a.importo);
+  const difetti = drift.rows.filter(r => r.adjust > RIBILANCIAMENTO_SOGLIA_MINIMA)
+    .map(r => ({ macro: r.macro, importo: r.adjust })).sort((a,b) => b.importo - a.importo);
+  const suggerimenti = [];
+  let i = 0, j = 0;
+  while (i < eccessi.length && j < difetti.length) {
+    const sposta = Math.min(eccessi[i].importo, difetti[j].importo);
+    if (sposta >= RIBILANCIAMENTO_SOGLIA_MINIMA) {
+      suggerimenti.push({ da: eccessi[i].macro, a: difetti[j].macro, importo: sposta });
+    }
+    eccessi[i].importo -= sposta;
+    difetti[j].importo -= sposta;
+    if (eccessi[i].importo < RIBILANCIAMENTO_SOGLIA_MINIMA) i++;
+    if (difetti[j].importo < RIBILANCIAMENTO_SOGLIA_MINIMA) j++;
+  }
+  return suggerimenti;
+}
+
 function computeAllocationDrift() {
   const targets = data.settings.targetAllocation || {};
   const keys = Object.keys(targets).filter(k => Number(targets[k]) > 0);
@@ -11171,6 +12407,14 @@ function allocationDriftCard() {
         </div>`;
       }).join('')}
       ${a.uncovered > 0.5 ? `<div class="subtle" style="margin-top:10px; font-size:10px;">Non incluso in nessun obiettivo: ${fmtDisplay(a.uncovered)}</div>` : ''}
+      ${(() => {
+        const sugg = suggerimentiRibilanciamento();
+        if (!sugg.length) return '';
+        return `<div style="margin-top:14px; padding-top:10px; border-top:1px solid #1E2E47;">
+          <div class="subtle" style="margin-bottom:6px;">Per riallinearti con il minor numero di movimenti:</div>
+          ${sugg.map(s => `<div class="stat-row"><span class="label">↔ Sposta da <b>${s.da}</b> a <b>${s.a}</b></span><span class="val">${fmtDisplay(s.importo)}</span></div>`).join('')}
+        </div>`;
+      })()}
     </div>`;
 }
 
@@ -11233,6 +12477,99 @@ function portfolioReturnCard() {
     </div>`;
 }
 
+
+// Prima vedevi il prezzo scaduto solo aprendo la singola posizione. Qui si
+// raccolgono tutti i fondi con prezzo fermo da oltre PRICE_STALE_DAYS in un
+// unico avviso in Panoramica, così non serve controllarli scheda per scheda.
+function fondiConPrezzoScaduto() {
+  return computeFundsSummary().filter(g => {
+    const anchorPos = data.portfolio.find(p => p.id === g.id);
+    const d = daysSincePriceFetch(anchorPos);
+    return d !== null && d >= PRICE_STALE_DAYS;
+  }).map(g => {
+    const anchorPos = data.portfolio.find(p => p.id === g.id);
+    return { name: g.name, giorni: daysSincePriceFetch(anchorPos) };
+  }).sort((a,b) => b.giorni - a.giorni);
+}
+function prezziScadutiCard() {
+  const scaduti = fondiConPrezzoScaduto();
+  if (!scaduti.length) return "";
+  return `
+    <div class="card" style="border-color:#8B3A2F;">
+      <h3>Prezzi fondi non aggiornati</h3>
+      <div class="subtle">${scaduti.length} fondo/i con prezzo fermo da oltre ${PRICE_STALE_DAYS} giorni — verifica manualmente sul sito o aggiorna dalla scheda Fondi.</div>
+      ${scaduti.map(f => `<div class="stat-row"><span class="label">${f.name}</span><span class="val down">fermo da ${f.giorni} giorni</span></div>`).join('')}
+    </div>`;
+}
+
+// Prima vedevi "scade tra 12gg" solo aprendo la singola posizione. Qui si
+// raggruppa tutto ciò che scade nei prossimi 90 giorni — bond, depositi, prossima
+// rata di ogni mutuo — in un unico riepilogo, per pianificare senza girare scheda
+// per scheda.
+const SCADENZE_ORIZZONTE_GIORNI = 90;
+function scadenzeInAvvicinamento() {
+  const scadenze = [];
+  const limite = new Date(now.getTime() + SCADENZE_ORIZZONTE_GIORNI*86400000);
+  data.portfolio.forEach(p => {
+    if (p.amount > 0 && p.maturityDate) {
+      const d = new Date(p.maturityDate);
+      if (d >= now && d <= limite) {
+        const giorni = Math.round((d - now) / 86400000);
+        scadenze.push({ tipo: p.type, nome: nomeStrumento(p), data: p.maturityDate, giorni,
+          importo: toALL(Number(p.amount)||0, p.currency), categoria: "Scadenza" });
+      }
+    }
+    if (isDebtType(p.type, p.macro) && !isCreditCardType(p.type) && Array.isArray(p.schedule)) {
+      const prossima = p.schedule.find(i => !i.processed);
+      if (prossima) {
+        const d = new Date(prossima.dueDate);
+        if (d >= now && d <= limite) {
+          const giorni = Math.round((d - now) / 86400000);
+          scadenze.push({ tipo: p.type, nome: nomeStrumento(p) || p.type, data: prossima.dueDate, giorni,
+            importo: prossima.capital + prossima.interest, categoria: "Rata" });
+        }
+      }
+    }
+  });
+  return scadenze.sort((a,b) => a.giorni - b.giorni);
+}
+function scadenzeCard() {
+  const scadenze = scadenzeInAvvicinamento();
+  if (!scadenze.length) return "";
+  return `
+    <div class="card">
+      <h3>Scadenze nei prossimi ${SCADENZE_ORIZZONTE_GIORNI} giorni</h3>
+      <div class="subtle">Bond e depositi in scadenza, prossima rata di ogni mutuo — per pianificare il reinvestimento in anticipo.</div>
+      ${scadenze.map(s => `<div class="stat-row">
+        <span class="label">${s.categoria==="Rata"?'💳':'📅'} ${s.nome}${s.categoria==="Rata"?' · rata':''}</span>
+        <span class="val" style="text-align:right;">${s.data}<br><span class="subtle" style="font-size:9px;">tra ${s.giorni}gg · ${fmt(s.importo)} ALL</span></span>
+      </div>`).join('')}
+    </div>`;
+}
+
+let cashFlowChartInstance = null;
+let scenariComparativiChartInstance = null;
+function cashFlowProjectionCard() {
+  const CASH_FLOW_MESI = 12;
+  const proiezione = computeCashFlowProjection(CASH_FLOW_MESI);
+  const meseInRosso = proiezione.find(m => m.saldoCumulato < 0);
+  return `
+    <div class="card"${meseInRosso ? ' style="border-color:#8B3A2F;"' : ''}>
+      <h3>Proiezione flussi di cassa</h3>
+      <div class="subtle">Tutto quello che è già previsto nei prossimi ${CASH_FLOW_MESI} mesi — stipendio, affitti, cedole, voci ricorrenti, rate di mutuo — messo insieme in un unico calendario. Non sono spese ipotetiche: sono impegni e incassi già noti dai tuoi dati.</div>
+      ${meseInRosso ? `<div class="alert-banner">⚠ A ${meseInRosso.mese} la liquidità proiettata scende sotto zero (${fmt(meseInRosso.saldoCumulato)} ALL), se non cambia nulla nel frattempo.</div>` : ''}
+      <div class="chart-wrap"><canvas id="cashFlowChart" height="200"></canvas></div>
+      <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
+        ${proiezione.map(m => `<div class="stat-row" style="align-items:flex-start;">
+          <span class="label">${m.mese}</span>
+          <span class="val" style="text-align:right;">
+            <span class="${m.netto>=0?'up':'down'}">${m.netto>=0?'+':''}${fmt(m.netto)}</span>
+            <br><span class="subtle" style="font-size:9px;">saldo proiettato: ${fmt(m.saldoCumulato)} ALL</span>
+          </span>
+        </div>`).join('')}
+      </div>
+    </div>`;
+}
 
 function runwayAndCoverageCard() {
   const rw = computeRunwayMonths();
@@ -11541,6 +12878,18 @@ function renderAssetPerformance(positionId) {
       <div class="stat-row"><span class="label">Valore di partenza (${history[0]?.date||''})</span><span class="val">${fmt(history[0]?.value||0)} ${selected.currency}</span></div>
       <div class="stat-row"><span class="label">Valore attuale (${history[history.length-1]?.date||''})</span><span class="val">${fmt(history[history.length-1]?.value||0)} ${selected.currency}</span></div>
       ${history.length>=2 && history[0].value>0 ? `<div class="stat-row"><span class="label">Variazione totale</span><span class="val ${history[history.length-1].value>=history[0].value?'up':'down'}">${((history[history.length-1].value/history[0].value-1)*100).toFixed(2)}%</span></div>` : ''}
+      ${(() => {
+        // Rendimento annualizzato: la variazione totale da sola non dice se è tanto
+        // o poco — dipende da quanto tempo ci è voluto. Serve almeno un mese di
+        // storico perché il calcolo non dia numeri assurdi (una piccola variazione
+        // su pochi giorni, annualizzata, sembrerebbe un rendimento enorme).
+        if (history.length < 2 || !(history[0].value > 0)) return '';
+        const anni = (new Date(history[history.length-1].date) - new Date(history[0].date)) / (365.25*86400000);
+        if (anni < 0.08) return '';
+        const rendAnnuo = (Math.pow(history[history.length-1].value / history[0].value, 1/anni) - 1) * 100;
+        return `<div class="stat-row"><span class="label">Rendimento annualizzato</span><span class="val ${rendAnnuo>=0?'up':'down'}">${rendAnnuo.toFixed(2)}%/anno</span></div>`;
+      })()}
+      ${history.length < 3 ? `<div class="subtle" style="margin-top:6px; color:#C9A227;">Solo ${history.length} punto${history.length===1?'':'i'} nello storico — troppo poco per essere un andamento significativo. ${isFundEntry(selected)?'Si costruisce da solo con i prossimi aggiornamenti prezzo.':'Usa "Salva valore di oggi" periodicamente per costruirlo.'}</div>` : ''}
       <div class="row2" style="margin-top:10px;">
         <button class="secondary" type="button" id="perfSnapshotBtn">📸 Salva valore di oggi</button>
         <button class="secondary" type="button" id="perfGotoTabBtn">Vai a ${tabDef.icon} ${tabDef.label} →</button>
@@ -11748,15 +13097,8 @@ function switchTab(tab) {
   renderNavTabs();
   RENDERERS[tab]();
 }
-renderNavTabs();
 
 const displayCurrencySelectEl = document.getElementById("displayCurrencySelect");
-displayCurrencySelectEl.value = data.settings.displayCurrency || "ALL";
-displayCurrencySelectEl.addEventListener("change", ()=>{
-  data.settings.displayCurrency = displayCurrencySelectEl.value;
-  saveData();
-  RENDERERS[currentTabId]();
-});
 
 async function tryUnlock() {
   const input = document.getElementById("lockPinInput");
@@ -11820,15 +13162,32 @@ function hasUnsyncedLocalChanges() {
 
 window.addEventListener("load", ()=> setTimeout(initGoogleClient, 800));
 
-if (data.settings.pinHash) {
-  document.getElementById("app").style.display = "none";
-  document.getElementById("lockScreen").classList.add("active");
-  document.getElementById("lockSubmitBtn").addEventListener("click", async ()=>{ await tryUnlock(); await tryAutoResumeDrive(); appBootCompleted = true; });
-  document.getElementById("lockPinInput").addEventListener("keydown", e=>{ if (e.key==="Enter") document.getElementById("lockSubmitBtn").click(); });
-} else {
-  switchTab("dashboard");
-  tryAutoResumeDrive().finally(() => { appBootCompleted = true; });
-}
+// Avvio: aspetta che i dati siano pronti (IndexedDB, con eventuale migrazione una
+// tantum da localStorage) prima di fare qualunque rendering. Fino a qui nessuna
+// funzione ha letto `data` per davvero — solo dichiarazioni ed event listener
+// registrati, che scattano più avanti, mai prima di questo punto.
+(async function boot() {
+  data = await loadDataAsync();
+  autoLocalBackupCheck();
+
+  renderNavTabs();
+  displayCurrencySelectEl.value = data.settings.displayCurrency || "ALL";
+  displayCurrencySelectEl.addEventListener("change", ()=>{
+    data.settings.displayCurrency = displayCurrencySelectEl.value;
+    saveData();
+    RENDERERS[currentTabId]();
+  });
+
+  if (data.settings.pinHash) {
+    document.getElementById("app").style.display = "none";
+    document.getElementById("lockScreen").classList.add("active");
+    document.getElementById("lockSubmitBtn").addEventListener("click", async ()=>{ await tryUnlock(); await tryAutoResumeDrive(); appBootCompleted = true; });
+    document.getElementById("lockPinInput").addEventListener("keydown", e=>{ if (e.key==="Enter") document.getElementById("lockSubmitBtn").click(); });
+  } else {
+    switchTab("dashboard");
+    tryAutoResumeDrive().finally(() => { appBootCompleted = true; });
+  }
+})();
 </script>
 </body>
 </html>
