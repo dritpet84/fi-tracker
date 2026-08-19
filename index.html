@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.48</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.49</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -1458,6 +1458,25 @@ function controllaIntegritaDati() {
       msg: `Movimento su "${p.type}" del ${p.date} (${fmt(p.amount)} ${p.currency} · ${p.note}) — il fondo con codice ${match[0]} non esiste più nel portafoglio (probabile residuo dell'importazione storico fondi). Rimuoverlo ripristina il saldo di ${fmt(-p.amount)} ${p.currency}.` });
   });
 
+  // 6) Il verso OPPOSTO del controllo 5: una spesa o un reddito che dichiara un
+  // metodo di pagamento (quindi ci si aspetta un movimento di liquidità
+  // collegato), ma nessun movimento del genere esiste — il saldo di quel conto
+  // non riflette questa voce. Può capitare se il movimento è stato cancellato a
+  // parte (es. dalla scheda Liquidità) lasciando la spesa/reddito intatti.
+  const linkedTxnIdsEsistenti = new Set(data.portfolio.filter(p => p.linkedTxnId).map(p => p.linkedTxnId));
+  data.expenses.forEach(e => {
+    if (!e.paymentType || !data.paymentTypes.includes(e.paymentType)) return;
+    if (linkedTxnIdsEsistenti.has(e.id)) return;
+    problemi.push({ tipo: "Spesa senza movimento collegato", gravita: "media", id: e.id, fonte: "expenses",
+      msg: `La spesa "${e.category}" del ${e.date} (${fmt(e.amount)} ALL) dichiara di essere pagata con "${e.paymentType}", ma non esiste nessun movimento di liquidità collegato — il saldo di quel conto potrebbe non rifletterla.` });
+  });
+  data.income.forEach(i => {
+    if (!i.paymentType || !data.paymentTypes.includes(i.paymentType)) return;
+    if (linkedTxnIdsEsistenti.has(i.id)) return;
+    problemi.push({ tipo: "Reddito senza movimento collegato", gravita: "media", id: i.id, fonte: "income",
+      msg: `Il reddito "${i.category}" del ${i.date} (${fmt(i.amount)} ${i.currency||'ALL'}) dichiara di essere accreditato su "${i.paymentType}", ma non esiste nessun movimento di liquidità collegato — il saldo di quel conto potrebbe non rifletterlo.` });
+  });
+
   const ordineGravita = { alta: 0, media: 1, bassa: 2 };
   problemi.sort((a, b) => ordineGravita[a.gravita] - ordineGravita[b.gravita]);
   return problemi;
@@ -2646,6 +2665,24 @@ async function hashPin(pin) {
   const buf = await crypto.subtle.digest("SHA-256", enc);
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
+// Cancella tutto e riparte da zero. Riusa il PIN d'accesso già impostato come
+// riconferma (non un secondo PIN separato) — se non c'è nessun PIN impostato,
+// serve digitare la parola "CANCELLA" per intero, così è comunque impossibile
+// farlo per sbaglio con un tap. Il PIN stesso (se c'era) resta impostato dopo il
+// reset, così l'app continua a essere protetta.
+async function eseguiResetCompleto(confermaInserita) {
+  if (data.settings.pinHash) {
+    const hash = await hashPin(confermaInserita);
+    if (hash !== data.settings.pinHash) return false;
+  } else {
+    if (confermaInserita !== "CANCELLA") return false;
+  }
+  const pinAttuale = data.settings.pinHash;
+  data = JSON.parse(JSON.stringify(DEFAULT_DATA));
+  data.settings.pinHash = pinAttuale;
+  saveData();
+  return true;
+}
 
 function lastEntryDate() {
   const dates = [
@@ -3193,13 +3230,15 @@ function renderElencoBackupAutomatici(elenco) {
   }).join('') + '</div>';
 }
 function renderRisultatoIntegrita(problemi) {
-  if (!problemi.length) return `<div class="stat-row"><span class="val up">✓ Nessun problema trovato.</span></div>`;
+  const chiudiBtn = `<button type="button" id="chiudiIntegritaBtn" class="secondary" style="width:auto; padding:4px 10px; font-size:11px; float:right;">Chiudi</button>`;
+  if (!problemi.length) return `${chiudiBtn}<div class="stat-row"><span class="val up">✓ Nessun problema trovato.</span></div>`;
   const badgeColor = { alta: "#8B3A2F", media: "#C9A227", bassa: "#5C7089" };
-  return `<div class="subtle" style="margin-bottom:6px;">${problemi.length} cosa/e da guardare:</div>` +
+  return `${chiudiBtn}<div class="subtle" style="margin-bottom:6px;">${problemi.length} cosa/e da guardare:</div>` +
     problemi.map(p => `<div class="stat-row" style="align-items:flex-start;">
       <span class="pill" style="background:${badgeColor[p.gravita]}22; color:${badgeColor[p.gravita]}; border-color:${badgeColor[p.gravita]}; white-space:nowrap;">${p.tipo}</span>
       <span class="subtle" style="flex:1; text-align:left; margin-left:8px;">${p.msg}</span>
       ${p.tipo==="Movimento di liquidità orfano" ? `<button type="button" data-rimuovi-orfano="${p.id}" class="secondary" style="width:auto; padding:3px 8px; font-size:11px; margin-left:8px;">Rimuovi</button>` : ''}
+      ${(p.tipo==="Spesa senza movimento collegato" || p.tipo==="Reddito senza movimento collegato") ? `<button type="button" data-crea-movimento="${p.id}" data-crea-movimento-fonte="${p.fonte}" class="secondary" style="width:auto; padding:3px 8px; font-size:11px; margin-left:8px;">Registra il movimento</button>` : ''}
     </div>`).join('');
 }
 let editingIncomeId = null;
@@ -9960,6 +9999,20 @@ function parseFlexibleAmount(str) {
   }
   return Number(str);
 }
+// Riconosce se il CSV caricato è esattamente quello che l'app stessa esporta
+// (stessi header, nello stesso ordine) — in quel caso ogni riga porta già la
+// propria categoria/macro/codice/ente/pagamento, non serve configurare nulla a
+// mano come per un estratto conto generico.
+const HEADER_SPESE_NATIVO = ["Data","Categoria","Macro-categoria","Importo (ALL)","Codice titolo","Società/Ente","Pagato con","Nota"];
+const HEADER_REDDITO_NATIVO = ["Data","Categoria","Macro-categoria","Importo","Valuta","Codice titolo","Società/Ente","Pagato su","Nota"];
+function rilevaFormatoNativo(headers) {
+  const norm = headers.map(h => String(h||"").trim().toLowerCase());
+  const matchSpese = HEADER_SPESE_NATIVO.every((h,i) => norm[i] === h.toLowerCase());
+  if (matchSpese) return "expenses";
+  const matchReddito = HEADER_REDDITO_NATIVO.every((h,i) => norm[i] === h.toLowerCase());
+  if (matchReddito) return "income";
+  return null;
+}
 function handleCsvFile(file) {
   const reader = new FileReader();
   reader.onload = e => {
@@ -9967,7 +10020,8 @@ function handleCsvFile(file) {
     if (rows.length < 2) { alert("File CSV vuoto o non valido."); return; }
     const headers = rows[0];
     const dataRows = rows.slice(1).filter(r => r.some(c=>c && c.trim()!==""));
-    csvImportState = { headers, dataRows, group:"expenses", category: data.categories.expenses[0]||"Altro", dateColIdx:0, amountColIdx: headers.length>1?1:0, noteColIdx:-1 };
+    const formatoNativo = rilevaFormatoNativo(headers);
+    csvImportState = { headers, dataRows, group: formatoNativo || "expenses", category: data.categories.expenses[0]||"Altro", dateColIdx:0, amountColIdx: headers.length>1?1:0, noteColIdx:-1, formatoNativo };
     renderSettings();
   };
   reader.readAsText(file);
@@ -9977,14 +10031,45 @@ function confirmCsvImport() {
   if (!st) return;
   let imported = 0, skipped = 0;
   const batchId = uid();
-  st.dataRows.forEach(row => {
-    const date = parseFundHistoryDate(row[st.dateColIdx]);
-    const amount = parseFlexibleAmount(row[st.amountColIdx]);
-    if (!date || isNaN(amount) || amount===0) { skipped++; return; }
-    const note = st.noteColIdx>=0 ? (row[st.noteColIdx]||"") : "";
-    data[st.group].push({ id: uid(), date, amount: Math.abs(amount), category: st.category, note, importBatch: batchId });
-    imported++;
-  });
+  if (st.formatoNativo) {
+    // Colonne fisse, nello stesso ordine generato da esportaSpeseCSV/esportaRedditoCSV.
+    const isSpese = st.formatoNativo === "expenses";
+    st.dataRows.forEach(row => {
+      const date = row[0];
+      const category = (row[1]||"").trim() || "Altro";
+      const macro = (row[2]||"").trim() || null;
+      const amount = parseFlexibleAmount(isSpese ? row[3] : row[3]);
+      const currency = isSpese ? "ALL" : ((row[4]||"").trim() || "ALL");
+      const securityCode = (isSpese ? row[4] : row[5] || "").trim() || undefined;
+      const issuerName = (isSpese ? row[5] : row[6] || "").trim() || undefined;
+      const paymentType = (isSpese ? row[6] : row[7] || "").trim() || undefined;
+      const note = (isSpese ? row[7] : row[8] || "").trim();
+      if (!date || isNaN(amount) || amount===0) { skipped++; return; }
+      const id = uid();
+      const voce = { id, date, amount: Math.abs(amount), category, macro, note, importBatch: batchId };
+      if (!isSpese) voce.currency = currency;
+      if (securityCode) voce.securityCode = securityCode;
+      if (issuerName) voce.issuerName = issuerName;
+      if (paymentType && data.paymentTypes.includes(paymentType)) {
+        voce.paymentType = paymentType;
+        data[st.formatoNativo].push(voce);
+        createLiquidityAdjustment(paymentType, (isSpese?-1:1) * Math.abs(amount), date,
+          isSpese ? `Spesa: ${category}` : `Reddito: ${category}`, id);
+      } else {
+        data[st.formatoNativo].push(voce);
+      }
+      imported++;
+    });
+  } else {
+    st.dataRows.forEach(row => {
+      const date = parseFundHistoryDate(row[st.dateColIdx]);
+      const amount = parseFlexibleAmount(row[st.amountColIdx]);
+      if (!date || isNaN(amount) || amount===0) { skipped++; return; }
+      const note = st.noteColIdx>=0 ? (row[st.noteColIdx]||"") : "";
+      data[st.group].push({ id: uid(), date, amount: Math.abs(amount), category: st.category, note, importBatch: batchId });
+      imported++;
+    });
+  }
   saveData();
   csvImportState = null;
   alert(`Importate ${imported} voci. Righe ignorate (data/importo non validi): ${skipped}.`);
@@ -9994,11 +10079,23 @@ function csvImportBlock() {
   if (!csvImportState) {
     return `<div style="margin-bottom:18px;">
       <label>Importa estratto conto (CSV)</label>
-      <div class="subtle">Scarica il CSV dei movimenti dalla tua banca e caricalo qui per inserire più voci in una volta, invece che una a una.</div>
+      <div class="subtle">Scarica il CSV dei movimenti dalla tua banca e caricalo qui per inserire più voci in una volta, invece che una a una. Riconosce anche automaticamente un file esportato da questa stessa app (Spese o Reddito) — in quel caso ogni riga porta già la propria categoria, non serve configurare nulla.</div>
       <input type="file" id="csvFileInput" accept=".csv,text/csv">
     </div>`;
   }
   const st = csvImportState;
+  if (st.formatoNativo) {
+    const label = st.formatoNativo === "expenses" ? "Spese" : "Reddito";
+    return `<div style="margin-bottom:18px;">
+      <label>Importa estratto conto (CSV)</label>
+      <div class="subtle" style="color:#3F6E5E;">✓ Riconosciuto: file "${label}" esportato da questa app — ${st.dataRows.length} righe, ogni colonna (categoria, macro-categoria, codice titolo, ente, metodo di pagamento) verrà ripresa esattamente. Se un metodo di pagamento è indicato, viene registrato anche il movimento di liquidità collegato.</div>
+      <div class="row2" style="margin-top:10px;">
+        <button class="primary" type="button" id="csvConfirmBtn">Importa ${st.dataRows.length} righe</button>
+        <button class="secondary" type="button" id="csvCancelBtn">Annulla</button>
+      </div>
+      <button class="secondary" type="button" id="csvForzaManualeBtn" style="margin-top:6px; font-size:11px;">Non è questo il file giusto — mappa manualmente</button>
+    </div>`;
+  }
   const colOptions = (selectedIdx) => st.headers.map((h,i)=>`<option value="${i}" ${i===selectedIdx?'selected':''}>${h||'Colonna '+(i+1)}</option>`).join('');
   const noteOptions = `<option value="-1" ${st.noteColIdx===-1?'selected':''}>Nessuna</option>` + colOptions(st.noteColIdx>=0?st.noteColIdx:-999);
   return `<div style="margin-bottom:18px;">
@@ -10466,7 +10563,11 @@ function renderDrive() {
   if (csvFileInput) csvFileInput.addEventListener("change", ev=>{
     const f = ev.target.files[0]; if (f) handleCsvFile(f);
   });
-  if (csvImportState) {
+  if (csvImportState && csvImportState.formatoNativo) {
+    document.getElementById("csvConfirmBtn").addEventListener("click", ()=>{ confirmCsvImport(); renderDrive(); });
+    document.getElementById("csvCancelBtn").addEventListener("click", ()=>{ csvImportState = null; renderDrive(); });
+    document.getElementById("csvForzaManualeBtn").addEventListener("click", ()=>{ csvImportState.formatoNativo = null; renderDrive(); });
+  } else if (csvImportState) {
     document.getElementById("csvGroupSelect").addEventListener("change", ev=>{
       csvImportState.group = ev.target.value;
       csvImportState.category = data.categories[csvImportState.group][0] || "Altro";
@@ -11152,6 +11253,20 @@ function renderSettings() {
       </form>
       ${s.pinHash ? '<button class="secondary" id="removePinBtn" style="margin-top:8px;">Rimuovi PIN</button>' : ''}
     </div>
+    <div class="card" style="border-color:#8B3A2F;">
+      <h3 style="color:#8B3A2F;">Zona pericolosa</h3>
+      <div class="subtle">Cancella <b>tutto</b> — reddito, spese, patrimonio, ipotesi, scenari salvati, backup automatici locali. Non tocca eventuali backup su Google Drive già salvati in passato. Irreversibile.</div>
+      <button type="button" id="apriResetBtn" class="secondary" style="margin-top:8px; border-color:#8B3A2F; color:#8B3A2F;">Cancella tutti i dati</button>
+      <div id="resetConfirmBox" style="display:none; margin-top:10px;">
+        <div class="subtle">${s.pinHash ? "Inserisci il tuo PIN per confermare — resta impostato dopo il reset." : 'Digita <b>CANCELLA</b> per intero per confermare (nessun PIN impostato).'}</div>
+        <input type="${s.pinHash ? 'password' : 'text'}" id="resetConfirmInput" ${s.pinHash ? 'inputmode="numeric" pattern="[0-9]*"' : ''} style="margin-top:6px;">
+        <div class="row2" style="margin-top:8px;">
+          <button type="button" id="confermaResetBtn" class="secondary" style="border-color:#8B3A2F; color:#8B3A2F;">Conferma — cancella tutto</button>
+          <button type="button" id="annullaResetBtn" class="secondary">Annulla</button>
+        </div>
+        <div id="resetErrorBox" class="subtle" style="color:#8B3A2F; margin-top:4px;"></div>
+      </div>
+    </div>
     <div class="card">
       <h3>Deduzioni fiscali</h3>
       <div class="subtle">Deduzioni legate a investimenti (es. fondo pensione): genera un reddito da risparmio fiscale quando investi, rispettando un limite massimo globale condiviso tra più fondi/titoli collegati alla stessa macro-categoria. Si interrompe da sola se l'investimento collegato non c'è più (nessuna nuova generazione futura).</div>
@@ -11230,6 +11345,29 @@ function renderSettings() {
   const removeBtn = document.getElementById("removePinBtn");
   if (removeBtn) removeBtn.addEventListener("click", ()=>{
     if (confirm("Rimuovere il blocco PIN?")) { data.settings.pinHash = null; saveData(); renderSettings(); }
+  });
+
+  const apriResetBtn = document.getElementById("apriResetBtn");
+  if (apriResetBtn) apriResetBtn.addEventListener("click", ()=>{
+    document.getElementById("resetConfirmBox").style.display = "block";
+    document.getElementById("resetConfirmInput").focus();
+  });
+  const annullaResetBtn = document.getElementById("annullaResetBtn");
+  if (annullaResetBtn) annullaResetBtn.addEventListener("click", ()=>{
+    document.getElementById("resetConfirmBox").style.display = "none";
+    document.getElementById("resetConfirmInput").value = "";
+    document.getElementById("resetErrorBox").textContent = "";
+  });
+  const confermaResetBtn = document.getElementById("confermaResetBtn");
+  if (confermaResetBtn) confermaResetBtn.addEventListener("click", async ()=>{
+    const valore = document.getElementById("resetConfirmInput").value;
+    const errBox = document.getElementById("resetErrorBox");
+    if (!valore) { errBox.textContent = "Inserisci il PIN o la parola di conferma."; return; }
+    confermaResetBtn.disabled = true;
+    const ok = await eseguiResetCompleto(valore);
+    confermaResetBtn.disabled = false;
+    if (!ok) { errBox.textContent = "Non corrisponde — riprova."; return; }
+    switchTab("dashboard");
   });
 
   document.getElementById("taxDeductionForm").addEventListener("submit", ev=>{
@@ -11379,6 +11517,13 @@ function renderSettings() {
   });
 
   const controllaBtn = document.getElementById("controllaIntegritaBtn");
+  function bindChiudiIntegrita() {
+    const chiudiBtn = document.getElementById("chiudiIntegritaBtn");
+    if (chiudiBtn) chiudiBtn.addEventListener("click", ()=>{
+      ultimoControlloIntegrita = null;
+      document.getElementById("integritaResultBox").innerHTML = "";
+    });
+  }
   function bindRimuoviOrfano() {
     document.querySelectorAll("[data-rimuovi-orfano]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
@@ -11391,6 +11536,29 @@ function renderSettings() {
         ultimoControlloIntegrita = controllaIntegritaDati();
         document.getElementById("integritaResultBox").innerHTML = renderRisultatoIntegrita(ultimoControlloIntegrita);
         bindRimuoviOrfano();
+        bindCreaMovimento();
+        bindChiudiIntegrita();
+      });
+    });
+  }
+  function bindCreaMovimento() {
+    document.querySelectorAll("[data-crea-movimento]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const id = btn.dataset.creaMovimento;
+        const fonte = btn.dataset.creaMovimentoFonte;
+        const voce = (fonte === "expenses" ? data.expenses : data.income).find(v => v.id === id);
+        if (!voce) return;
+        const segno = fonte === "expenses" ? -1 : 1;
+        const etichetta = fonte === "expenses" ? "spesa" : "reddito";
+        if (!confirm(`Registrare ora il movimento mancante su "${voce.paymentType}" per questa ${etichetta} (${fmt(voce.amount)} ${voce.currency||'ALL'})?`)) return;
+        createLiquidityAdjustment(voce.paymentType, segno * Number(voce.amount), voce.date,
+          fonte === "expenses" ? `Spesa: ${voce.category}` : `Reddito: ${voce.category}`, id);
+        saveData();
+        ultimoControlloIntegrita = controllaIntegritaDati();
+        document.getElementById("integritaResultBox").innerHTML = renderRisultatoIntegrita(ultimoControlloIntegrita);
+        bindRimuoviOrfano();
+        bindCreaMovimento();
+        bindChiudiIntegrita();
       });
     });
   }
@@ -11398,8 +11566,12 @@ function renderSettings() {
     ultimoControlloIntegrita = controllaIntegritaDati();
     document.getElementById("integritaResultBox").innerHTML = renderRisultatoIntegrita(ultimoControlloIntegrita);
     bindRimuoviOrfano();
+    bindCreaMovimento();
+    bindChiudiIntegrita();
   });
-  if (ultimoControlloIntegrita) bindRimuoviOrfano();
+  bindChiudiIntegrita();
+  bindCreaMovimento();
+  if (ultimoControlloIntegrita) { bindRimuoviOrfano(); bindCreaMovimento(); }
 
   const mostraBackupBtn = document.getElementById("mostraBackupAutoBtn");
   if (mostraBackupBtn) mostraBackupBtn.addEventListener("click", async ()=>{
