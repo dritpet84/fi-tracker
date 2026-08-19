@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.41</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.47</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -1419,6 +1419,37 @@ function controllaIntegritaDati() {
   }
   trovaDuplicati(data.income, "Reddito");
   trovaDuplicati(data.expenses, "Spese");
+
+  // 5) Movimenti di liquidità orfani: un aggiustamento su un conto (Banca/Cash),
+  // creato in automatico al momento di un acquisto/vendita e collegato tramite
+  // linkedTxnId, la cui posizione collegata è stata cancellata senza ripulire
+  // questo movimento — resta a ridurre il saldo per sempre, senza modo di trovarlo
+  // se non da qui. A differenza degli altri problemi di questa lista, questo si
+  // può rimuovere direttamente dal pannello: cancellarlo è sicuro, ripristina solo
+  // il saldo a quello che era prima di quel movimento mai completato.
+  data.portfolio.forEach(p => {
+    if (!p.linkedTxnId || !data.paymentTypes.includes(p.type)) return;
+    if (portfolioIds.has(p.linkedTxnId)) return;
+    problemi.push({ tipo: "Movimento di liquidità orfano", gravita: "alta", id: p.id,
+      msg: `Movimento su "${p.type}" del ${p.date} (${fmt(p.amount)} ${p.currency}${p.note?' · '+p.note:''}) era collegato a una posizione ormai cancellata. Rimuoverlo ripristina il saldo di ${fmt(-p.amount)} ${p.currency}.` });
+  });
+
+  // 5bis) Stesso problema, ma per movimenti generati dall'importazione storico
+  // fondi PRIMA che venisse corretto un bug (v2.46): quei movimenti non avevano
+  // affatto un linkedTxnId (era passato null), quindi il controllo sopra non li
+  // vede — restavano orfani fin dall'origine, non solo dopo una cancellazione.
+  // Li si riconosce dal codice titolo alla fine della nota ("Acquisto quote ... T0000123"):
+  // se nessuna posizione ha ancora quel codice, il fondo è stato cancellato.
+  const codiciEsistenti = new Set(data.portfolio.map(p => p.securityCode).filter(Boolean));
+  data.portfolio.forEach(p => {
+    if (p.linkedTxnId || !data.paymentTypes.includes(p.type)) return;
+    if (!p.note || !p.note.startsWith("Acquisto quote ")) return;
+    const match = p.note.match(/T\d{7}$/);
+    if (!match) return;
+    if (codiciEsistenti.has(match[0])) return;
+    problemi.push({ tipo: "Movimento di liquidità orfano", gravita: "alta", id: p.id,
+      msg: `Movimento su "${p.type}" del ${p.date} (${fmt(p.amount)} ${p.currency} · ${p.note}) — il fondo con codice ${match[0]} non esiste più nel portafoglio (probabile residuo dell'importazione storico fondi). Rimuoverlo ripristina il saldo di ${fmt(-p.amount)} ${p.currency}.` });
+  });
 
   const ordineGravita = { alta: 0, media: 1, bassa: 2 };
   problemi.sort((a, b) => ordineGravita[a.gravita] - ordineGravita[b.gravita]);
@@ -2927,6 +2958,10 @@ function simulazioneMonteCarlo(opts) {
   let successi = 0, mancatoTraguardo = 0;
   const patrimoniFinali = [];
   const volatilitaPerSim = [];
+  // Percorso di accumulo di ogni simulazione, anno per anno — serve solo per
+  // calcolare i percentili per anno (il "cono di incertezza" da sovrapporre al
+  // grafico Proiezione FI), non incide sul resto del calcolo.
+  const percorsiAccumulo = Array.from({length: horizonAccumulo}, () => []);
   for (let sim = 0; sim < n; sim++) {
     let wealth = wealth0, income = income0, traguardoAnno = null, speseAlTraguardo = 0;
     for (let y = 1; y <= horizonAccumulo; y++) {
@@ -2935,6 +2970,7 @@ function simulazioneMonteCarlo(opts) {
       const contribution = income * savingsRate;
       const ret = randNormale(meanRet, devStd);
       wealth = wealth * (1 + ret) + contribution;
+      percorsiAccumulo[y-1].push(wealth);
       const target = expense * multiplier;
       if (!traguardoAnno && wealth >= target) { traguardoAnno = y; speseAlTraguardo = expense; }
     }
@@ -2977,11 +3013,17 @@ function simulazioneMonteCarlo(opts) {
   }
   patrimoniFinali.sort((a,b) => a-b);
   const percentile = p => patrimoniFinali[Math.floor(p * (patrimoniFinali.length-1))];
+  const percentiliPerAnno = percorsiAccumulo.map(anno => {
+    const ordinato = anno.slice().sort((a,b) => a-b);
+    const pct = p => ordinato[Math.floor(p * (ordinato.length-1))];
+    return { p10: pct(0.10), p50: pct(0.50), p90: pct(0.90) };
+  });
   return {
     percentualeSuccesso: successi / n * 100,
     percentualeMancatoTraguardo: mancatoTraguardo / n * 100,
     p10: percentile(0.10), p50: percentile(0.50), p90: percentile(0.90),
     volatilitaSpesa: volatilitaPerSim.length ? volatilitaPerSim.reduce((s,v)=>s+v,0)/volatilitaPerSim.length : null,
+    percentiliPerAnno,
     strategia, n
   };
 }
@@ -3047,6 +3089,7 @@ function scenariComparativiCard() {
 let categoryChartInstance = null;
 let macroCompareChartInstance = null;
 let monthlyTotalsChartInstance = null;
+let yearlyTotalsChartInstance = null;
 let macroDrilldownChartInstance = null;
 let peaksChartInstance = null;
 let editingRecurring = null; // {group, id}
@@ -3149,6 +3192,7 @@ function renderRisultatoIntegrita(problemi) {
     problemi.map(p => `<div class="stat-row" style="align-items:flex-start;">
       <span class="pill" style="background:${badgeColor[p.gravita]}22; color:${badgeColor[p.gravita]}; border-color:${badgeColor[p.gravita]}; white-space:nowrap;">${p.tipo}</span>
       <span class="subtle" style="flex:1; text-align:left; margin-left:8px;">${p.msg}</span>
+      ${p.tipo==="Movimento di liquidità orfano" ? `<button type="button" data-rimuovi-orfano="${p.id}" class="secondary" style="width:auto; padding:3px 8px; font-size:11px; margin-left:8px;">Rimuovi</button>` : ''}
     </div>`).join('');
 }
 let editingIncomeId = null;
@@ -3569,6 +3613,38 @@ function renderDashboard() {
         <div class="subtle" style="font-size:10px; margin-top:4px;">La variazione nominale include anche quanto hai versato/prelevato; il TWR lo scorpora, pesando ogni versamento/spesa in base al giorno esatto in cui è avvenuto — non un'approssimazione mensile.</div>` : ''}
       </div>`;
     })()}
+    ${(() => {
+      const centrale = results[1]; // bear, central, bull -> central è indice 1
+      const mc = ultimoRisultatoMonteCarlo;
+      let verdetto = null, coloreVerdetto = null;
+      if (mc) {
+        if (mc.percentualeSuccesso >= 85) { verdetto = "Solido"; coloreVerdetto = "#3F6E5E"; }
+        else if (mc.percentualeSuccesso >= 60) { verdetto = "Da monitorare"; coloreVerdetto = "#C9A227"; }
+        else { verdetto = "A rischio"; coloreVerdetto = "#8B3A2F"; }
+      }
+      return `
+    <div class="card"${mc ? ` style="border-color:${coloreVerdetto};"` : ''}>
+      <h3>Solidità del piano — riepilogo</h3>
+      <div class="subtle">Le card qui sotto rispondono a due domande diverse: QUANDO arriveresti (proiezione deterministica) e QUANTO è probabile che il piano regga davvero (Monte Carlo, rendimenti casuali). Qui insieme, in un colpo d'occhio.</div>
+      <div class="row2" style="margin-top:10px;">
+        <div style="text-align:center; padding:10px; background:#0F1B2E; border-radius:6px;">
+          <div class="subtle" style="font-size:10px; text-transform:uppercase;">Quando (scenario central)</div>
+          <div style="font-size:22px; font-family:'IBM Plex Mono',monospace; color:#C9A227;">${centrale.hitYear ? (thisYear+centrale.hitYear) : '> '+(thisYear+s.horizon)}</div>
+          <div class="subtle" style="font-size:9px;">${centrale.hitYear ? centrale.hitYear+' anni da oggi' : "non raggiunto nell'orizzonte"}</div>
+        </div>
+        <div style="text-align:center; padding:10px; background:#0F1B2E; border-radius:6px;">
+          <div class="subtle" style="font-size:10px; text-transform:uppercase;">Quanto è probabile (Monte Carlo)</div>
+          ${mc ? `<div style="font-size:22px; font-family:'IBM Plex Mono',monospace; color:${coloreVerdetto};">${mc.percentualeSuccesso.toFixed(0)}%</div>
+            <div class="subtle" style="font-size:9px; color:${coloreVerdetto};">${verdetto}</div>`
+          : `<div style="font-size:14px; color:#5C7089; margin-top:8px;">Non ancora girato</div>
+            <div class="subtle" style="font-size:9px;">gira la simulazione qui sotto</div>`}
+        </div>
+      </div>
+      ${mc ? `<div style="margin-top:10px; background:#0F1B2E; border-radius:4px; height:8px; overflow:hidden;">
+        <div style="width:${Math.max(2,mc.percentualeSuccesso)}%; height:100%; background:${coloreVerdetto};"></div>
+      </div>` : ''}
+    </div>`;
+    })()}
     <div class="card">
       <h3>Proiezione FI</h3>
       <div class="subtle">Target = 25× spesa annua. Reddito/spesa base presi dai dati registrati (o dal budget se ancora vuoti). Tasso di risparmio usato: <b>${(savingsRateForProjection*100).toFixed(1)}%</b> (${savingsRateMode==='reale'?(actualSavingsRate!==null?'reale, dai tuoi dati':'obiettivo, dati reali non ancora sufficienti'):'obiettivo impostato in Assunzioni'}).</div>
@@ -3674,18 +3750,29 @@ function renderDashboard() {
   const ctx = document.getElementById("fiChart");
   const labels = central.rows.map(r=>r.year);
   if (chartInstance) chartInstance.destroy();
+  // Se è stato girato un Monte Carlo con lo stesso orizzonte di accumulo, si
+  // sovrappone la fascia p10-p90 anno per anno — il "cono di incertezza" reale,
+  // accanto alle 3 linee deterministiche. Non un secondo grafico separato: sullo
+  // stesso, per confrontare a colpo d'occhio "quando" (le linee) e "quanto è
+  // incerto" (la fascia).
+  const mcCono = (ultimoRisultatoMonteCarlo && ultimoRisultatoMonteCarlo.percentiliPerAnno
+    && ultimoRisultatoMonteCarlo.percentiliPerAnno.length === central.rows.length) ? ultimoRisultatoMonteCarlo.percentiliPerAnno : null;
+  const datasetsFi = [
+    ...results.map(r => ({ label: r.label, data: r.rows.map(row=>toDisplay(row.wealth)), borderColor: r.color, backgroundColor:'transparent', tension:0.25, pointRadius:0, borderWidth: r.key==='central'?2.5:1.5 })),
+    { label:'Target', data: central.rows.map(row=>toDisplay(row.target)), borderColor:'#5C4A2E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 }
+  ];
+  if (mcCono) {
+    datasetsFi.push(
+      { label:'Monte Carlo · 90° percentile', data: mcCono.map(p=>toDisplay(p.p90)), borderColor:'transparent', backgroundColor:'#C9A22715', pointRadius:0, fill:'+1', order:10 },
+      { label:'Monte Carlo · 10° percentile', data: mcCono.map(p=>toDisplay(p.p10)), borderColor:'transparent', backgroundColor:'transparent', pointRadius:0, fill:false, order:10 }
+    );
+  }
   chartInstance = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [
-        ...results.map(r => ({ label: r.label, data: r.rows.map(row=>toDisplay(row.wealth)), borderColor: r.color, backgroundColor:'transparent', tension:0.25, pointRadius:0, borderWidth: r.key==='central'?2.5:1.5 })),
-        { label:'Target', data: central.rows.map(row=>toDisplay(row.target)), borderColor:'#5C4A2E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 }
-      ]
-    },
+    data: { labels, datasets: datasetsFi },
     options: {
       responsive:true,
-      plugins: { legend: { labels:{ color:'#8FA3BF', font:{size:10} } } },
+      plugins: { legend: { labels:{ color:'#8FA3BF', font:{size:10}, filter: item => item.text !== 'Monte Carlo · 10° percentile' } } },
       scales: {
         x: { ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
         y: { ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1e6).toFixed(1)+'M '+displaySymbol() }, grid:{ color:'#1E2E47' } }
@@ -4328,22 +4415,21 @@ async function analyzeReceiptWithAI(file, onRetry) {
   throw lastErr;
 }
 
+// Il gruppo a cui appartiene una voce nel confronto per macro-categoria: prima la
+// macro scelta sulla SINGOLA voce (permette a "Fly" di finire ora in "Extra" ora
+// in "Vacation", voce per voce), solo se assente ricade sulla macro di default
+// della categoria. Prima di questa correzione, ogni voce veniva raggruppata per
+// il default della sua categoria, ignorando del tutto una macro scelta a mano.
 function categoriesForMacro(group, macro, year) {
   const map = data.categoryMacroMap[group] || {};
-  const catsInMacro = Object.keys(map).filter(c => map[c] === macro);
   const totals = {};
-  catsInMacro.forEach(c => {
-    let sum = 0;
-    if (group === "portfolio") {
-      data.portfolio.filter(p=>p.type===c && p.date).forEach(p=>{
-        if (new Date(p.date).getFullYear()===year) sum += toALL(Number(p.amount), p.currency);
-      });
-    } else {
-      (data[group]||[]).filter(e=>e.category===c).forEach(e=>{
-        if (new Date(e.date).getFullYear()===year) sum += Number(e.amount);
-      });
-    }
-    totals[c] = sum;
+  const campo = group === "portfolio" ? "type" : "category";
+  (data[group]||[]).forEach(e => {
+    if (!e.date || new Date(e.date).getFullYear() !== year) return;
+    const macroEffettiva = e.macro || map[e[campo]];
+    if (macroEffettiva !== macro) return;
+    const importo = group === "portfolio" ? toALL(Number(e.amount)||0, e.currency) : Number(e.amount)||0;
+    totals[e[campo]] = (totals[e[campo]]||0) + importo;
   });
   return totals;
 }
@@ -4441,7 +4527,15 @@ function categorieDelFiltro(group, macroFilter) {
   const tutte = data.categories[group] || [];
   if (!macroFilter || macroFilter === "all") return tutte;
   const map = (data.categoryMacroMap[group]) || {};
-  return tutte.filter(c => map[c] === macroFilter);
+  const campo = group === "portfolio" ? "type" : "category";
+  // Una categoria appartiene al filtro se il suo default è questa macro, oppure se
+  // almeno una voce ha questa macro scelta a mano (anche con un default diverso) —
+  // altrimenti una macro assegnata manualmente su una singola voce (es. "Fly"
+  // spostata da "Extra" a "Vacation" solo per quella spesa) sparirebbe dal filtro
+  // pur avendo dati reali lì sotto. Stesso bug già corretto in categoriesForMacro,
+  // qui si applica alla lista delle categorie invece che al totale.
+  const daVociEffettive = new Set((data[group]||[]).filter(e => e.macro === macroFilter).map(e => e[campo]));
+  return tutte.filter(c => map[c] === macroFilter || daVociEffettive.has(c));
 }
 
 function storicoTotalsBlockEnd() { return ""; }
@@ -4485,8 +4579,16 @@ function renderExpenses() {
     .sort((a,b)=> ((macrosThisMonth[b]||0)+(macrosLastMonth[b]||0)) - ((macrosThisMonth[a]||0)+(macrosLastMonth[a]||0)))
     .slice(0,15);
 
+  // Punto 2/3 del feedback: la "Spesa mensile" (e ora anche annuale) non deve
+  // valere solo per il totale — deve rispettare lo stesso filtro categoria/macro
+  // già usato per lo Storico qui sotto, con lo stesso comportamento a cascata.
+  const filtroAttivo = expenseCategoryFilter !== "all" || expenseMacroFilter !== "all";
+  const expensesPerGrafici = !filtroAttivo ? expensesPerTotali
+    : expensesPerTotali.filter(e => (expenseCategoryFilter==="all" || e.category===expenseCategoryFilter) && (expenseMacroFilter==="all" || e.macro===expenseMacroFilter));
+  const etichettaFiltro = expenseCategoryFilter !== "all" ? ` — ${expenseCategoryFilter}` : expenseMacroFilter !== "all" ? ` — ${expenseMacroFilter}` : "";
+
   const monthlyTotalsThisYear = new Array(12).fill(0);
-  expensesPerTotali.forEach(e=>{
+  expensesPerGrafici.forEach(e=>{
     const d = new Date(e.date);
     if (d.getFullYear()===thisYear) monthlyTotalsThisYear[d.getMonth()] += Number(e.amount);
   });
@@ -4494,6 +4596,19 @@ function renderExpenses() {
   const totalThisYearForAvg = monthlyTotalsThisYear.reduce((s,v)=>s+v,0);
   const monthlyAvgSimple = (now.getMonth()+1) > 0 ? totalThisYearForAvg/(now.getMonth()+1) : 0;
   const monthlyAvgEffective = monthsWithData > 0 ? totalThisYearForAvg/monthsWithData : 0;
+
+  // Punto 3: come sopra ma per anno — su tutti gli anni presenti nei dati, non
+  // solo quello corrente.
+  const anniConDati = [...new Set(expensesPerGrafici.map(e => new Date(e.date).getFullYear()))].sort((a,b)=>a-b);
+  const totaliPerAnno = {};
+  expensesPerGrafici.forEach(e => {
+    const y = new Date(e.date).getFullYear();
+    totaliPerAnno[y] = (totaliPerAnno[y]||0) + Number(e.amount);
+  });
+  const yearsWithData = anniConDati.filter(y => (totaliPerAnno[y]||0) > 0).length;
+  const totalAllYearsForAvg = anniConDati.reduce((s,y)=>s+(totaliPerAnno[y]||0), 0);
+  const yearlyAvgSimple = anniConDati.length > 0 ? totalAllYearsForAvg/anniConDati.length : 0;
+  const yearlyAvgEffective = yearsWithData > 0 ? totalAllYearsForAvg/yearsWithData : 0;
 
   document.getElementById("main").innerHTML = `
     <div class="card" style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
@@ -4560,9 +4675,14 @@ function renderExpenses() {
       <div class="chart-wrap"><canvas id="macroDrilldownChart" height="180"></canvas></div>
     </div>` : ''}
     ${monthsWithData>0 ? `<div class="card">
-      <h3>Spesa mensile · ${thisYear}</h3>
-      <div class="subtle">Media semplice (÷${now.getMonth()+1} mesi trascorsi): ${fmt(monthlyAvgSimple)} ALL/mese · media reale (÷${monthsWithData} mesi con almeno una spesa): ${fmt(monthlyAvgEffective)} ALL/mese</div>
+      <h3>Spesa mensile · ${thisYear}${etichettaFiltro}</h3>
+      <div class="subtle">Media semplice (÷${now.getMonth()+1} mesi trascorsi): ${fmt(monthlyAvgSimple)} ALL/mese · media reale (÷${monthsWithData} mesi con almeno una spesa): ${fmt(monthlyAvgEffective)} ALL/mese${filtroAttivo?' · <span style="color:#C9A227;">filtrato con lo Storico qui sotto</span>':''}</div>
       <div class="chart-wrap"><canvas id="monthlyTotalsChart" height="220"></canvas></div>
+    </div>` : ''}
+    ${anniConDati.length>0 ? `<div class="card">
+      <h3>Spesa annuale${etichettaFiltro}</h3>
+      <div class="subtle">Media semplice (÷${anniConDati.length} anni con dati): ${fmt(yearlyAvgSimple)} ALL/anno · media reale (÷${yearsWithData} anni con almeno una spesa): ${fmt(yearlyAvgEffective)} ALL/anno${filtroAttivo?' · <span style="color:#C9A227;">filtrato con lo Storico qui sotto</span>':''}</div>
+      <div class="chart-wrap"><canvas id="yearlyTotalsChart" height="200"></canvas></div>
     </div>` : ''}
     ${renderDailyAveragesCard()}
     <div class="card">
@@ -4822,6 +4942,31 @@ function renderExpenses() {
           { type:'bar', label:'Spesa mensile', data: monthlyTotalsThisYear.map(toDisplay), backgroundColor:'#C9A227' },
           { type:'line', label:'Media reale', data: new Array(12).fill(toDisplay(monthlyAvgEffective)), borderColor:'#3F6E5E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 },
           { type:'line', label:'Media semplice', data: new Array(12).fill(toDisplay(monthlyAvgSimple)), borderColor:'#8B3A2F', borderDash:[2,3], pointRadius:0, borderWidth:1.5 }
+        ]
+      },
+      options: {
+        responsive:true,
+        plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales:{
+          x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+          y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } }
+        }
+      }
+    });
+  }
+
+  // Punto 3: stesso principio del grafico mensile, ma un anno = una barra invece
+  // di un mese = una barra. Usa gli stessi filtri categoria/macro.
+  if (anniConDati.length>0) {
+    const ctx4 = document.getElementById("yearlyTotalsChart");
+    if (yearlyTotalsChartInstance) yearlyTotalsChartInstance.destroy();
+    yearlyTotalsChartInstance = new Chart(ctx4, {
+      data: {
+        labels: anniConDati.map(String),
+        datasets: [
+          { type:'bar', label:'Spesa annuale', data: anniConDati.map(y=>toDisplay(totaliPerAnno[y]||0)), backgroundColor:'#C9A227' },
+          { type:'line', label:'Media reale', data: anniConDati.map(()=>toDisplay(yearlyAvgEffective)), borderColor:'#3F6E5E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 },
+          { type:'line', label:'Media semplice', data: anniConDati.map(()=>toDisplay(yearlyAvgSimple)), borderColor:'#8B3A2F', borderDash:[2,3], pointRadius:0, borderWidth:1.5 }
         ]
       },
       options: {
@@ -5498,6 +5643,21 @@ function computeLiquiditySummary() {
     const key = p.type;
     if (!grouped[key]) grouped[key] = { name:key, balanceALL:0 };
     grouped[key].balanceALL += toALL(p.amount, p.currency);
+  });
+  return Object.values(grouped);
+}
+// ===== Punto C: riconciliazione — confronta il saldo calcolato con quello reale
+// del conto, come controverifica indipendente dal Controllo integrità dati (che
+// trova solo residui con un pattern riconoscibile). Saldo nella valuta PROPRIA
+// del conto, non convertita, per confrontarla direttamente con l'estratto conto
+// senza dover fare conversioni a mano.
+function computeSaldiPerRiconciliazione() {
+  const items = data.portfolio.filter(p => data.paymentTypes.includes(p.type) && !isCreditCardType(p.type));
+  const grouped = {};
+  items.forEach(p => {
+    const key = p.type;
+    if (!grouped[key]) grouped[key] = { name: key, saldo: 0, valuta: p.currency || currencyOfBankAccount(key) };
+    grouped[key].saldo += Number(p.amount) || 0;
   });
   return Object.values(grouped);
 }
@@ -6784,6 +6944,7 @@ function renderAssets() {
           </div>
         </div>
         <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
+        <div><label>Pagato con</label>${paymentTypeSelect("Banca")}</div>
         <div><label>Nota</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -6913,6 +7074,11 @@ function renderAssets() {
       }
     }
     data.portfolio.push(posObj);
+    const metodo = f.get("paymentType") || "";
+    if (metodo && posObj.amount > 0) {
+      createLiquidityAdjustment(metodo, -posObj.amount, posObj.date,
+        `Acquisto ${isDeriv?(posObj.derivativeType||type):(posObj.stockTicker||type)} ${posObj.securityCode||''}`.trim(), posObj.id);
+    }
     saveData(); renderAssets();
   });
   const stockSaleSelect = document.getElementById("stockSaleSelect");
@@ -7070,6 +7236,19 @@ function renderLiquidityTab() {
       ${liquiditySummary.map(g=>`<div class="stat-row"><span class="label">${g.name}</span><span class="val ${g.balanceALL<0?'down':''}">${fmt(g.balanceALL)} ALL</span></div>`).join('')}
       <div class="section-total"><span>Totale</span><span style="font-weight:600; color:#C9A227;">${fmtDisplay(totalALL)}</span></div>
     </div>
+    <div class="card">
+      <h3>Riconciliazione</h3>
+      <div class="subtle">Una controverifica indipendente dal Controllo integrità dati: confronta il saldo che l'app calcola con quello reale del tuo conto (dall'estratto conto/app bancaria). Se non coincidono, puoi registrare un unico aggiustamento per allinearli — utile anche per differenze che il Controllo integrità dati non riconosce.</div>
+      ${computeSaldiPerRiconciliazione().map(g => `
+        <div style="border-top:1px solid #1E2E47; padding-top:10px; margin-top:10px;">
+          <div class="stat-row"><span class="label">${g.name}</span><span class="val">${fmt(g.saldo)} ${g.valuta} <span class="subtle">(calcolato)</span></span></div>
+          <div class="row2" style="align-items:center;">
+            <input type="number" step="0.0001" id="riconciliaInput-${escAttr(g.name)}" placeholder="saldo reale in ${g.valuta}">
+            <button type="button" class="secondary" data-riconcilia-verifica="${escAttr(g.name)}" style="width:auto; padding:6px 12px;">Verifica</button>
+          </div>
+          <div id="riconciliaEsito-${escAttr(g.name)}" style="margin-top:6px;"></div>
+        </div>`).join('')}
+    </div>
   `;
   bindMacroSelects();
   document.getElementById("liquidityForm").addEventListener("submit", ev=>{
@@ -7131,6 +7310,33 @@ function renderLiquidityTab() {
   document.getElementById("transferFromSelect").addEventListener("change", updateTransferFxVisibility);
   document.getElementById("transferToSelect").addEventListener("change", updateTransferFxVisibility);
   updateTransferFxVisibility();
+
+  document.querySelectorAll("[data-riconcilia-verifica]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const nomeConto = btn.dataset.riconciliaVerifica;
+      const input = document.getElementById(`riconciliaInput-${nomeConto}`);
+      const saldoReale = Number(input.value);
+      if (!input.value || isNaN(saldoReale)) { alert("Inserisci il saldo reale del conto, dall'estratto conto o dall'app bancaria."); return; }
+      const saldoCalcolato = computeSaldiPerRiconciliazione().find(g => g.name === nomeConto);
+      const valuta = saldoCalcolato ? saldoCalcolato.valuta : currencyOfBankAccount(nomeConto);
+      const differenza = saldoReale - (saldoCalcolato ? saldoCalcolato.saldo : 0);
+      const esitoBox = document.getElementById(`riconciliaEsito-${nomeConto}`);
+      if (Math.abs(differenza) < 0.01) {
+        esitoBox.innerHTML = `<div class="subtle" style="color:#3F6E5E;">✓ Coincide — nessun aggiustamento necessario.</div>`;
+        return;
+      }
+      esitoBox.innerHTML = `
+        <div class="alert-banner">Differenza: ${differenza>0?'+':''}${fmt(differenza)} ${valuta} (${differenza>0?"manca nell'app rispetto al reale":"l'app ne ha di più del reale"}).</div>
+        <button type="button" class="secondary" data-riconcilia-registra="${nomeConto}" data-riconcilia-importo="${differenza}" style="margin-top:6px;">Registra aggiustamento di ${fmt(differenza)} ${valuta}</button>`;
+      esitoBox.querySelector("[data-riconcilia-registra]").addEventListener("click", (ev)=>{
+        const importo = Number(ev.target.dataset.riconciliaImporto);
+        if (!confirm(`Registrare un aggiustamento di ${fmt(importo)} ${valuta} su "${nomeConto}" per allinearlo al saldo reale? Questo è un movimento indipendente, non collegato a nessuna posizione — solo per la riconciliazione.`)) return;
+        createLiquidityAdjustment(nomeConto, importo, todayISO, "Aggiustamento di riconciliazione", null);
+        saveData();
+        renderLiquidityTab();
+      });
+    });
+  });
   document.querySelectorAll("[data-del-port]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ deletePortfolioPosition(btn.dataset.delPort); saveData(); renderLiquidityTab(); });
   });
@@ -7626,6 +7832,7 @@ function renderFundsTab() {
     const sharedCode = (fundImportPreview.securityCode || "").trim() || existingFundCode || consumeNextSecurityCode();
     let firstId = null;
     let updated = 0, added = 0;
+    const idPerRiga = new Array(rows.length).fill(null);
     rows.forEach((r,idx) => {
       if (r.matchId) {
         const existing = data.portfolio.find(p=>p.id===r.matchId);
@@ -7643,12 +7850,14 @@ function renderFundsTab() {
           const hIdx = existing.priceHistory.findIndex(h=>h.date===r.date);
           if (hIdx>=0) existing.priceHistory[hIdx].price = r.unitPrice; else existing.priceHistory.push({date:r.date, price:r.unitPrice});
           if (idx===0) firstId = existing.id;
+          idPerRiga[idx] = existing.id;
           updated++;
           return;
         }
       }
       const id = uid();
       if (idx===0) firstId = id;
+      idPerRiga[idx] = id;
       data.portfolio.push({
         id, type, macro: macro || null, fundName, issuerName: issuerName || "",
         riskFactor: normalizzaRischio(riskFactor, { type, macro }),
@@ -7660,13 +7869,16 @@ function renderFundsTab() {
       added++;
     });
     // Ogni versamento è un'uscita dal conto: senza questo il denaro risultava
-    // investito senza essere mai uscito da nessuna parte.
+    // investito senza essere mai uscito da nessuna parte. Collegato tramite
+    // linkedTxnId alla riga specifica che lo ha generato (bug corretto in v2.46:
+    // prima passava null, quindi cancellare una riga importata non ripuliva mai
+    // il movimento di liquidità collegato — restava orfano per sempre).
     let uscite = 0, uscitegia = 0;
     if (paymentType) {
-      rows.forEach(r => {
+      rows.forEach((r, idx) => {
         const nota = `Acquisto quote ${fundName} ${sharedCode}`.trim();
         if (esisteGiaMovimento(paymentType, -r.amount, r.date, sharedCode)) { uscitegia++; return; }
-        createLiquidityAdjustment(paymentType, -r.amount, r.date, nota, null);
+        createLiquidityAdjustment(paymentType, -r.amount, r.date, nota, idPerRiga[idx]);
         uscite++;
       });
     }
@@ -7781,6 +7993,7 @@ function renderBondsTab() {
           </div>
           <div><label>Commissione titoli annua (%) — 0 in Albania, >0 es. Italia</label><input type="number" step="0.0001" name="custodyFeeRate" value="0"></div>
         </div>
+        <div><label>Pagato con</label>${paymentTypeSelect("Banca")}</div>
         <div><label>Nota</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -7937,6 +8150,12 @@ function renderBondsTab() {
     };
     const placementCommissionAmt = computeCommissionAmount(posObj.placementCommissionType, posObj.placementCommissionValue, nominal);
     data.portfolio.push(posObj);
+    // Punto A del feedback: come già per i Fondi, l'acquisto scala il conto scelto
+    // — prima il capitale nominale non toccava mai la liquidità.
+    const metodo = f.get("paymentType") || "";
+    if (metodo && posObj.amount > 0) {
+      createLiquidityAdjustment(metodo, -posObj.amount, posObj.date, `Acquisto ${type} ${posObj.securityCode||''}`.trim(), posObj.id);
+    }
     if (placementCommissionAmt > 0) {
       const commId = uid();
       data.expenses.push({id:commId, date, amount:placementCommissionAmt, category:"Commissione collocamento titoli", macro:null, note:`Collocamento: ${type} ${posObj.securityCode||''}`.trim()});
@@ -8395,6 +8614,7 @@ function renderCommoditiesTab() {
         </div>
         <div><label>Valore totale investito (auto)</label><input type="number" id="commodityInvestedPreviewTab" readonly style="opacity:0.7;"></div>
         <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
+        <div><label>Pagato con</label>${paymentTypeSelect("Banca")}</div>
         <div><label>Nota</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -8482,6 +8702,10 @@ function renderCommoditiesTab() {
       commodityQuantity: qty, commodityPurchasePrice: pPrice, commodityCurrentPrice: cPrice
     };
     data.portfolio.push(posObj);
+    const metodo = f.get("paymentType") || "";
+    if (metodo && posObj.amount > 0) {
+      createLiquidityAdjustment(metodo, -posObj.amount, posObj.date, `Acquisto ${posObj.commodityName||type} ${posObj.securityCode||''}`.trim(), posObj.id);
+    }
     saveData(); renderCommoditiesTab();
   });
   const commoditySaleSelect = document.getElementById("commoditySaleSelect");
@@ -8589,6 +8813,7 @@ function renderCryptoTab() {
         </div>
         <div><label>Valore totale investito (auto)</label><input type="number" id="cryptoInvestedPreviewTab" readonly style="opacity:0.7;"></div>
         <div><label>Data</label><input type="date" name="date" value="${todayISO}"></div>
+        <div><label>Pagato con</label>${paymentTypeSelect("Banca")}</div>
         <div><label>Nota</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -8680,6 +8905,10 @@ function renderCryptoTab() {
       cryptoQuantity: qty, cryptoPurchasePrice: pPrice, cryptoCurrentPrice: cPrice
     };
     data.portfolio.push(posObj);
+    const metodo = f.get("paymentType") || "";
+    if (metodo && posObj.amount > 0) {
+      createLiquidityAdjustment(metodo, -posObj.amount, posObj.date, `Acquisto ${posObj.cryptoSymbol||type} ${posObj.securityCode||''}`.trim(), posObj.id);
+    }
     saveData(); renderCryptoTab();
   });
   const cryptoSaleSelect = document.getElementById("cryptoSaleSelect");
@@ -9054,6 +9283,7 @@ function renderDepositsTab() {
             <div><label>Tassazione (%)</label><input type="number" min="0" max="100" step="0.0001" name="depositTaxRate" value="15"></div>
           </div>
         </div>
+        <div><label>Pagato con</label>${paymentTypeSelect("Banca")}</div>
         <div><label>Nota (es. banca)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -9124,6 +9354,10 @@ function renderDepositsTab() {
       riskFactor: rischioPerNuovaPosizione(Object.assign(datiIdentitaDaForm(f, type, macro), { bondYears: f.get("bondYears"), depositYears: f.get("depositYears") }), f.get("riskFactor"))
     };
     data.portfolio.push(posObj);
+    const metodo = f.get("paymentType") || "";
+    if (metodo && posObj.amount > 0) {
+      createLiquidityAdjustment(metodo, -posObj.amount, posObj.date, `Apertura deposito ${type} ${posObj.securityCode||''}`.trim(), posObj.id);
+    }
     saveData(); renderDepositsTab();
   });
   const depositCloseForm = document.getElementById("depositCloseForm");
@@ -11138,10 +11372,27 @@ function renderSettings() {
   });
 
   const controllaBtn = document.getElementById("controllaIntegritaBtn");
+  function bindRimuoviOrfano() {
+    document.querySelectorAll("[data-rimuovi-orfano]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const id = btn.dataset.rimuoviOrfano;
+        const voce = data.portfolio.find(p=>p.id===id);
+        if (!voce) return;
+        if (!confirm(`Rimuovere questo movimento su "${voce.type}" del ${voce.date}? Il saldo tornerà a quello precedente (variazione di ${fmt(-voce.amount)} ${voce.currency}).`)) return;
+        data.portfolio = data.portfolio.filter(p=>p.id!==id);
+        saveData();
+        ultimoControlloIntegrita = controllaIntegritaDati();
+        document.getElementById("integritaResultBox").innerHTML = renderRisultatoIntegrita(ultimoControlloIntegrita);
+        bindRimuoviOrfano();
+      });
+    });
+  }
   if (controllaBtn) controllaBtn.addEventListener("click", ()=>{
     ultimoControlloIntegrita = controllaIntegritaDati();
     document.getElementById("integritaResultBox").innerHTML = renderRisultatoIntegrita(ultimoControlloIntegrita);
+    bindRimuoviOrfano();
   });
+  if (ultimoControlloIntegrita) bindRimuoviOrfano();
 
   const mostraBackupBtn = document.getElementById("mostraBackupAutoBtn");
   if (mostraBackupBtn) mostraBackupBtn.addEventListener("click", async ()=>{
