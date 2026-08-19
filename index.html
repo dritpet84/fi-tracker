@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.47</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.48</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -1355,6 +1355,7 @@ function controllaIntegritaDati() {
   const problemi = [];
   const portfolioIds = new Set(data.portfolio.map(p => p.id));
   const incomeIds = new Set(data.income.map(i => i.id));
+  const expenseIds = new Set(data.expenses.map(e => e.id));
 
   // 1) Riferimenti pendenti: puntano a un id che non esiste più in portafoglio/reddito.
   data.income.forEach(i => {
@@ -1429,7 +1430,13 @@ function controllaIntegritaDati() {
   // il saldo a quello che era prima di quel movimento mai completato.
   data.portfolio.forEach(p => {
     if (!p.linkedTxnId || !data.paymentTypes.includes(p.type)) return;
-    if (portfolioIds.has(p.linkedTxnId)) return;
+    // Il collegamento può puntare a una posizione (acquisto/vendita titolo), a
+    // una voce di reddito (es. cedola con ritenuta) o a una voce di spesa (es.
+    // supermercato pagato da un conto tracciato) — bisogna escludere tutte e tre
+    // prima di dichiararlo orfano. Un bug qui (controllare solo il portafoglio)
+    // segnalava come "orfana" quasi ogni spesa/reddito normale, con centinaia di
+    // falsi positivi — trovato dall'utente e corretto in v2.48.
+    if (portfolioIds.has(p.linkedTxnId) || incomeIds.has(p.linkedTxnId) || expenseIds.has(p.linkedTxnId)) return;
     problemi.push({ tipo: "Movimento di liquidità orfano", gravita: "alta", id: p.id,
       msg: `Movimento su "${p.type}" del ${p.date} (${fmt(p.amount)} ${p.currency}${p.note?' · '+p.note:''}) era collegato a una posizione ormai cancellata. Rimuoverlo ripristina il saldo di ${fmt(-p.amount)} ${p.currency}.` });
   });
