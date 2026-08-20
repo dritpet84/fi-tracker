@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.49</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.52</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -224,6 +224,179 @@ function isAutoManagedExpenseCategory(cat) {
 // della scheda Spese quando gli oneri automatici sono nascosti.
 function spesePersonali(arr) { return arr.filter(e => !isAutoManagedExpenseCategory(e.category)); }
 function speseAutoGestite(arr) { return arr.filter(e => isAutoManagedExpenseCategory(e.category)); }
+
+// ===== Motore di proiezione spese condiviso =====
+// Un solo posto che decide "quanto mi aspetto di spendere al mese" per qualunque
+// livello (l'intero totale, una categoria, una macro-categoria) — usato da
+// Proiezione FI, scheda Budget, Proiezione flussi di cassa, e i grafici mensile/
+// annuale di Spese. Cambiare la logica qui la cambia coerentemente ovunque.
+//
+// Priorità (in ordine):
+// 1) Storico sufficiente (12 mesi distinti con almeno una spesa negli ultimi 12
+//    mesi, rolling da oggi) -> media mobile a 12 mesi. Vale per tutto, incluse le
+//    macro "irregolare": una volta che i dati reali bastano, il budget dichiarato
+//    smette di essere necessario.
+// 2) Macro "irregolare" con budget annuo dichiarato, ma storico insufficiente ->
+//    budget annuo / 12. Serve solo un dato dichiarato dall'utente, non storico.
+// 3) Tutto il resto (macro "ricorrente", singola categoria, o il totale
+//    generale) -> media semplice sui mesi con almeno una spesa nell'anno in
+//    corso (lo stesso "Media reale" già mostrato oggi nei grafici).
+function computeProiezioneMensileSpese(filtroFn, macroPerConfig, year) {
+  const tutte = spesePersonali(data.expenses).filter(e => e.date && filtroFn(e));
+  const dodiciMesiFa = new Date(now.getFullYear(), now.getMonth()-12, now.getDate());
+  const ultimi12Mesi = tutte.filter(e => { const d = new Date(e.date); return d >= dodiciMesiFa && d <= now; });
+  const mesiConDatiUltimi12 = new Set(ultimi12Mesi.map(e=>e.date.slice(0,7))).size;
+  const totaleUltimi12Mesi = ultimi12Mesi.reduce((s,e)=>s+Number(e.amount),0);
+
+  if (mesiConDatiUltimi12 >= 12) {
+    return { mensileProiettato: totaleUltimi12Mesi/12, fonte: "mediaMobile12" };
+  }
+  const config = macroPerConfig ? ((data.macroSpendingConfig.expenses||{})[macroPerConfig]) : null;
+  if (config && config.tipo === "irregolare" && config.budgetAnnuo > 0) {
+    return { mensileProiettato: config.budgetAnnuo/12, fonte: "budgetDichiarato" };
+  }
+  const speseAnno = tutte.filter(e => e.date.slice(0,4) === String(year));
+  const mesiConDatiAnno = new Set(speseAnno.map(e=>e.date.slice(0,7))).size;
+  const totaleAnno = speseAnno.reduce((s,e)=>s+Number(e.amount),0);
+  return { mensileProiettato: mesiConDatiAnno>0 ? totaleAnno/mesiConDatiAnno : 0, fonte: "mediaSemplice" };
+}
+// Scorciatoie per i tre livelli usati in giro nell'app.
+function proiezioneMensileTotale(year) { return computeProiezioneMensileSpese(()=>true, null, year); }
+function proiezioneMensileMacro(macro, year) { return computeProiezioneMensileSpese(e => (e.macro||"")===macro, macro, year); }
+function proiezioneMensileCategoria(categoria, year) { return computeProiezioneMensileSpese(e => e.category===categoria, null, year); }
+function classificazioneMacro(macro) {
+  const config = (data.macroSpendingConfig.expenses||{})[macro];
+  return (config && config.tipo === "irregolare") ? "irregolare" : "ricorrente";
+}
+// Punto 6: tabella di dettaglio, una riga per categoria — per le macro
+// "ricorrente" la proiezione è dal-basso (ogni categoria proiettata per conto
+// suo, il motore condiviso garantisce coerenza col totale macro per
+// costruzione); per le macro "irregolare" è dall'alto (proietto la macro,
+// spalmo sulle categorie in proporzione a come si sono storicamente divise) —
+// perché il budget dichiarato esiste solo a livello di macro, non categoria.
+function computeTabellaProiezioneSpese(year) {
+  const speseAnno = spesePersonali(data.expenses).filter(e => e.date && e.date.slice(0,4) === String(year));
+  const categorieMap = {};
+  speseAnno.forEach(e => {
+    const cat = e.category;
+    if (!categorieMap[cat]) categorieMap[cat] = { macro: e.macro || (data.categoryMacroMap.expenses[cat]||""), realePerMese: new Array(12).fill(0) };
+    categorieMap[cat].realePerMese[new Date(e.date).getMonth()] += Number(e.amount);
+    if (e.macro) categorieMap[cat].macro = e.macro;
+  });
+
+  const totalePerMacroReale = {};
+  Object.values(categorieMap).forEach(c => {
+    const tot = c.realePerMese.reduce((s,v)=>s+v,0);
+    totalePerMacroReale[c.macro] = (totalePerMacroReale[c.macro]||0) + tot;
+  });
+  const categoriePerMacro = {};
+  Object.entries(categorieMap).forEach(([cat,info]) => {
+    if (!categoriePerMacro[info.macro]) categoriePerMacro[info.macro] = [];
+    categoriePerMacro[info.macro].push(cat);
+  });
+
+  const meseCorrente = (year === now.getFullYear()) ? now.getMonth() : 11;
+  const proiezioniPerMacro = {};
+  const righe = Object.keys(categorieMap).sort().map(cat => {
+    const info = categorieMap[cat];
+    const macro = info.macro;
+    const classificazione = classificazioneMacro(macro);
+    const totCatReale = info.realePerMese.reduce((s,v)=>s+v,0);
+    const numCategorieMacro = (categoriePerMacro[macro]||[cat]).length;
+    const quotaStorica = totalePerMacroReale[macro] > 0 ? totCatReale/totalePerMacroReale[macro] : 1/numCategorieMacro;
+    // Sempre allocazione dall'alto (proietto la macro, spalmo per quota storica),
+    // sia per "ricorrente" sia per "irregolare" — non solo per quest'ultima. Una
+    // proiezione dal-basso per-categoria sembrava più naturale per le ricorrenti,
+    // ma NON è matematicamente coerente col totale macro a meno che ogni
+    // categoria abbia esattamente la stessa copertura di mesi con dati delle
+    // altre — nella pratica quasi mai vero (una categoria può non comparire in
+    // un mese in cui un'altra sì). L'allocazione dall'alto garantisce sempre,
+    // per costruzione, che la somma delle righe coincida col totale macro.
+    if (!proiezioniPerMacro[macro]) proiezioniPerMacro[macro] = proiezioneMensileMacro(macro, year);
+    const proiezioneMacro = proiezioniPerMacro[macro];
+
+    const valoriPerMese = new Array(12).fill(0);
+    const isFuturo = new Array(12).fill(false);
+    for (let m=0; m<12; m++) {
+      const meseFuturo = year > now.getFullYear() || (year === now.getFullYear() && m > meseCorrente);
+      if (!meseFuturo) { valoriPerMese[m] = info.realePerMese[m]; continue; }
+      isFuturo[m] = true;
+      valoriPerMese[m] = proiezioneMacro.mensileProiettato * quotaStorica;
+    }
+    return { categoria: cat, macro, classificazione, valoriPerMese, isFuturo, totale: valoriPerMese.reduce((s,v)=>s+v,0) };
+  });
+  return righe;
+}
+function renderTabellaProiezioneSpese(year) {
+  const righe = computeTabellaProiezioneSpese(year);
+  if (righe.length === 0) return "";
+  const totaliColonna = new Array(12).fill(0);
+  righe.forEach(r => r.valoriPerMese.forEach((v,i) => totaliColonna[i]+=v));
+  const totaleGenerale = righe.reduce((s,r)=>s+r.totale, 0);
+  return `<div class="card">
+    <h3>Dettaglio proiezione spese · ${year}</h3>
+    <div class="subtle">Una riga per categoria — reale nei mesi già trascorsi, <span style="opacity:0.65;">proiettato</span> in quelli futuri. Il totale coincide con quello usato dalla Proiezione FI.</div>
+    <div style="overflow-x:auto; margin-top:10px;">
+      <table style="border-collapse:collapse; font-size:11px; white-space:nowrap;">
+        <thead><tr>
+          <th style="text-align:left; padding:4px 8px; position:sticky; left:0; background:#0F1B2E;">Categoria</th>
+          <th style="text-align:left; padding:4px 8px;">Macro</th>
+          <th style="text-align:left; padding:4px 8px;">Classif.</th>
+          ${MONTH_LABELS.map(m=>`<th style="text-align:right; padding:4px 8px;">${m}</th>`).join('')}
+          <th style="text-align:right; padding:4px 8px; font-weight:600;">Totale</th>
+        </tr></thead>
+        <tbody>
+          ${righe.map(r => `<tr style="border-top:1px solid #1E2E47;">
+            <td style="padding:4px 8px; position:sticky; left:0; background:#0B1526;">${r.categoria}</td>
+            <td style="padding:4px 8px; color:#8FA3BF;">${r.macro||'—'}</td>
+            <td style="padding:4px 8px;"><span class="pill" style="font-size:9px;">${r.classificazione}</span></td>
+            ${r.valoriPerMese.map((v,i)=>`<td style="text-align:right; padding:4px 8px; ${r.isFuturo[i]?'opacity:0.65; font-style:italic;':''}">${v>0?fmt(v):'—'}</td>`).join('')}
+            <td style="text-align:right; padding:4px 8px; font-weight:600;">${fmt(r.totale)}</td>
+          </tr>`).join('')}
+        </tbody>
+        <tfoot><tr style="border-top:2px solid #C9A227;">
+          <td style="padding:4px 8px; font-weight:600;" colspan="3">Totale</td>
+          ${totaliColonna.map(v=>`<td style="text-align:right; padding:4px 8px; font-weight:600;">${fmt(v)}</td>`).join('')}
+          <td style="text-align:right; padding:4px 8px; font-weight:600; color:#C9A227;">${fmt(totaleGenerale)}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+    <button class="secondary" type="button" id="esportaTabellaProiezioneBtn" style="margin-top:10px;">Esporta CSV</button>
+  </div>`;
+}
+function esportaTabellaProiezioneCSV(year) {
+  const righe = computeTabellaProiezioneSpese(year);
+  const headers = ["Categoria","Macro-categoria","Classificazione", ...MONTH_LABELS, "Totale"];
+  const rows = righe.map(r => [r.categoria, r.macro||"", r.classificazione, ...r.valoriPerMese.map(v=>Math.round(v)), Math.round(r.totale)]);
+  const totaliColonna = new Array(12).fill(0);
+  righe.forEach(r => r.valoriPerMese.forEach((v,i) => totaliColonna[i]+=v));
+  rows.push(["Totale","","", ...totaliColonna.map(v=>Math.round(v)), Math.round(righe.reduce((s,r)=>s+r.totale,0))]);
+  return esportaCSV(`fi-tracker-proiezione-spese-${year}-${todayISO}.csv`, arrayToCSV(headers, rows));
+}
+// Somma: spesa reale dell'anno fino a oggi (tutte le macro insieme, come sempre)
+// + per ogni macro-categoria di spesa presente, la sua proiezione mensile ×
+// mesi INTERI rimanenti dell'anno (da dopo il mese corrente a dicembre — il
+// mese corrente è già coperto dal "reale fino a oggi", non va riproiettato).
+// Così il totale coincide sempre, per costruzione, con la somma per macro
+// mostrata nella tabella di dettaglio — non due calcoli paralleli che rischiano
+// di scostarsi.
+function computeProiezioneAnnualeSpese(year) {
+  const speseAnnoFinoOggi = spesePersonali(data.expenses).filter(e => e.date && e.date.slice(0,4)===String(year) && e.date <= todayISO);
+  const realeFinoOggi = speseAnnoFinoOggi.reduce((s,e)=>s+Number(e.amount),0);
+
+  const macroPresenti = new Set(spesePersonali(data.expenses).filter(e=>e.date && e.date.slice(0,4)===String(year)).map(e => e.macro || ""));
+  Object.keys(data.macroSpendingConfig.expenses||{}).forEach(m => macroPresenti.add(m));
+
+  const meseCorrente = (year === now.getFullYear()) ? now.getMonth()+1 : 12;
+  const mesiRimanenti = Math.max(0, 12 - meseCorrente);
+  let proiezioneRimanente = 0;
+  macroPresenti.forEach(macro => {
+    const filtro = macro === "" ? (e => !e.macro) : (e => e.macro === macro);
+    const r = computeProiezioneMensileSpese(filtro, macro || null, year);
+    proiezioneRimanente += r.mensileProiettato * mesiRimanenti;
+  });
+  return { totale: realeFinoOggi + proiezioneRimanente, realeFinoOggi, proiezioneRimanente, mesiRimanenti };
+}
 const DEFAULT_CATEGORIES = {
   income: ["Reddito principale","Interessi","Altro"],
   expenses: ["Palestra","Assicurazione auto","Tasse auto","Caffè ufficio","Bar","Acqua","Luce","Telefono","Riparazioni auto","Tagliando auto","Supermercato","Gite/concerti","Vestiti","Vacanze","Ristoranti/uscite","Arredamento casa","Auto (acquisto)","Altro"],
@@ -248,12 +421,17 @@ const DEFAULT_DATA = {
         { fino: 200000, sottrai: 30000,  aliquota: 13,   fisso: 0 },
         { fino: null,   sottrai: 200000, aliquota: 23,   fisso: 22100 }
       ]
-    }, targetAllocation: {}, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL", tabOrder: null, hiddenTabs: [], speseMostraAutoGestite: false, savingsRateProjectionMode: "reale", montecarloDevStd: 10, montecarloAnniPrelievo: 30, montecarloStrategiaPrelievo: "fissa", scenariComparativi: [] },
+    }, targetAllocation: {}, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL", tabOrder: null, hiddenTabs: [], speseMostraAutoGestite: false, savingsRateProjectionMode: "reale", montecarloDevStd: 10, montecarloAnniPrelievo: 30, montecarloStrategiaPrelievo: "fissa", scenariComparativi: [], sogliaAssicurazioneDepositi: 2500000 },
+  ratingEntita: [],
   income: [],
   expenses: [],
   portfolio: [],
   categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
   categoryBudgets: { income: {}, expenses: {}, portfolio: {} },
+  // Punto 1 della funzionalità di proiezione spese: per ogni macro-categoria di
+  // spesa, "ricorrente" (default, comportamento invariato) o "irregolare" con un
+  // budget annuo dichiarato — usato dal motore di proiezione condiviso.
+  macroSpendingConfig: { expenses: {} },
   macroCategories: { income: [], expenses: [], portfolio: [] },
   categoryMacroMap: { income: {}, expenses: {}, portfolio: {} },
   recurring: { income: [], expenses: [], portfolio: [] },
@@ -289,6 +467,8 @@ function normalizeLoadedData(parsed) {
       expenses: (parsed.categoryBudgets && parsed.categoryBudgets.expenses) || {},
       portfolio: (parsed.categoryBudgets && parsed.categoryBudgets.portfolio) || {}
     },
+    macroSpendingConfig: { expenses: (parsed.macroSpendingConfig && parsed.macroSpendingConfig.expenses) || {} },
+    ratingEntita: parsed.ratingEntita || [],
     macroCategories: {
       income: (parsed.macroCategories && parsed.macroCategories.income) || [],
       expenses: (parsed.macroCategories && parsed.macroCategories.expenses) || [],
@@ -634,6 +814,108 @@ function ccAvailableCredit(cardName) {
   return (cc.limit||0) - used;
 }
 function portfolioTotalALL() { return data.portfolio.reduce((s,p)=> isExcludedFromNetWorth(p) ? s : s + netWorthSign(p) * toALL((p.marketValue!==undefined && p.marketValue!==null && p.marketValue!=="") ? Number(p.marketValue) : p.amount, p.currency), 0); }
+
+// ===== Punto 1 (rischio): VaR parametrico =====
+// Solo per gli asset con vero rischio di mercato — non Bond/Depositi tenuti a
+// scadenza (rendimento contrattuale, non oscillante) né Immobili (illiquidi,
+// dinamica di prezzo diversa). Riusa la stessa volatilità già impostata per il
+// Monte Carlo (data.settings.montecarloDevStd), non una nuova stima separata:
+// stesso presupposto, stessa app, un solo posto dove cambiarlo.
+const TIPI_RISCHIO_MERCATO = ["Fondo azionario", "Fondo pensione", "Azione", "ETF", "Crypto", "Commodity", "Derivato"];
+function isAssetRischioMercato(type) {
+  // Confronto esatto, non sottostringa: "azione" come sottostringa genererebbe un
+  // falso positivo su "Obbligazione Governativa" (obblig-AZIONE-governativa) —
+  // trovato e corretto durante la verifica dal vivo.
+  return TIPI_RISCHIO_MERCATO.includes(type);
+}
+const VAR_Z_95 = 1.645; // z-score una coda, 95% di confidenza
+function computeVaRParametrico() {
+  const asset = data.portfolio.filter(p => p.amount > 0 && isAssetRischioMercato(p.type));
+  if (!asset.length) return null;
+  const valoreTotale = asset.reduce((s,p) => s + toALL((p.marketValue!=null && p.marketValue!=="") ? Number(p.marketValue) : Number(p.amount), p.currency), 0);
+  const sigma = (data.settings.montecarloDevStd || 10) / 100;
+  const varAnnuo = valoreTotale * sigma * VAR_Z_95;
+  return { valoreTotale, sigma, varAnnuo, pctPortafoglio: valoreTotale/Math.max(1,portfolioTotalALL())*100 };
+}
+
+// ===== Punto 4 (rischio): rating di credito per Bond/Azioni/Depositi =====
+// Collegato tramite lo stesso campo "Società/Ente" già compilato su ogni
+// posizione — per questi tre tipi coincide davvero con chi si assume il rischio
+// di credito (l'emittente o la banca), a differenza dei Fondi dove quel campo
+// indica solo chi GESTISCE, non chi emette quello che c'è dentro (v. discussione
+// con l'utente: un fondo pensione può investire in titoli di Stato, ma l'app non
+// ha visibilità su questo — resta deliberatamente fuori da questa componente).
+// Confronto per uguaglianza esatta (non sottostringa): ".includes('azione')"
+// avrebbe lo stesso problema già trovato nel VaR ("obblig-AZIONE-governativa").
+const TIPI_RATING_CREDITO = ["obbligazione governativa", "obbligazione societa", "azione", "deposito"];
+function isAssetConRatingCredito(type) {
+  return TIPI_RATING_CREDITO.includes((type||"").toLowerCase());
+}
+function trovaRatingPerEnte(nomeEnte) {
+  const nome = (nomeEnte||"").trim();
+  const albania = (data.ratingEntita||[]).find(r => r.nome === "Albania") || null;
+  if (!nome) return albania;
+  const match = (data.ratingEntita||[]).find(r => r.nome.toLowerCase() === nome.toLowerCase());
+  return match || albania;
+}
+function computeEsposizioneRatingCredito() {
+  const asset = data.portfolio.filter(p => p.amount > 0 && isAssetConRatingCredito(p.type));
+  if (!asset.length) return [];
+  const perEnte = {};
+  asset.forEach(p => {
+    const rating = trovaRatingPerEnte(p.issuerName);
+    const chiaveEnte = rating ? rating.nome : "(nessun rating disponibile)";
+    const v = toALL((p.marketValue!=null && p.marketValue!=="") ? Number(p.marketValue) : Number(p.amount), p.currency);
+    if (!perEnte[chiaveEnte]) perEnte[chiaveEnte] = { nome: chiaveEnte, valore: 0, rating };
+    perEnte[chiaveEnte].valore += v;
+  });
+  return Object.values(perEnte).sort((a,b) => b.valore - a.valore);
+}
+
+// Avviso soglia assicurazione depositi — raggruppa Banca+Deposito per ente
+// (issuerName; senza quello, per type stesso). Non un VaR, una domanda binaria:
+// "sei sopra la soglia coperta su questo istituto?"
+function computeEsposizioneDepositiPerBanca() {
+  const posizioni = data.portfolio.filter(p => {
+    const t = (p.type||"").toLowerCase();
+    return (t.startsWith("banca") || t === "deposito") && p.amount != null;
+  });
+  const perBanca = {};
+  posizioni.forEach(p => {
+    const chiave = (p.issuerName||"").trim() || p.type;
+    const v = toALL(Number(p.amount)||0, p.currency);
+    perBanca[chiave] = (perBanca[chiave]||0) + v;
+  });
+  return Object.entries(perBanca).map(([nome,valore])=>({nome,valore})).sort((a,b)=>b.valore-a.valore);
+}
+function avvisiSuperamentoSogliaDepositi() {
+  const soglia = data.settings.sogliaAssicurazioneDepositi || 2500000;
+  return computeEsposizioneDepositiPerBanca().filter(b => b.valore > soglia).map(b => ({ ...b, eccedenza: b.valore - soglia }));
+}
+function avvisoSogliaDepositiCard() {
+  const avvisi = avvisiSuperamentoSogliaDepositi();
+  if (!avvisi.length) return "";
+  const soglia = data.settings.sogliaAssicurazioneDepositi || 2500000;
+  return `<div class="card" style="border-color:#8B3A2F;">
+    <h3 style="color:#8B3A2F;">Esposizione oltre la soglia assicurata</h3>
+    <div class="subtle">Su questi istituti hai più di quanto coperto dall'assicurazione depositi (${fmtDisplay(soglia)}, configurabile in Assunzioni).</div>
+    ${avvisi.map(a => `<div class="stat-row"><span class="label">${a.nome}</span><span class="val down">${fmtDisplay(a.valore)} <span class="subtle" style="font-size:9px;">(+${fmtDisplay(a.eccedenza)} oltre soglia)</span></span></div>`).join('')}
+  </div>`;
+}
+function ratingCreditoCard() {
+  const esposizione = computeEsposizioneRatingCredito();
+  if (!esposizione.length) return "";
+  return `<div class="card">
+    <h3>Rischio di credito (Bond/Azioni/Depositi)</h3>
+    <div class="subtle">Per emittente/banca, collegato tramite "Società/Ente" sulla singola posizione — senza corrispondenza, ricade su Albania. I Fondi non entrano qui: quel campo indica chi gestisce, non chi emette quello che c'è dentro.</div>
+    ${esposizione.map(e => `<div class="stat-row" style="align-items:flex-start;">
+      <span class="label">${e.nome}</span>
+      <span class="val" style="text-align:right;">${fmtDisplay(e.valore)}
+        ${e.rating ? `<br><span class="subtle" style="font-size:9px;">Lungo: Moody's ${e.rating.lungoMoodys||'—'} · S&P ${e.rating.lungoSP||'—'} · Fitch ${e.rating.lungoFitch||'—'}</span>` : '<br><span class="subtle" style="font-size:9px;">Nessun rating configurato</span>'}
+      </span>
+    </div>`).join('')}
+  </div>`;
+}
 function annualBudgetForYear(y) { const s = data.settings; return s.expenseBase + s.expenseGrowth * (y - s.startYear); }
 
 function normalizedEntries(group, catName) {
@@ -816,11 +1098,26 @@ function computeConcentration() {
   });
   const topCurrency = Object.entries(byCurrency).sort((a,b)=>b[1]-a[1])[0] || ["—",0];
   const topMacro = Object.entries(byMacro).sort((a,b)=>b[1]-a[1])[0] || ["—",0];
+  // Punto 3 (rischio): indice di Herfindahl-Hirschman — somma dei quadrati delle
+  // quote % di ogni posizione. 0-10000: sotto 1500 poco concentrato, 1500-2500
+  // moderato, sopra 2500 molto concentrato (soglie standard). Aggregato per
+  // "identità" dello strumento (stesso codice titolo/fondo/ticker), non per
+  // singolo acquisto — comprare lo stesso bond in due volte non deve contare
+  // come diversificazione.
+  const byIdentita = {};
+  assets.forEach(p => {
+    const v = toALL((p.marketValue!=null && p.marketValue!=="") ? Number(p.marketValue) : Number(p.amount), p.currency);
+    const chiave = p.securityCode || p.fundName || p.stockTicker || (p.type + "|" + (p.issuerName||""));
+    byIdentita[chiave] = (byIdentita[chiave] || 0) + v;
+  });
+  const hhi = Object.values(byIdentita).reduce((s,v) => s + Math.pow(v/total*100, 2), 0);
+  const hhiLivello = hhi < 1500 ? "bassa" : hhi < 2500 ? "moderata" : "alta";
   return { total,
     topCurrency: { name: topCurrency[0], value: topCurrency[1], pct: topCurrency[1]/total*100 },
     topMacro: { name: topMacro[0], value: topMacro[1], pct: topMacro[1]/total*100 },
     govBonds: { value: govBonds, pct: govBonds/total*100 },
-    largest: { ...largest, pct: largest.value/total*100 } };
+    largest: { ...largest, pct: largest.value/total*100 },
+    hhi, hhiLivello, numeroPosizioni: Object.keys(byIdentita).length };
 }
 
 // Costo totale annuo di GESTIONE del patrimonio — commissioni e interessi, non
@@ -2069,6 +2366,42 @@ function migrateCapitalGainImmobile() {
   if (changed) saveData();
 }
 
+// Garantisce che "Albania" esista sempre come voce di rating — è il default per
+// qualunque Bond/Azione/Deposito il cui "Società/Ente" non trova corrispondenza
+// altrove. Idempotente: non duplica se già presente, non tocca i rating se
+// l'utente li ha già compilati.
+function ensureAlbaniaRating() {
+  if (!data.ratingEntita) data.ratingEntita = [];
+  if (!data.ratingEntita.some(r => r.nome === "Albania")) {
+    data.ratingEntita.unshift({ id: uid(), nome: "Albania",
+      breveMoodys: "", breveSP: "", breveFitch: "", lungoMoodys: "", lungoSP: "", lungoFitch: "" });
+  }
+}
+function ratingManageBlock() {
+  const righe = (data.ratingEntita||[]).map(r => `
+    <div class="cat-row" data-rating-id="${r.id}" style="flex-wrap:wrap; gap:6px; align-items:center;">
+      <input type="text" class="rating-nome" value="${escAttr(r.nome)}" placeholder="Paese o ente" style="flex:1 1 140px;">
+      <div style="flex:0 0 100%; display:flex; gap:6px; font-size:10px; color:#8FA3BF; margin-top:4px;">
+        <span style="flex:1;">Breve termine</span><span style="flex:1;">Lungo termine</span>
+      </div>
+      <input type="text" class="rating-breve-moodys" value="${escAttr(r.breveMoodys)}" placeholder="Moody's" style="flex:1 1 70px; min-width:0;">
+      <input type="text" class="rating-breve-sp" value="${escAttr(r.breveSP)}" placeholder="S&P" style="flex:1 1 70px; min-width:0;">
+      <input type="text" class="rating-breve-fitch" value="${escAttr(r.breveFitch)}" placeholder="Fitch" style="flex:1 1 70px; min-width:0;">
+      <input type="text" class="rating-lungo-moodys" value="${escAttr(r.lungoMoodys)}" placeholder="Moody's" style="flex:1 1 70px; min-width:0;">
+      <input type="text" class="rating-lungo-sp" value="${escAttr(r.lungoSP)}" placeholder="S&P" style="flex:1 1 70px; min-width:0;">
+      <input type="text" class="rating-lungo-fitch" value="${escAttr(r.lungoFitch)}" placeholder="Fitch" style="flex:1 1 70px; min-width:0;">
+      <button data-ratingdel="${r.id}" style="flex:0 0 auto;">✕</button>
+    </div>`).join('');
+  return `
+    <div id="rating-block">
+      <div class="cat-rows">${righe || '<div class="subtle">Nessuna voce</div>'}</div>
+      <div class="cat-add-row" style="margin-top:8px;">
+        <input type="text" placeholder="Nuovo paese/ente (es. il nome di una banca)" id="ratingNuovoNome">
+        <button class="secondary" type="button" id="ratingAddBtn">Aggiungi</button>
+      </div>
+      <button class="primary" type="button" id="ratingSaveBtn" style="margin-top:8px;">Salva rating</button>
+    </div>`;
+}
 function ensureLiquidityCategories() {
   let changed = false;
   // Migrazione: i vecchi tipi "Obbligazione statale 7Y/10Y/15Y/20Y" diventano un solo
@@ -2370,6 +2703,17 @@ function riquadroRendimentoRischio() {
       ${migliori.length ? `<div class="subtle" style="margin-top:10px;">Chi ripaga meglio il rischio</div>${migliori.map(riga).join('')}` : ''}
       ${peggiori.length ? `<div class="subtle" style="margin-top:10px; color:#C08432;">Rischio non ripagato</div>${peggiori.map(riga).join('')}` : ''}
     </div>`;
+}
+
+function varParametricoCard() {
+  const v = computeVaRParametrico();
+  if (!v) return "";
+  return `<div class="card">
+    <h3>Rischio di perdita a 12 mesi (VaR)</h3>
+    <div class="subtle">Solo sugli asset con vero rischio di mercato (Fondi, Fondo pensione, Azioni, ETF, Crypto, Materie prime) — non Bond/Depositi tenuti a scadenza, che hanno un rendimento contrattuale, non un prezzo che oscilla. Calcolato con la stessa volatilità già impostata per il Monte Carlo (${(v.sigma*100).toFixed(1)}%/anno).</div>
+    <div class="stat-row"><span class="label">Esposto a rischio di mercato</span><span class="val">${fmtDisplay(v.valoreTotale)} <span class="subtle">(${v.pctPortafoglio.toFixed(1)}% del patrimonio)</span></span></div>
+    <div class="section-total"><span>Con probabilità del 95%, in 12 mesi non perdi più di</span><span style="font-weight:600; color:#8B3A2F;">${fmtDisplay(v.varAnnuo)}</span></div>
+  </div>`;
 }
 
 function riquadroRischioPanoramica() {
@@ -2951,6 +3295,22 @@ function computeCashFlowProjection(monthsAhead) {
     });
   });
 
+  // 6) Proiezione statistica di spesa per ogni macro-categoria, sui mesi futuri
+  // della finestra — diversa dalle voci sopra (stipendio, affitti, rate, regole
+  // ricorrenti esplicite): quelle sono impegni già noti/contrattuali, questa è
+  // una stima (budget dichiarato per le macro "irregolare", media storica per
+  // le altre). Etichettata "(stima)" per non confonderla con le prime. Esclude
+  // le spese già generate da una regola ricorrente esplicita (punto 4 sopra),
+  // altrimenti le conterebbe due volte.
+  const macroPerCashFlow = new Set(spesePersonali(data.expenses).filter(e => !e.recurringId && e.macro).map(e => e.macro));
+  Object.keys(data.macroSpendingConfig.expenses||{}).forEach(m => macroPerCashFlow.add(m));
+  macroPerCashFlow.forEach(macro => {
+    const filtro = e => (e.macro||"") === macro && !e.recurringId;
+    const r = computeProiezioneMensileSpese(filtro, macro, startY);
+    if (!(r.mensileProiettato > 0)) return;
+    mesi.forEach(mo => { aggiungi(mo.key, "uscita", r.mensileProiettato, `(stima) Spesa: ${macro}`); });
+  });
+
   const liquiditaOggi = data.portfolio
     .filter(p => data.paymentTypes.includes(p.type))
     .reduce((s,p) => s + toALL(Number(p.amount)||0, p.currency), 0);
@@ -3208,6 +3568,38 @@ function esportaPatrimonioCSV() {
     p.type, p.macro||"", p.date||"", p.amount, p.currency, (p.marketValue!=null?p.marketValue:""), p.securityCode||"", p.issuerName||"", p.maturityDate||"", p.note||"" ]);
   return esportaCSV(`fi-tracker-patrimonio-${todayISO}.csv`, arrayToCSV(headers, rows));
 }
+// Vista tipo "estratto conto": ogni movimento su un conto tracciato (Banca, Cash,
+// ecc.), in ordine cronologico, con un riferimento chiaro a cosa lo ha generato —
+// pensata per confrontare riga per riga con l'estratto conto vero della banca,
+// invece di dover ricostruire mentalmente unendo gli export di Spese/Reddito/
+// Patrimonio separati.
+function esportaLiquiditaCSV() {
+  const expenseIds = new Set(data.expenses.map(e => e.id));
+  const incomeIds = new Set(data.income.map(i => i.id));
+  const portfolioById = {};
+  data.portfolio.forEach(p => { portfolioById[p.id] = p; });
+  const headers = ["Data","Conto","Importo","Valuta","Riferimento","Nota"];
+  const movimenti = data.portfolio.filter(p => data.paymentTypes.includes(p.type) && !isCreditCardType(p.type));
+  const rows = movimenti.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).map(p => {
+    let riferimento = "Movimento manuale";
+    if (p.linkedTxnId) {
+      if (expenseIds.has(p.linkedTxnId)) {
+        const e = data.expenses.find(x => x.id === p.linkedTxnId);
+        riferimento = e ? `Spesa: ${e.category}` : "Spesa (voce non trovata)";
+      } else if (incomeIds.has(p.linkedTxnId)) {
+        const i = data.income.find(x => x.id === p.linkedTxnId);
+        riferimento = i ? `Reddito: ${i.category}` : "Reddito (voce non trovata)";
+      } else if (portfolioById[p.linkedTxnId]) {
+        const pos = portfolioById[p.linkedTxnId];
+        riferimento = `Posizione: ${pos.type}${pos.fundName ? ' ' + pos.fundName : ''}${pos.issuerName ? ' (' + pos.issuerName + ')' : ''}`;
+      } else {
+        riferimento = "Collegamento non trovato (vedi Controllo integrità dati)";
+      }
+    }
+    return [ p.date||"", p.type, p.amount, p.currency, riferimento, p.note||"" ];
+  });
+  return esportaCSV(`fi-tracker-liquidita-${todayISO}.csv`, arrayToCSV(headers, rows));
+}
 let portfolioEditModeActive = false;
 let ultimoControlloIntegrita = null;
 let ultimoRisultatoMonteCarlo = null;
@@ -3414,6 +3806,7 @@ function renderDashboard() {
   generateSnapshot();
   backfillMacroFromMapping();
   ensureLiquidityCategories();
+  ensureAlbaniaRating();
   migrateFireRatesDefault();
   migrateCapitalGainImmobile();
   ensureBondDepositCategories();
@@ -3470,7 +3863,12 @@ function renderDashboard() {
   const dayOfYearNow = Math.ceil((now - new Date(thisYear,0,1)) / 86400000) || 1;
   const annualBudgetVal = annualBudgetForYear(thisYear);
   const monthsWithExpenseData = new Set(spesePersonali(data.expenses).filter(e=>e.date && e.date.slice(0,4)===String(thisYear)).map(e=>e.date.slice(0,7))).size;
-  const projectedAnnualExpense = (personalExpenseThisYear>0 && monthsWithExpenseData>0) ? (personalExpenseThisYear/monthsWithExpenseData*12) : annualBudgetVal;
+  // Punto 2 della funzionalità di proiezione spese: non più una semplice
+  // estrapolazione lineare del totale-finora, ma la somma di ogni macro
+  // proiettata col motore condiviso (budget dichiarato / media mobile / media
+  // semplice a seconda dei casi) — coerente con la tabella di dettaglio.
+  const proiezioneAnnualeSpese = computeProiezioneAnnualeSpese(thisYear);
+  const projectedAnnualExpense = proiezioneAnnualeSpese.totale > 0 ? proiezioneAnnualeSpese.totale : annualBudgetVal;
   const fireBaseMode = s.fireExpenseBaseMode || "budget";
   const fireExpenseBase = fireBaseMode === "projected" ? projectedAnnualExpense : annualBudgetVal;
 
@@ -3789,6 +4187,8 @@ function renderDashboard() {
     ${portfolioReturnCard()}
     ${riquadroRischioPanoramica()}
     ${riquadroRendimentoRischio()}
+    ${varParametricoCard()}
+    ${avvisoSogliaDepositiCard()}
     ${multiYearTaxCard()}
     ${runwayAndCoverageCard()}
   `;
@@ -4642,6 +5042,18 @@ function renderExpenses() {
   const totalThisYearForAvg = monthlyTotalsThisYear.reduce((s,v)=>s+v,0);
   const monthlyAvgSimple = (now.getMonth()+1) > 0 ? totalThisYearForAvg/(now.getMonth()+1) : 0;
   const monthlyAvgEffective = monthsWithData > 0 ? totalThisYearForAvg/monthsWithData : 0;
+  // Punto 5 della funzionalità di proiezione spese: barre proiettate per i mesi
+  // futuri, per qualunque livello si stia guardando (totale/macro/categoria),
+  // usando lo stesso motore condiviso di FI Projection/Budget/Cash Flow.
+  const monthlyProiettato = new Array(12).fill(null);
+  if (thisYear === now.getFullYear()) {
+    const meseCorrenteIdx = now.getMonth();
+    let livelloProiezione;
+    if (expenseCategoryFilter !== "all") livelloProiezione = proiezioneMensileCategoria(expenseCategoryFilter, thisYear);
+    else if (expenseMacroFilter !== "all") livelloProiezione = proiezioneMensileMacro(expenseMacroFilter, thisYear);
+    else livelloProiezione = proiezioneMensileTotale(thisYear);
+    for (let m = meseCorrenteIdx+1; m < 12; m++) monthlyProiettato[m] = livelloProiezione.mensileProiettato;
+  }
 
   // Punto 3: come sopra ma per anno — su tutti gli anni presenti nei dati, non
   // solo quello corrente.
@@ -4655,6 +5067,13 @@ function renderExpenses() {
   const totalAllYearsForAvg = anniConDati.reduce((s,y)=>s+(totaliPerAnno[y]||0), 0);
   const yearlyAvgSimple = anniConDati.length > 0 ? totalAllYearsForAvg/anniConDati.length : 0;
   const yearlyAvgEffective = yearsWithData > 0 ? totalAllYearsForAvg/yearsWithData : 0;
+  // Per l'anno corrente, se presente tra quelli con dati: proiezione dell'intero
+  // anno = reale registrato finora + somma delle barre mensili proiettate sopra
+  // (stesso filtro, nessuna logica duplicata).
+  const annoCorrenteIdx = anniConDati.indexOf(now.getFullYear());
+  const proiezioneAnnoCorrente = annoCorrenteIdx >= 0
+    ? monthlyTotalsThisYear.reduce((s,v)=>s+v,0) + monthlyProiettato.reduce((s,v)=>s+(v||0),0)
+    : null;
 
   document.getElementById("main").innerHTML = `
     <div class="card" style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
@@ -4730,6 +5149,7 @@ function renderExpenses() {
       <div class="subtle">Media semplice (÷${anniConDati.length} anni con dati): ${fmt(yearlyAvgSimple)} ALL/anno · media reale (÷${yearsWithData} anni con almeno una spesa): ${fmt(yearlyAvgEffective)} ALL/anno${filtroAttivo?' · <span style="color:#C9A227;">filtrato con lo Storico qui sotto</span>':''}</div>
       <div class="chart-wrap"><canvas id="yearlyTotalsChart" height="200"></canvas></div>
     </div>` : ''}
+    ${renderTabellaProiezioneSpese(thisYear)}
     ${renderDailyAveragesCard()}
     <div class="card">
       <h3>Storico ${thisYear} <span class="pill">${data.expenses.length} voci totali</span></h3>
@@ -4977,6 +5397,8 @@ function renderExpenses() {
     macroDrilldownSelected.expenses = ev.target.value;
     drawMacroDrilldownChart("expenses");
   });
+  const esportaTabellaBtn = document.getElementById("esportaTabellaProiezioneBtn");
+  if (esportaTabellaBtn) esportaTabellaBtn.addEventListener("click", ()=>esportaTabellaProiezioneCSV(thisYear));
 
   if (monthsWithData>0) {
     const ctx3 = document.getElementById("monthlyTotalsChart");
@@ -4985,7 +5407,8 @@ function renderExpenses() {
       data: {
         labels: MONTH_LABELS,
         datasets: [
-          { type:'bar', label:'Spesa mensile', data: monthlyTotalsThisYear.map(toDisplay), backgroundColor:'#C9A227' },
+          { type:'bar', label:'Spesa mensile', data: monthlyTotalsThisYear.map(v=>v>0?toDisplay(v):null), backgroundColor:'#C9A227' },
+          { type:'bar', label:'Proiezione', data: monthlyProiettato.map(v=>v!=null?toDisplay(v):null), backgroundColor:'#C9A22733', borderColor:'#C9A227', borderWidth:1.5, borderDash:[4,3] },
           { type:'line', label:'Media reale', data: new Array(12).fill(toDisplay(monthlyAvgEffective)), borderColor:'#3F6E5E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 },
           { type:'line', label:'Media semplice', data: new Array(12).fill(toDisplay(monthlyAvgSimple)), borderColor:'#8B3A2F', borderDash:[2,3], pointRadius:0, borderWidth:1.5 }
         ]
@@ -4994,8 +5417,8 @@ function renderExpenses() {
         responsive:true,
         plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
         scales:{
-          x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
-          y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } }
+          x:{ stacked:true, ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+          y:{ stacked:true, ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } }
         }
       }
     });
@@ -5011,6 +5434,7 @@ function renderExpenses() {
         labels: anniConDati.map(String),
         datasets: [
           { type:'bar', label:'Spesa annuale', data: anniConDati.map(y=>toDisplay(totaliPerAnno[y]||0)), backgroundColor:'#C9A227' },
+          { type:'bar', label:'Proiezione', data: anniConDati.map((y,i)=> i===annoCorrenteIdx ? toDisplay(proiezioneAnnoCorrente - (totaliPerAnno[y]||0)) : null), backgroundColor:'#C9A22733', borderColor:'#C9A227', borderWidth:1.5, borderDash:[4,3] },
           { type:'line', label:'Media reale', data: anniConDati.map(()=>toDisplay(yearlyAvgEffective)), borderColor:'#3F6E5E', borderDash:[5,4], pointRadius:0, borderWidth:1.5 },
           { type:'line', label:'Media semplice', data: anniConDati.map(()=>toDisplay(yearlyAvgSimple)), borderColor:'#8B3A2F', borderDash:[2,3], pointRadius:0, borderWidth:1.5 }
         ]
@@ -5019,8 +5443,8 @@ function renderExpenses() {
         responsive:true,
         plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
         scales:{
-          x:{ ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
-          y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } }
+          x:{ stacked:true, ticks:{ color:'#6B7E99', font:{size:10} }, grid:{ color:'#1E2E47' } },
+          y:{ stacked:true, ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } }
         }
       }
     });
@@ -5312,6 +5736,36 @@ function isFundEntry(p) {
   const t = (p.type||"").toLowerCase();
   const m = (p.macro||"").toLowerCase();
   return t.includes("fond") || m.includes("fond");
+}
+
+// ===== Punto 2 (rischio): Maximum Drawdown storico =====
+// L'unico strumento per cui teniamo uno storico prezzi reale (priceHistory,
+// aggiornato quando registri un nuovo prezzo) — non è una stima, è la perdita
+// massima davvero osservata dal picco più alto al punto più basso successivo.
+function computeMaxDrawdownFondi() {
+  const fondi = data.portfolio.filter(p => isFundEntry(p) && Array.isArray(p.priceHistory) && p.priceHistory.length >= 2);
+  const risultati = fondi.map(p => {
+    const storico = p.priceHistory.slice().filter(pt => pt && pt.price > 0 && pt.date).sort((a,b) => (a.date||"").localeCompare(b.date||""));
+    if (storico.length < 2) return null;
+    let maxPrezzo = storico[0].price, dataPicco = storico[0].date;
+    let maxDrawdown = 0, dataDaPicco = storico[0].date, dataMinimo = storico[0].date;
+    storico.forEach(pt => {
+      if (pt.price > maxPrezzo) { maxPrezzo = pt.price; dataPicco = pt.date; }
+      const drawdown = maxPrezzo > 0 ? (maxPrezzo - pt.price) / maxPrezzo : 0;
+      if (drawdown > maxDrawdown) { maxDrawdown = drawdown; dataDaPicco = dataPicco; dataMinimo = pt.date; }
+    });
+    return { id: p.id, nome: p.fundName || p.type, maxDrawdownPct: maxDrawdown*100, dataDaPicco, dataMinimo, numPunti: storico.length };
+  }).filter(r => r && r.maxDrawdownPct > 0);
+  return risultati.sort((a,b) => b.maxDrawdownPct - a.maxDrawdownPct);
+}
+function drawdownFondiCard() {
+  const r = computeMaxDrawdownFondi();
+  if (!r.length) return "";
+  return `<div class="card">
+    <h3>Perdita massima storica (Fondi)</h3>
+    <div class="subtle">La perdita più grande realmente osservata dal picco più alto al punto più basso successivo — non una stima, misurata sui prezzi che hai registrato. Solo per i Fondi con abbastanza storico.</div>
+    ${r.map(f => `<div class="stat-row"><span class="label">${f.nome}</span><span class="val down">-${f.maxDrawdownPct.toFixed(1)}% <span class="subtle" style="font-size:9px;">(${f.dataDaPicco} → ${f.dataMinimo})</span></span></div>`).join('')}
+  </div>`;
 }
 
 function computeRealEstateSummary() {
@@ -6187,6 +6641,8 @@ function renderPortfolio() {
       <div class="section-total" style="font-size:11px; opacity:0.7;"><span></span><span>${fmt(totalALL)} ALL · ${fmt(totalALL/data.settings.fx)} € · ${fmt(totalALL/data.settings.fxUsd)} $</span></div>
     </div>
     ${riquadroMasterRischio()}
+    ${drawdownFondiCard()}
+    ${ratingCreditoCard()}
   `;
   try { bindMasterRischio(); } catch (e) {}
   bindCategorySelects();
@@ -6780,6 +7236,34 @@ function renderBudgetGroupCard(groupKey, title) {
   return `<div class="card"><h3>${title}</h3>${blocks}</div>`;
 }
 
+// Punto 3 della funzionalità di proiezione spese: stesso confronto reale-vs-
+// atteso già usato per le categorie con budget (Oggi/Mese/Anno), applicato alle
+// macro-categorie marcate "irregolare" — così vedi lo scostamento dal budget
+// dichiarato prima che sia la Proiezione FI a scoprirlo silenziosamente.
+function renderBudgetMacroCard() {
+  const config = data.macroSpendingConfig.expenses || {};
+  const macroIrregolari = Object.keys(config).filter(m => config[m].tipo === "irregolare" && config[m].budgetAnnuo > 0);
+  if (macroIrregolari.length === 0) return "";
+  const blocks = macroIrregolari.map(m => {
+    const annual = config[m].budgetAnnuo;
+    const monthly = annual / 12;
+    const daily = annual / 365;
+    const entries = spesePersonali(data.expenses).filter(e => (e.macro||"") === m).map(e => ({ date: e.date, amount: Number(e.amount) }));
+    const actualDay = sumForDate(entries, todayISO);
+    const actualMonth = sumForMonth(entries, thisMonth);
+    const actualYear = sumForYear(entries, thisYear);
+    return `<div style="margin-bottom:18px;">
+      <div style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#EDE6D6; margin-bottom:8px;">${m} <span class="pill">irregolare</span></div>
+      ${budgetBlock("Oggi", actualDay, daily)}
+      ${budgetBlock("Mese", actualMonth, monthly)}
+      ${budgetBlock("Anno", actualYear, annual)}
+    </div>`;
+  }).join('');
+  return `<div class="card"><h3>Macro-categorie irregolari</h3>
+    <div class="subtle" style="margin-bottom:10px;">Confronto tra il budget annuo che hai dichiarato per ciascuna e quanto hai speso davvero — usato dalla Proiezione FI finché non hai almeno 12 mesi di storico reale.</div>
+    ${blocks}</div>`;
+}
+
 function avgStatsFor(entries, dayOfMonth) {
   const total = entries.reduce((s,e)=>s+Number(e.amount),0);
   const distinctDays = new Set(entries.map(e=>e.date)).size;
@@ -6823,6 +7307,7 @@ function renderBudget() {
   document.getElementById("headerTitle").textContent = "Budget per categoria";
   document.getElementById("main").innerHTML = `
     <div class="subtle" style="margin-bottom:14px;">Imposta un budget annuo per ogni categoria in Assunzioni → Gestisci categorie. Qui vedi l'andamento giornaliero, mensile e annuale per ciascuna.</div>
+    ${renderBudgetMacroCard()}
     ${renderBudgetGroupCard("income", "Reddito")}
     ${renderBudgetGroupCard("expenses", "Spese")}
     ${renderBudgetGroupCard("portfolio", "Patrimonio / Investimenti")}
@@ -10314,6 +10799,8 @@ async function downloadFromDrive(silent) {
         expenses: (parsed.categoryBudgets&&parsed.categoryBudgets.expenses)||{},
         portfolio: (parsed.categoryBudgets&&parsed.categoryBudgets.portfolio)||{}
       },
+      macroSpendingConfig: { expenses: (parsed.macroSpendingConfig&&parsed.macroSpendingConfig.expenses)||{} },
+      ratingEntita: parsed.ratingEntita || [],
       macroCategories: {
         income: (parsed.macroCategories&&parsed.macroCategories.income)||[],
         expenses: (parsed.macroCategories&&parsed.macroCategories.expenses)||[],
@@ -10354,6 +10841,7 @@ async function downloadFromDrive(silent) {
     data.settings.lastLocalChange = null;
     data.settings.driveConflictPending = null;
     ensureLiquidityCategories();
+    ensureAlbaniaRating();
     persistLocalOnly();
     if (statusEl) statusEl.textContent = "Dati aggiornati da Google Drive.";
     updateSyncBadge();
@@ -10429,11 +10917,14 @@ function renderDrive() {
     </div>
     <div class="card">
       <h3>Esporta in CSV</h3>
-      <div class="subtle">Un file per scheda, tutte le voci senza filtri — per portarle altrove o analizzarle con uno strumento diverso da Excel.</div>
+      <div class="subtle">Un file per scheda, tutte le voci senza filtri — per portarle altrove o analizzarle con uno strumento diverso da Excel. "Liquidità" è pensato per confrontare riga per riga con l'estratto conto della banca: ogni movimento con la sua data e a cosa si riferisce.</div>
       <div class="row2" style="margin-top:8px;">
         <button class="secondary" type="button" id="csvRedditoBtn">Reddito</button>
         <button class="secondary" type="button" id="csvSpeseBtn">Spese</button>
         <button class="secondary" type="button" id="csvPatrimonioBtn">Patrimonio</button>
+      </div>
+      <div class="row2" style="margin-top:8px;">
+        <button class="secondary" type="button" id="csvLiquiditaBtn">Liquidità</button>
       </div>
     </div>
     ${(data.trash||[]).length>0 ? `<div class="card">
@@ -10461,6 +10952,8 @@ function renderDrive() {
   if (csvSpese) csvSpese.addEventListener("click", esportaSpeseCSV);
   const csvPatrimonio = document.getElementById("csvPatrimonioBtn");
   if (csvPatrimonio) csvPatrimonio.addEventListener("click", esportaPatrimonioCSV);
+  const csvLiquidita = document.getElementById("csvLiquiditaBtn");
+  if (csvLiquidita) csvLiquidita.addEventListener("click", esportaLiquiditaCSV);
 
   document.querySelectorAll("[data-restore]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -10526,6 +11019,8 @@ function renderDrive() {
             expenses: (parsed.categoryBudgets&&parsed.categoryBudgets.expenses)||{},
             portfolio: (parsed.categoryBudgets&&parsed.categoryBudgets.portfolio)||{}
           },
+          macroSpendingConfig: { expenses: (parsed.macroSpendingConfig&&parsed.macroSpendingConfig.expenses)||{} },
+          ratingEntita: parsed.ratingEntita || [],
           macroCategories: {
             income: (parsed.macroCategories&&parsed.macroCategories.income)||[],
             expenses: (parsed.macroCategories&&parsed.macroCategories.expenses)||[],
@@ -10553,6 +11048,7 @@ function renderDrive() {
       deletedGenerated: parsed.deletedGenerated||[]
         };
         ensureLiquidityCategories();
+        ensureAlbaniaRating();
         saveData(); alert("Backup importato."); renderDrive();
       } catch(err) { alert("File non valido: " + err.message); }
     };
@@ -10617,19 +11113,32 @@ function renameMacroField(group, oldName, newName) {
 }
 
 function macroManageBlock(groupKey, title) {
-  const rows = (data.macroCategories[groupKey]||[]).map(m => `<div class="cat-row" data-origname="${m}">
+  const isSpese = groupKey === "expenses";
+  const config = isSpese ? (data.macroSpendingConfig.expenses||{}) : {};
+  const rows = (data.macroCategories[groupKey]||[]).map(m => {
+    const conf = config[m] || { tipo: "ricorrente" };
+    return `<div class="cat-row" data-origname="${m}">
     <input type="text" class="cat-name-input" value="${m}">
+    ${isSpese ? `
+    <select class="macro-tipo-select" data-macro-tipo="${escAttr(m)}" style="flex:0 0 auto; width:auto;">
+      <option value="ricorrente" ${conf.tipo!=="irregolare"?'selected':''}>Ricorrente</option>
+      <option value="irregolare" ${conf.tipo==="irregolare"?'selected':''}>Irregolare</option>
+    </select>
+    <input type="number" class="macro-budget-input" data-macro-budget="${escAttr(m)}" placeholder="budget annuo ALL"
+      value="${conf.budgetAnnuo||''}" style="flex:0 0 auto; width:120px; ${conf.tipo!=='irregolare'?'display:none;':''}">` : ''}
     <button data-macrodel="${groupKey}|${m}">✕</button>
-  </div>`).join('');
+  </div>`;
+  }).join('');
   return `
     <div style="margin-bottom:18px;" id="macro-block-${groupKey}">
       <label>${title}</label>
+      ${isSpese ? `<div class="subtle" style="margin-bottom:6px;">"Irregolare" con un budget annuo (es. Vacation) smussa la proiezione invece di farla dipendere dal mese in cui registri la spesa — dettagli nella Proiezione FI e nella scheda Budget.</div>` : ''}
       <div class="cat-rows">${rows || '<div class="subtle">Nessuna macro-categoria</div>'}</div>
       <div class="cat-add-row" style="margin-top:8px;">
         <input type="text" placeholder="Nuova macro-categoria" data-macroinput="${groupKey}">
         <button class="secondary" type="button" data-macroadd="${groupKey}">Aggiungi</button>
       </div>
-      ${(data.macroCategories[groupKey]||[]).length>0 ? `<button class="primary" type="button" data-macrosave="${groupKey}" style="margin-top:8px;">Salva modifiche ai nomi</button>` : ''}
+      ${(data.macroCategories[groupKey]||[]).length>0 ? `<button class="primary" type="button" data-macrosave="${groupKey}" style="margin-top:8px;">Salva modifiche${isSpese?' (nomi e classificazione)':' ai nomi'}</button>` : ''}
     </div>`;
 }
 
@@ -10646,17 +11155,42 @@ function bindMacroManagement(group, refreshFn) {
     btn.addEventListener("click", ()=>{
       if (!confirm(`Eliminare la macro-categoria "${name}"? Le voci già registrate la manterranno come testo libero.`)) return;
       data.macroCategories[group] = data.macroCategories[group].filter(m=>m!==name);
+      if (group === "expenses" && data.macroSpendingConfig.expenses) delete data.macroSpendingConfig.expenses[name];
       saveData(); refreshFn();
     });
   });
+  if (group === "expenses") {
+    document.querySelectorAll("[data-macro-tipo]").forEach(sel=>{
+      sel.addEventListener("change", ()=>{
+        const row = sel.closest(".cat-row");
+        const budgetInput = row.querySelector(".macro-budget-input");
+        if (budgetInput) budgetInput.style.display = sel.value === "irregolare" ? "" : "none";
+      });
+    });
+  }
   const saveBtn = document.querySelector(`[data-macrosave="${group}"]`);
   if (saveBtn) saveBtn.addEventListener("click", ()=>{
     const container = document.getElementById(`macro-block-${group}`);
     let renamedAny = false;
+    if (!data.macroSpendingConfig) data.macroSpendingConfig = { expenses: {} };
+    if (!data.macroSpendingConfig.expenses) data.macroSpendingConfig.expenses = {};
     container.querySelectorAll(".cat-row[data-origname]").forEach(row=>{
       const origName = row.dataset.origname;
       const newName = row.querySelector(".cat-name-input").value.trim();
-      if (newName && newName !== origName) { renameMacroField(group, origName, newName); renamedAny = true; }
+      let nomeFinale = origName;
+      if (newName && newName !== origName) { renameMacroField(group, origName, newName); renamedAny = true; nomeFinale = newName; }
+      if (group === "expenses") {
+        const tipoSel = row.querySelector("[data-macro-tipo]");
+        const budgetInput = row.querySelector("[data-macro-budget]");
+        const tipo = tipoSel ? tipoSel.value : "ricorrente";
+        const budgetAnnuo = budgetInput ? (Number(budgetInput.value) || 0) : 0;
+        if (origName !== nomeFinale) delete data.macroSpendingConfig.expenses[origName];
+        if (tipo === "irregolare") {
+          data.macroSpendingConfig.expenses[nomeFinale] = { tipo: "irregolare", budgetAnnuo };
+        } else {
+          delete data.macroSpendingConfig.expenses[nomeFinale];
+        }
+      }
     });
     saveData();
     alert("Modifiche salvate." + (renamedAny ? " Le voci già registrate sono state aggiornate col nuovo nome." : ""));
@@ -11253,6 +11787,19 @@ function renderSettings() {
       </form>
       ${s.pinHash ? '<button class="secondary" id="removePinBtn" style="margin-top:8px;">Rimuovi PIN</button>' : ''}
     </div>
+    <div class="card">
+      <h3>Assicurazione depositi</h3>
+      <div class="subtle">Soglia coperta per singola banca (in Albania: 2.500.000 ALL o equivalente in valuta). Usata per avvisarti se la tua liquidità su un istituto la supera.</div>
+      <form class="entry" id="sogliaDepositiForm">
+        <div><label>Soglia (ALL)</label><input type="number" min="0" step="1000" name="soglia" value="${s.sogliaAssicurazioneDepositi||2500000}"></div>
+        <button class="primary" type="submit">Salva</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Rating Paesi/Emittenti</h3>
+      <div class="subtle">Nessuna fonte gratuita affidabile per recuperarli in automatico — vanno inseriti a mano. Usati per stimare il rischio di credito di Bond/Azioni/Depositi, collegati tramite lo stesso campo "Società/Ente" già compilato su ogni posizione (corrispondenza esatta; se non trova nulla, usa "Albania" di default).</div>
+      ${ratingManageBlock()}
+    </div>
     <div class="card" style="border-color:#8B3A2F;">
       <h3 style="color:#8B3A2F;">Zona pericolosa</h3>
       <div class="subtle">Cancella <b>tutto</b> — reddito, spese, patrimonio, ipotesi, scenari salvati, backup automatici locali. Non tocca eventuali backup su Google Drive già salvati in passato. Irreversibile.</div>
@@ -11345,6 +11892,56 @@ function renderSettings() {
   const removeBtn = document.getElementById("removePinBtn");
   if (removeBtn) removeBtn.addEventListener("click", ()=>{
     if (confirm("Rimuovere il blocco PIN?")) { data.settings.pinHash = null; saveData(); renderSettings(); }
+  });
+
+  const sogliaDepositiForm = document.getElementById("sogliaDepositiForm");
+  if (sogliaDepositiForm) sogliaDepositiForm.addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    s.sogliaAssicurazioneDepositi = Number(f.get("soglia")) || 2500000;
+    saveData();
+    alert("Soglia salvata.");
+    renderSettings();
+  });
+
+  const ratingAddBtn = document.getElementById("ratingAddBtn");
+  if (ratingAddBtn) ratingAddBtn.addEventListener("click", ()=>{
+    const input = document.getElementById("ratingNuovoNome");
+    const val = input.value.trim();
+    if (!val) return;
+    if (data.ratingEntita.some(r=>r.nome.toLowerCase()===val.toLowerCase())) { alert("Esiste già una voce con questo nome."); return; }
+    data.ratingEntita.push({ id: uid(), nome: val, breveMoodys:"", breveSP:"", breveFitch:"", lungoMoodys:"", lungoSP:"", lungoFitch:"" });
+    saveData();
+    renderSettings();
+  });
+  document.querySelectorAll("[data-ratingdel]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const id = btn.dataset.ratingdel;
+      const voce = data.ratingEntita.find(r=>r.id===id);
+      if (voce && voce.nome === "Albania" && !confirm('Eliminare "Albania"? Verrà ricreata vuota automaticamente al prossimo avvio, essendo il default.')) return;
+      else if (!confirm(`Eliminare "${voce?voce.nome:''}"?`)) return;
+      data.ratingEntita = data.ratingEntita.filter(r=>r.id!==id);
+      saveData();
+      renderSettings();
+    });
+  });
+  const ratingSaveBtn = document.getElementById("ratingSaveBtn");
+  if (ratingSaveBtn) ratingSaveBtn.addEventListener("click", ()=>{
+    document.querySelectorAll('#rating-block .cat-row[data-rating-id]').forEach(row=>{
+      const id = row.dataset.ratingId;
+      const voce = data.ratingEntita.find(r=>r.id===id);
+      if (!voce) return;
+      voce.nome = row.querySelector(".rating-nome").value.trim() || voce.nome;
+      voce.breveMoodys = row.querySelector(".rating-breve-moodys").value.trim();
+      voce.breveSP = row.querySelector(".rating-breve-sp").value.trim();
+      voce.breveFitch = row.querySelector(".rating-breve-fitch").value.trim();
+      voce.lungoMoodys = row.querySelector(".rating-lungo-moodys").value.trim();
+      voce.lungoSP = row.querySelector(".rating-lungo-sp").value.trim();
+      voce.lungoFitch = row.querySelector(".rating-lungo-fitch").value.trim();
+    });
+    saveData();
+    alert("Rating salvati.");
+    renderSettings();
   });
 
   const apriResetBtn = document.getElementById("apriResetBtn");
@@ -12986,7 +13583,7 @@ function cashFlowProjectionCard() {
   return `
     <div class="card"${meseInRosso ? ' style="border-color:#8B3A2F;"' : ''}>
       <h3>Proiezione flussi di cassa</h3>
-      <div class="subtle">Tutto quello che è già previsto nei prossimi ${CASH_FLOW_MESI} mesi — stipendio, affitti, cedole, voci ricorrenti, rate di mutuo — messo insieme in un unico calendario. Non sono spese ipotetiche: sono impegni e incassi già noti dai tuoi dati.</div>
+      <div class="subtle">Stipendio, affitti, cedole, voci ricorrenti, rate di mutuo — impegni e incassi già noti dai tuoi dati, non spese ipotetiche. A questi si aggiunge una stima di spesa per macro-categoria (etichettata "(stima)"), basata sul budget dichiarato o sulla tua media storica — quella sì è una proiezione statistica, non un impegno contrattuale.</div>
       ${meseInRosso ? `<div class="alert-banner">⚠ A ${meseInRosso.mese} la liquidità proiettata scende sotto zero (${fmt(meseInRosso.saldoCumulato)} ALL), se non cambia nulla nel frattempo.</div>` : ''}
       <div class="chart-wrap"><canvas id="cashFlowChart" height="200"></canvas></div>
       <div style="margin-top:10px; max-height:260px; overflow-y:auto;">
@@ -13024,7 +13621,8 @@ function runwayAndCoverageCard() {
       ${conc ? `
       <div class="stat-row" style="margin-top:8px;"><span class="label">Valuta prevalente</span><span class="val ${conc.topCurrency.pct>80?'down':''}">${conc.topCurrency.name} ${conc.topCurrency.pct.toFixed(1)}%</span></div>
       ${conc.govBonds.pct>0 ? `<div class="stat-row"><span class="label">Titoli di Stato</span><span class="val ${conc.govBonds.pct>60?'down':''}">${conc.govBonds.pct.toFixed(1)}%</span></div>` : ''}
-      <div class="stat-row"><span class="label">Posizione più grande</span><span class="val">${conc.largest.label} · ${conc.largest.pct.toFixed(1)}%</span></div>` : ''}
+      <div class="stat-row"><span class="label">Posizione più grande</span><span class="val">${conc.largest.label} · ${conc.largest.pct.toFixed(1)}%</span></div>
+      <div class="stat-row"><span class="label">Concentrazione (HHI, ${conc.numeroPosizioni} posizioni)</span><span class="val ${conc.hhiLivello==='alta'?'down':''}">${Math.round(conc.hhi)} · ${conc.hhiLivello}</span></div>` : ''}
     </div>`;
 }
 
