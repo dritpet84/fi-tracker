@@ -121,7 +121,7 @@ nav.tabs.nav-edit-mode button { min-width:0; }
 </div>
 <div id="app">
   <header class="top" style="position:relative;">
-    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.52</span></div>
+    <div class="eyebrow">Regjistri i Pavarësisë Financiare <span style="color:#5C7089;">· v2.54</span></div>
     <div style="display:flex; align-items:center; gap:6px;">
       <div class="title" id="headerTitle">Panoramica</div>
       <button id="navEditBtn" title="Modifica barra sezioni" style="background:none;border:none;color:#8FA3BF;cursor:pointer;font-size:15px;padding:2px 4px;">✎</button>
@@ -327,36 +327,150 @@ function computeTabellaProiezioneSpese(year) {
   });
   return righe;
 }
+
+// ===== Modalità modifica della tabella (solo display, non tocca FI/Budget/Cash
+// Flow/grafici — quelli continuano a usare computeTabellaProiezioneSpese "pura",
+// sopra, invariata). Stato di sessione, non persistito finché non si salva. =====
+let tabellaProiezioneModalitaModifica = false;
+let tabellaProiezioneEditSession = null; // copia di lavoro di data.tabellaProiezioneOverride
+let tabellaProiezioneBaseline = null; // istantanea di data.tabellaProiezioneOverride presa all'apertura della modalità modifica — usata da "Ripristina valori originali" e "Chiudi senza modificare", MAI un oggetto vuoto: altrimenti si perderebbero override salvati in sessioni precedenti
+let tabellaProiezioneUndoStack = [];
+let tabellaProiezioneSortCol = null;
+let tabellaProiezioneSortDir = "asc";
+
+function clonaOverride(o) { return JSON.parse(JSON.stringify(o || { categorieVirtuali: [], celle: {} })); }
+function chiaveCellaOverride(categoria, year, mese) { return `${categoria}::${year}::${mese}`; }
+
+// Applica un oggetto override (celle + categorie virtuali) alle righe "pure" di
+// computeTabellaProiezioneSpese, solo per la visualizzazione — non altera
+// l'array originale. Ogni cella con un override viene marcata (overrideFlags)
+// per essere disegnata in rosso.
+function mergeOverrideInRighe(righeBase, year, override) {
+  override = override || { categorieVirtuali: [], celle: {} };
+  const righe = righeBase.map(r => ({ ...r,
+    valoriPerMese: r.valoriPerMese.slice(), isFuturo: r.isFuturo.slice(), overrideFlags: new Array(12).fill(false) }));
+  righe.forEach(r => {
+    for (let m=0; m<12; m++) {
+      if (!r.isFuturo[m]) continue;
+      const chiave = chiaveCellaOverride(r.categoria, year, m);
+      if (Object.prototype.hasOwnProperty.call(override.celle, chiave)) {
+        r.valoriPerMese[m] = Number(override.celle[chiave]) || 0;
+        r.overrideFlags[m] = true;
+      }
+    }
+    r.totale = r.valoriPerMese.reduce((s,v)=>s+v,0);
+  });
+  (override.categorieVirtuali||[]).forEach(vc => {
+    const valoriPerMese = new Array(12).fill(0);
+    const isFuturo = new Array(12).fill(true);
+    const overrideFlags = new Array(12).fill(false);
+    for (let m=0; m<12; m++) {
+      const chiave = chiaveCellaOverride(vc.nome, year, m);
+      if (Object.prototype.hasOwnProperty.call(override.celle, chiave)) {
+        valoriPerMese[m] = Number(override.celle[chiave]) || 0;
+        overrideFlags[m] = true;
+      }
+    }
+    righe.push({ categoria: vc.nome, macro: vc.macro||"(virtuale)", classificazione: "virtuale",
+      valoriPerMese, isFuturo, overrideFlags, totale: valoriPerMese.reduce((s,v)=>s+v,0), virtuale: true });
+  });
+  return righe;
+}
+function ytdRiga(r) { return r.valoriPerMese.reduce((s,v,i)=> s + (r.isFuturo[i] ? 0 : v), 0); }
+function ordinaRighe(righe, col, dir) {
+  if (!col) return righe;
+  const arr = righe.slice();
+  const valore = r => {
+    if (col === "categoria") return r.categoria.toLowerCase();
+    if (col === "macro") return (r.macro||"").toLowerCase();
+    if (col === "classificazione") return r.classificazione;
+    if (col === "ytd") return ytdRiga(r);
+    if (col === "totale") return r.totale;
+    if (col.startsWith("mese")) return r.valoriPerMese[Number(col.slice(4))];
+    return 0;
+  };
+  arr.sort((a,b) => {
+    const va = valore(a), vb = valore(b);
+    if (typeof va === "string") return dir==="asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+    return dir==="asc" ? va-vb : vb-va;
+  });
+  return arr;
+}
 function renderTabellaProiezioneSpese(year) {
-  const righe = computeTabellaProiezioneSpese(year);
-  if (righe.length === 0) return "";
+  const base = computeTabellaProiezioneSpese(year);
+  if (base.length === 0 && !tabellaProiezioneModalitaModifica) return "";
+  const overrideAttivo = tabellaProiezioneModalitaModifica ? tabellaProiezioneEditSession : data.tabellaProiezioneOverride;
+  let righe = mergeOverrideInRighe(base, year, overrideAttivo);
+  righe = ordinaRighe(righe, tabellaProiezioneSortCol, tabellaProiezioneSortDir);
+  const haOverride = righe.some(r => r.overrideFlags.some(f=>f) || r.virtuale);
+
   const totaliColonna = new Array(12).fill(0);
   righe.forEach(r => r.valoriPerMese.forEach((v,i) => totaliColonna[i]+=v));
+  const totaleYTD = righe.reduce((s,r)=>s+ytdRiga(r), 0);
   const totaleGenerale = righe.reduce((s,r)=>s+r.totale, 0);
+
+  const colonneOrdinabili = [
+    ["categoria","Categoria"], ["macro","Macro"], ["classificazione","Classif."],
+    ...MONTH_LABELS.map((m,i)=>[`mese${i}`,m]), ["ytd","YTD"], ["totale","Totale"]
+  ];
+  const freccia = col => tabellaProiezioneSortCol===col ? (tabellaProiezioneSortDir==="asc"?" ▲":" ▼") : "";
+  const th = (col, label, sticky) => {
+    const stile = `text-align:${col==="categoria"?"left":(col==="macro"||col==="classificazione")?"left":"right"}; padding:4px 8px; ${sticky?'position:sticky; left:0; background:#0F1B2E;':''} ${tabellaProiezioneModalitaModifica?'':'cursor:pointer;'}`;
+    return `<th style="${stile}" ${tabellaProiezioneModalitaModifica?'':`data-sort-col="${col}"`}>${label}${freccia(col)}</th>`;
+  };
+
   return `<div class="card">
-    <h3>Dettaglio proiezione spese · ${year}</h3>
-    <div class="subtle">Una riga per categoria — reale nei mesi già trascorsi, <span style="opacity:0.65;">proiettato</span> in quelli futuri. Il totale coincide con quello usato dalla Proiezione FI.</div>
+    <h3>Dettaglio proiezione spese · ${year}
+      <button type="button" id="tabellaProiezioneEditToggle" class="secondary" style="width:auto; padding:3px 8px; font-size:11px; margin-left:8px;">${tabellaProiezioneModalitaModifica?'Chiudi':'✎ Modifica'}</button>
+    </h3>
+    <div class="subtle">Una riga per categoria — reale nei mesi già trascorsi, <span style="opacity:0.65;">proiettato</span> in quelli futuri.${haOverride?' <span style="color:#8B3A2F;">In rosso: valori modificati manualmente in questa tabella — la Proiezione FI, la scheda Budget e il Cash Flow continuano a usare il calcolo automatico, non queste modifiche.</span>':' Il totale coincide con quello usato dalla Proiezione FI.'}${tabellaProiezioneModalitaModifica?' Clicca su una cella dei mesi futuri per modificarla.':' Clicca il titolo di una colonna per ordinare.'}</div>
+    ${tabellaProiezioneModalitaModifica ? `
+    <div style="margin-top:10px; padding:10px; border:1px solid #2E4159; border-radius:6px;">
+      <div class="row2" style="flex-wrap:wrap; gap:6px;">
+        <button type="button" class="secondary" data-tab-action="ripristina-originali" style="width:auto; font-size:11px;">Ripristina valori originali</button>
+        <button type="button" class="secondary" data-tab-action="ripristina-ultima" style="width:auto; font-size:11px;">Ripristina ultima modifica</button>
+        <button type="button" class="secondary" data-tab-action="salva-solo-tabella" style="width:auto; font-size:11px;">Salva solo nella tabella</button>
+        <button type="button" class="secondary" data-tab-action="chiudi-senza-modificare" style="width:auto; font-size:11px;">Chiudi senza modificare</button>
+      </div>
+      <div style="margin-top:10px; border-top:1px dashed #2E4159; padding-top:8px;">
+        <div class="subtle" style="margin-bottom:4px;">Aggiungi una categoria (visibile solo in questa tabella, non compare altrove nell'app)</div>
+        <form id="tabellaAggiungiCategoriaVirtualeForm" class="row2" style="flex-wrap:wrap; gap:6px;">
+          <input type="text" name="nome" placeholder="Nome categoria" style="flex:1 1 160px;" required>
+          <input type="text" name="macro" placeholder="Etichetta libera (opzionale)" style="flex:1 1 160px;">
+          <button type="submit" class="secondary" style="width:auto; font-size:11px;">+ Aggiungi</button>
+        </form>
+      </div>
+    </div>` : ''}
     <div style="overflow-x:auto; margin-top:10px;">
       <table style="border-collapse:collapse; font-size:11px; white-space:nowrap;">
         <thead><tr>
-          <th style="text-align:left; padding:4px 8px; position:sticky; left:0; background:#0F1B2E;">Categoria</th>
-          <th style="text-align:left; padding:4px 8px;">Macro</th>
-          <th style="text-align:left; padding:4px 8px;">Classif.</th>
-          ${MONTH_LABELS.map(m=>`<th style="text-align:right; padding:4px 8px;">${m}</th>`).join('')}
-          <th style="text-align:right; padding:4px 8px; font-weight:600;">Totale</th>
+          ${th("categoria","Categoria",true)}
+          ${th("macro","Macro")}
+          ${th("classificazione","Classif.")}
+          ${MONTH_LABELS.map((m,i)=>th(`mese${i}`,m)).join('')}
+          ${th("ytd","YTD")}
+          ${th("totale","Totale")}
         </tr></thead>
         <tbody>
           ${righe.map(r => `<tr style="border-top:1px solid #1E2E47;">
-            <td style="padding:4px 8px; position:sticky; left:0; background:#0B1526;">${r.categoria}</td>
+            <td style="padding:4px 8px; position:sticky; left:0; background:#0B1526;">${r.categoria}${r.virtuale?' <span class="pill" style="font-size:8px;">virtuale</span>':''}</td>
             <td style="padding:4px 8px; color:#8FA3BF;">${r.macro||'—'}</td>
             <td style="padding:4px 8px;"><span class="pill" style="font-size:9px;">${r.classificazione}</span></td>
-            ${r.valoriPerMese.map((v,i)=>`<td style="text-align:right; padding:4px 8px; ${r.isFuturo[i]?'opacity:0.65; font-style:italic;':''}">${v>0?fmt(v):'—'}</td>`).join('')}
+            ${r.valoriPerMese.map((v,i)=> {
+              const rosso = r.overrideFlags[i] ? 'color:#C0392B; font-weight:600;' : '';
+              if (tabellaProiezioneModalitaModifica && r.isFuturo[i]) {
+                return `<td style="padding:2px 4px;"><input type="number" step="0.01" value="${v||''}" placeholder="0" data-cell-cat="${escAttr(r.categoria)}" data-cell-mese="${i}" data-cell-virtuale="${r.virtuale?1:0}" style="width:70px; text-align:right; font-size:11px; padding:2px 4px; ${rosso}"></td>`;
+              }
+              return `<td style="text-align:right; padding:4px 8px; ${r.isFuturo[i]?'opacity:0.75; font-style:italic;':''} ${rosso}">${v>0?fmt(v):'—'}</td>`;
+            }).join('')}
+            <td style="text-align:right; padding:4px 8px;">${fmt(ytdRiga(r))}</td>
             <td style="text-align:right; padding:4px 8px; font-weight:600;">${fmt(r.totale)}</td>
           </tr>`).join('')}
         </tbody>
         <tfoot><tr style="border-top:2px solid #C9A227;">
           <td style="padding:4px 8px; font-weight:600;" colspan="3">Totale</td>
           ${totaliColonna.map(v=>`<td style="text-align:right; padding:4px 8px; font-weight:600;">${fmt(v)}</td>`).join('')}
+          <td style="text-align:right; padding:4px 8px; font-weight:600;">${fmt(totaleYTD)}</td>
           <td style="text-align:right; padding:4px 8px; font-weight:600; color:#C9A227;">${fmt(totaleGenerale)}</td>
         </tr></tfoot>
       </table>
@@ -365,12 +479,14 @@ function renderTabellaProiezioneSpese(year) {
   </div>`;
 }
 function esportaTabellaProiezioneCSV(year) {
-  const righe = computeTabellaProiezioneSpese(year);
-  const headers = ["Categoria","Macro-categoria","Classificazione", ...MONTH_LABELS, "Totale"];
-  const rows = righe.map(r => [r.categoria, r.macro||"", r.classificazione, ...r.valoriPerMese.map(v=>Math.round(v)), Math.round(r.totale)]);
+  const base = computeTabellaProiezioneSpese(year);
+  const righe = mergeOverrideInRighe(base, year, data.tabellaProiezioneOverride);
+  const headers = ["Categoria","Macro-categoria","Classificazione", ...MONTH_LABELS, "YTD", "Totale"];
+  const rows = righe.map(r => [r.categoria, r.macro||"", r.classificazione, ...r.valoriPerMese.map(v=>Math.round(v)), Math.round(ytdRiga(r)), Math.round(r.totale)]);
   const totaliColonna = new Array(12).fill(0);
   righe.forEach(r => r.valoriPerMese.forEach((v,i) => totaliColonna[i]+=v));
-  rows.push(["Totale","","", ...totaliColonna.map(v=>Math.round(v)), Math.round(righe.reduce((s,r)=>s+r.totale,0))]);
+  const totaleYTD = righe.reduce((s,r)=>s+ytdRiga(r), 0);
+  rows.push(["Totale","","", ...totaliColonna.map(v=>Math.round(v)), Math.round(totaleYTD), Math.round(righe.reduce((s,r)=>s+r.totale,0))]);
   return esportaCSV(`fi-tracker-proiezione-spese-${year}-${todayISO}.csv`, arrayToCSV(headers, rows));
 }
 // Somma: spesa reale dell'anno fino a oggi (tutte le macro insieme, come sempre)
@@ -423,6 +539,8 @@ const DEFAULT_DATA = {
       ]
     }, targetAllocation: {}, fireExpenseBaseMode: "budget", fireRatesText: "4,3,2", displayCurrency: "ALL", tabOrder: null, hiddenTabs: [], speseMostraAutoGestite: false, savingsRateProjectionMode: "reale", montecarloDevStd: 10, montecarloAnniPrelievo: 30, montecarloStrategiaPrelievo: "fissa", scenariComparativi: [], sogliaAssicurazioneDepositi: 2500000 },
   ratingEntita: [],
+  progetti: [],
+  tabellaProiezioneOverride: { categorieVirtuali: [], celle: {} },
   income: [],
   expenses: [],
   portfolio: [],
@@ -469,6 +587,8 @@ function normalizeLoadedData(parsed) {
     },
     macroSpendingConfig: { expenses: (parsed.macroSpendingConfig && parsed.macroSpendingConfig.expenses) || {} },
     ratingEntita: parsed.ratingEntita || [],
+    progetti: parsed.progetti || [],
+    tabellaProiezioneOverride: parsed.tabellaProiezioneOverride || { categorieVirtuali: [], celle: {} },
     macroCategories: {
       income: (parsed.macroCategories && parsed.macroCategories.income) || [],
       expenses: (parsed.macroCategories && parsed.macroCategories.expenses) || [],
@@ -2376,6 +2496,265 @@ function ensureAlbaniaRating() {
     data.ratingEntita.unshift({ id: uid(), nome: "Albania",
       breveMoodys: "", breveSP: "", breveFitch: "", lungoMoodys: "", lungoSP: "", lungoFitch: "" });
   }
+}
+
+// ===== Progetti — tag trasversale, non una macro-categoria. Una spesa continua
+// a vivere nella sua categoria/macro reale, e in più può essere marcata come
+// appartenente a un progetto (data.expenses[i].progettoId). Un progetto raccoglie
+// così spese sparse su categorie diverse (es. "bar con l'architetto" resta
+// Bar/Spese gg, ma conta anche nel progetto "Casa"). Una spesa appartiene al
+// massimo a un solo progetto. Il finanziamento è puramente informativo — non
+// genera nessun movimento di liquidità reale.
+function creaProgetto(dati) {
+  if (!data.settings.prossimoNumeroProgetto) data.settings.prossimoNumeroProgetto = 1;
+  const codiceAutomatico = "PRJ-" + String(data.settings.prossimoNumeroProgetto).padStart(4, "0");
+  const codice = (dati.codice||"").trim() || codiceAutomatico;
+  data.settings.prossimoNumeroProgetto++;
+  const condiviso = dati.tipoCondivisione === "condiviso";
+  const p = { id: uid(), codice, nome: (dati.nome||"").trim(), budget: Number(dati.budget)||0,
+    budgetValuta: dati.budgetValuta || "ALL",
+    dataInizio: dati.dataInizio || todayISO, durataMesi: Number(dati.durataMesi)||0,
+    finanziamenti: (dati.finanziamenti||[]).filter(f=>f.fonte||f.importo),
+    tipoCondivisione: condiviso ? "condiviso" : "semplice",
+    partecipanti: condiviso ? (dati.partecipanti||[]).filter(pt=>pt.nome).map(pt=>({nome:pt.nome, quota:Number(pt.quota)||0})) : [],
+    dataChiusura: null, stato: "aperto" };
+  data.progetti.push(p);
+  return p;
+}
+function chiudiProgetto(id) {
+  const p = data.progetti.find(x=>x.id===id);
+  if (!p) return;
+  p.stato = "chiuso";
+  p.dataChiusura = todayISO;
+}
+function riapriProgetto(id) {
+  const p = data.progetti.find(x=>x.id===id);
+  if (!p) return;
+  p.stato = "aperto";
+  p.dataChiusura = null;
+}
+function costiProgetto(id) {
+  return data.expenses.filter(e => e.progettoId === id);
+}
+// Versione B della ripartizione "condiviso": nessun collegamento alle singole
+// spese — è un calcolo puro sopra il totale già speso, diviso secondo le quote
+// % dichiarate per ciascun partecipante (non deve necessariamente sommare a
+// 100, mostriamo comunque il calcolo così com'è dichiarato).
+function computeRiepilogoProgetto(id) {
+  const p = data.progetti.find(x=>x.id===id);
+  if (!p) return null;
+  const costi = costiProgetto(id).slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+  const totaleSpeso = costi.reduce((s,e)=>s+Number(e.amount),0);
+  const budgetALL = toALL(p.budget, p.budgetValuta||"ALL");
+  const totaleFinanziamento = (p.finanziamenti||[]).reduce((s,f)=>s+toALL(Number(f.importo)||0, f.valuta||"ALL"),0);
+  let cum = 0;
+  const serie = costi.map(e => { cum += Number(e.amount); return { data: e.date, cumulato: cum }; });
+  const ripartizione = p.tipoCondivisione === "condiviso"
+    ? (p.partecipanti||[]).map(pt => ({ nome: pt.nome, quota: pt.quota, importo: totaleSpeso * pt.quota / 100 }))
+    : [];
+  return { progetto: p, costi, totaleSpeso, budgetALL, totaleFinanziamento,
+    pctBudget: budgetALL>0 ? totaleSpeso/budgetALL*100 : 0, serie, ripartizione };
+}
+function progettoCreaBlock() {
+  const prossimoNumero = data.settings.prossimoNumeroProgetto || 1;
+  const codiceProposto = "PRJ-" + String(prossimoNumero).padStart(4, "0");
+  return `<div class="card">
+    <h3>Crea Progetto</h3>
+    <div class="subtle">Un progetto raccoglie spese sparse su categorie diverse (es. un caffè con l'architetto resta "Bar", ma conta anche qui) — non è una nuova macro-categoria, non compare da nessun'altra parte.</div>
+    <form class="entry" id="progettoCreaForm">
+      <div class="row2">
+        <div><label>Nome progetto</label><input type="text" name="nome" required></div>
+        <div><label>Codice (proposto automaticamente, modificabile)</label><input type="text" name="codice" value="${codiceProposto}"></div>
+      </div>
+      <div class="row2">
+        <div><label>Budget progetto</label><input type="number" min="0" step="0.01" name="budget" placeholder="0"></div>
+        <div><label>Valuta</label><select name="budgetValuta"><option value="ALL">ALL</option><option value="EUR">EUR</option><option value="USD">USD</option></select></div>
+      </div>
+      <div><label>Data inizio</label><input type="date" name="dataInizio" value="${todayISO}"></div>
+      <div><label>Tempo di realizzazione (mesi)</label><input type="number" min="1" step="1" name="durataMesi" placeholder="es. 6"></div>
+      <div class="subtle" style="margin-top:8px;">Finanziamento (solo informativo — non genera nessun movimento di liquidità)</div>
+      <div id="progettoFinanziamentiRows">
+        ${[0,1].map(i => `<div class="row2" data-finrow="${i}" style="align-items:center;">
+          <input type="text" name="finFonte_${i}" placeholder="Fonte (es. Cash)">
+          <input type="number" step="0.01" name="finImporto_${i}" placeholder="Importo">
+          <select name="finValuta_${i}"><option value="ALL">ALL</option><option value="EUR">EUR</option><option value="USD">USD</option></select>
+          <button type="button" class="secondary" data-rimuovi-finrow style="width:auto; padding:4px 8px;">✕</button>
+        </div>`).join('')}
+      </div>
+      <button class="secondary" type="button" id="progettoAggiungiFinBtn" style="margin-top:6px; font-size:11px;">+ Aggiungi fonte di finanziamento</button>
+      <div class="subtle" style="margin-top:10px;">Condivisione</div>
+      <select name="tipoCondivisione" id="progettoTipoCondivisione">
+        <option value="semplice">Semplice</option>
+        <option value="condiviso">Condiviso</option>
+      </select>
+      <div id="progettoPartecipantiRows" style="display:none; margin-top:8px;">
+        <div class="subtle" style="margin-bottom:4px;">Partecipanti — quota % di quanto si spende, calcolata sul totale (non sulle singole spese)</div>
+        ${[0,1].map(i => `<div class="row2" data-partrow="${i}" style="align-items:center;">
+          <input type="text" name="partNome_${i}" placeholder="Nome partecipante">
+          <input type="number" min="0" max="100" step="0.1" name="partQuota_${i}" placeholder="Quota %">
+          <button type="button" class="secondary" data-rimuovi-partrow style="width:auto; padding:4px 8px;">✕</button>
+        </div>`).join('')}
+        <button class="secondary" type="button" id="progettoAggiungiPartBtn" style="margin-top:6px; font-size:11px;">+ Aggiungi partecipante</button>
+      </div>
+      <button class="primary" type="submit" style="margin-top:10px;">Salva progetto</button>
+    </form>
+  </div>`;
+}
+function progettoCard(id) {
+  const r = computeRiepilogoProgetto(id);
+  if (!r) return "";
+  const p = r.progetto;
+  const statoLabel = p.stato === "chiuso" ? `Chiuso il ${p.dataChiusura}` : "Aperto";
+  return `<div class="card">
+    <h3>${p.nome} <span class="pill" style="font-size:9px;">${p.codice}</span> <span class="pill">${statoLabel}</span> <span class="pill" style="font-size:9px;">${p.tipoCondivisione === "condiviso" ? "Condiviso" : "Semplice"}</span></h3>
+    <div class="stat-row"><span class="label">Budget</span><span class="val">${fmt(p.budget)} ${p.budgetValuta} <span class="subtle">(${fmtDisplay(r.budgetALL)})</span></span></div>
+    <div class="stat-row"><span class="label">Speso finora</span><span class="val ${r.pctBudget>100?'down':''}">${fmtDisplay(r.totaleSpeso)} <span class="subtle">(${r.pctBudget.toFixed(1)}% del budget)</span></span></div>
+    <div class="stat-row"><span class="label">Data inizio</span><span class="val">${p.dataInizio}</span></div>
+    <div class="stat-row"><span class="label">Durata prevista</span><span class="val">${p.durataMesi} mesi</span></div>
+    ${p.finanziamenti.length ? `<div class="subtle" style="margin-top:8px;">Finanziamento dichiarato (${fmtDisplay(r.totaleFinanziamento)} — informativo):</div>
+      ${p.finanziamenti.map((f,i)=>`<div class="stat-row"><span class="label">${f.fonte}</span><span class="val">${fmt(f.importo)} ${f.valuta} <button type="button" class="secondary" data-rimuovi-fin-salvato="${p.id}|${i}" style="width:auto; padding:2px 6px; font-size:10px; margin-left:6px;">✕</button></span></div>`).join('')}` : ''}
+    ${p.tipoCondivisione === "condiviso" && r.ripartizione.length ? `<div class="subtle" style="margin-top:8px;">Ripartizione tra partecipanti (quota % sul totale speso):</div>
+      ${r.ripartizione.map((part,i)=>`<div class="stat-row"><span class="label">${part.nome} (${part.quota}%)</span><span class="val">${fmtDisplay(part.importo)} <button type="button" class="secondary" data-rimuovi-part-salvato="${p.id}|${i}" style="width:auto; padding:2px 6px; font-size:10px; margin-left:6px;">✕</button></span></div>`).join('')}` : ''}
+    ${r.costi.length ? `<div class="chart-wrap" style="margin-top:12px;"><canvas id="progettoChart-${p.id}" height="180"></canvas></div>` : ''}
+    <div class="subtle" style="margin-top:10px;">Costi taggati (${r.costi.length})</div>
+    ${r.costi.length ? r.costi.map(e=>`<div class="stat-row"><span class="label">${e.category} · ${e.date}</span><span class="val">${fmt(e.amount)} ALL</span></div>`).join('') : '<div class="empty">Nessun costo ancora taggato a questo progetto.</div>'}
+    <div class="row2" style="margin-top:10px;">
+      ${p.stato==='aperto' ? `<button class="secondary" type="button" data-chiudi-progetto="${p.id}">Chiudi progetto</button>` : `<button class="secondary" type="button" data-riapri-progetto="${p.id}">Riapri progetto</button>`}
+    </div>
+  </div>`;
+}
+function renderProgetti() {
+  document.getElementById("headerTitle").textContent = "Progetti";
+  document.getElementById("main").innerHTML = `
+    ${progettoCreaBlock()}
+    ${data.progetti.map(p => progettoCard(p.id)).join('')}
+  `;
+
+  const progettoAggiungiFinBtn = document.getElementById("progettoAggiungiFinBtn");
+  if (progettoAggiungiFinBtn) progettoAggiungiFinBtn.addEventListener("click", ()=>{
+    const container = document.getElementById("progettoFinanziamentiRows");
+    const idx = container.children.length;
+    const div = document.createElement("div");
+    div.className = "row2";
+    div.dataset.finrow = idx;
+    div.style.alignItems = "center";
+    div.innerHTML = `<input type="text" name="finFonte_${idx}" placeholder="Fonte">
+      <input type="number" step="0.01" name="finImporto_${idx}" placeholder="Importo">
+      <select name="finValuta_${idx}"><option value="ALL">ALL</option><option value="EUR">EUR</option><option value="USD">USD</option></select>
+      <button type="button" class="secondary" data-rimuovi-finrow style="width:auto; padding:4px 8px;">✕</button>`;
+    container.appendChild(div);
+    bindRimuoviFinrow();
+  });
+  function bindRimuoviFinrow() {
+    document.querySelectorAll("#progettoFinanziamentiRows [data-rimuovi-finrow]").forEach(btn=>{
+      btn.onclick = () => btn.closest("[data-finrow]").remove();
+    });
+  }
+  bindRimuoviFinrow();
+
+  const progettoAggiungiPartBtn = document.getElementById("progettoAggiungiPartBtn");
+  if (progettoAggiungiPartBtn) progettoAggiungiPartBtn.addEventListener("click", ()=>{
+    const container = document.getElementById("progettoPartecipantiRows");
+    const idx = container.querySelectorAll("[data-partrow]").length;
+    const div = document.createElement("div");
+    div.className = "row2";
+    div.dataset.partrow = idx;
+    div.style.alignItems = "center";
+    div.innerHTML = `<input type="text" name="partNome_${idx}" placeholder="Nome partecipante">
+      <input type="number" min="0" max="100" step="0.1" name="partQuota_${idx}" placeholder="Quota %">
+      <button type="button" class="secondary" data-rimuovi-partrow style="width:auto; padding:4px 8px;">✕</button>`;
+    container.insertBefore(div, progettoAggiungiPartBtn);
+    bindRimuoviPartrow();
+  });
+  function bindRimuoviPartrow() {
+    document.querySelectorAll("#progettoPartecipantiRows [data-rimuovi-partrow]").forEach(btn=>{
+      btn.onclick = () => btn.closest("[data-partrow]").remove();
+    });
+  }
+  bindRimuoviPartrow();
+
+  const tipoCondivisioneSelect = document.getElementById("progettoTipoCondivisione");
+  if (tipoCondivisioneSelect) tipoCondivisioneSelect.addEventListener("change", ()=>{
+    document.getElementById("progettoPartecipantiRows").style.display = tipoCondivisioneSelect.value === "condiviso" ? "" : "none";
+  });
+
+  const progettoCreaForm = document.getElementById("progettoCreaForm");
+  if (progettoCreaForm) progettoCreaForm.addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const finanziamenti = [];
+    document.querySelectorAll("#progettoFinanziamentiRows [data-finrow]").forEach(row=>{
+      const idx = row.dataset.finrow;
+      const fonte = f.get(`finFonte_${idx}`);
+      const importo = f.get(`finImporto_${idx}`);
+      if (fonte || importo) finanziamenti.push({ fonte: fonte||"", importo: Number(importo)||0, valuta: f.get(`finValuta_${idx}`)||"ALL" });
+    });
+    const partecipanti = [];
+    if (f.get("tipoCondivisione") === "condiviso") {
+      document.querySelectorAll("#progettoPartecipantiRows [data-partrow]").forEach(row=>{
+        const idx = row.dataset.partrow;
+        const nome = f.get(`partNome_${idx}`);
+        if (nome) partecipanti.push({ nome, quota: f.get(`partQuota_${idx}`) });
+      });
+    }
+    creaProgetto({ nome: f.get("nome"), codice: f.get("codice"), budget: f.get("budget"), budgetValuta: f.get("budgetValuta"),
+      dataInizio: f.get("dataInizio"), durataMesi: f.get("durataMesi"), finanziamenti,
+      tipoCondivisione: f.get("tipoCondivisione"), partecipanti });
+    saveData();
+    renderProgetti();
+  });
+  document.querySelectorAll("[data-rimuovi-fin-salvato]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [progettoId, idx] = btn.dataset.rimuoviFinSalvato.split("|");
+      const p = data.progetti.find(x=>x.id===progettoId);
+      if (!p) return;
+      if (!confirm(`Rimuovere la fonte di finanziamento "${p.finanziamenti[idx].fonte}"?`)) return;
+      p.finanziamenti.splice(Number(idx), 1);
+      saveData();
+      renderProgetti();
+    });
+  });
+  document.querySelectorAll("[data-rimuovi-part-salvato]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [progettoId, idx] = btn.dataset.rimuoviPartSalvato.split("|");
+      const p = data.progetti.find(x=>x.id===progettoId);
+      if (!p) return;
+      if (!confirm(`Rimuovere il partecipante "${p.partecipanti[idx].nome}"?`)) return;
+      p.partecipanti.splice(Number(idx), 1);
+      saveData();
+      renderProgetti();
+    });
+  });
+  document.querySelectorAll("[data-chiudi-progetto]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      if (!confirm("Chiudere questo progetto? Potrai riaprirlo in qualsiasi momento.")) return;
+      chiudiProgetto(btn.dataset.chiudiProgetto);
+      saveData();
+      renderProgetti();
+    });
+  });
+  document.querySelectorAll("[data-riapri-progetto]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      riapriProgetto(btn.dataset.riapriProgetto);
+      saveData();
+      renderProgetti();
+    });
+  });
+  data.progetti.forEach(p => {
+    const canvas = document.getElementById(`progettoChart-${p.id}`);
+    if (!canvas) return;
+    const r = computeRiepilogoProgetto(p.id);
+    new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: r.serie.map(s=>s.data),
+        datasets: [{ label: 'Speso cumulato', data: r.serie.map(s=>toDisplay(s.cumulato)), borderColor:'#C9A227', backgroundColor:'#C9A22733', fill:true, tension:0.1 }]
+      },
+      options: { responsive:true, plugins:{ legend:{ labels:{ color:'#8FA3BF', font:{size:10} } } },
+        scales:{ x:{ ticks:{ color:'#6B7E99', font:{size:9} }, grid:{ color:'#1E2E47' } },
+                 y:{ ticks:{ color:'#6B7E99', font:{size:10}, callback:v=>(v/1000).toFixed(0)+'k '+displaySymbol() }, grid:{ color:'#1E2E47' } } } }
+    });
+  });
 }
 function ratingManageBlock() {
   const righe = (data.ratingEntita||[]).map(r => `
@@ -4920,6 +5299,7 @@ function renderExpenseEditForm(e) {
     <div><label>${LABEL_ENTE}</label><input type="text" name="issuerName" value="${escAttr(e.issuerName||'')}" placeholder="chi emette/gestisce"></div>
     <div><label>${LABEL_CODICE}</label><input type="text" name="securityCode" maxlength="8" value="${escAttr(e.securityCode||'')}" placeholder="vuoto se non collegato a un titolo"></div>
     <div><label>Pagato con</label>${paymentTypeSelect(e.paymentType)}</div>
+    ${data.progetti.length>0 ? `<div><label>Progetto (opzionale)</label><select name="progettoId"><option value="">Nessuno</option>${data.progetti.map(p=>`<option value="${p.id}" ${e.progettoId===p.id?'selected':''}>${p.nome}${p.stato==='chiuso'?' (chiuso)':''}</option>`).join('')}</select></div>` : ''}
     <div><label>Nota</label><input type="text" name="note" value="${e.note||''}"></div>
     <div class="row2">
       <button class="primary" type="submit">Salva</button>
@@ -5106,6 +5486,7 @@ function renderExpenses() {
         <button class="secondary" type="button" id="toggleMacroManage-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroManagerOpen.expenses ? "Chiudi gestione macro-categorie" : "✎ Gestisci macro-categorie"}</button>
         <button class="secondary" type="button" id="toggleMacroAssign-expenses" style="width:auto; padding:6px 12px; font-size:11px;">${macroAssignOpen.expenses ? "Chiudi assegnazione categoria→macro" : "🔗 Assegna macro-categoria alle categorie"}</button>
         <div><label>Pagato con</label>${paymentTypeSelect("Banca")}</div>
+        ${data.progetti.length>0 ? `<div><label>Progetto (opzionale)</label><select name="progettoId"><option value="">Nessuno</option>${data.progetti.map(p=>`<option value="${p.id}">${p.nome}${p.stato==='chiuso'?' (chiuso)':''}</option>`).join('')}</select></div>` : ''}
         <div><label>Nota (opzionale)</label><input type="text" name="note" placeholder=""></div>
         <button class="primary" type="submit">Aggiungi</button>
       </form>
@@ -5293,7 +5674,8 @@ function renderExpenses() {
       if (amount > available) { alert(`Disponibilità insufficiente su "${paymentType}": ${fmt(available)} ALL disponibili, importo richiesto ${fmt(amount)} ALL.`); return; }
     }
     const expId = uid();
-    data.expenses.push({id:expId, date, amount, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||""});
+    const progettoId = f.get("progettoId") || null;
+    data.expenses.push({id:expId, date, amount, category:cat, macro:macro||null, paymentType:paymentType||null, note:f.get("note")||"", progettoId});
     if (paymentType) createLiquidityAdjustment(paymentType, -amount, date, `Spesa: ${cat}`, expId);
     saveData(); renderExpenses();
   });
@@ -5339,6 +5721,7 @@ function renderExpenses() {
       entry.note = f.get("note") || "";
       entry.issuerName = f.get("issuerName") || "";
       entry.securityCode = f.get("securityCode") || null;
+      entry.progettoId = f.get("progettoId") || null;
       resyncLiquidityAdjustment(id, entry.paymentType, -entry.amount, entry.date, `Spesa: ${entry.category}`);
       editingExpenseId = null;
       saveData(); renderExpenses();
@@ -5400,6 +5783,83 @@ function renderExpenses() {
   const esportaTabellaBtn = document.getElementById("esportaTabellaProiezioneBtn");
   if (esportaTabellaBtn) esportaTabellaBtn.addEventListener("click", ()=>esportaTabellaProiezioneCSV(thisYear));
 
+  // ===== Tabella "Dettaglio proiezione spese" — modalità modifica =====
+  const tabEditToggle = document.getElementById("tabellaProiezioneEditToggle");
+  if (tabEditToggle) tabEditToggle.addEventListener("click", ()=>{
+    if (tabellaProiezioneModalitaModifica) {
+      // "Chiudi": esce lasciando le cose come sono, non tocca data.
+      tabellaProiezioneModalitaModifica = false;
+      tabellaProiezioneEditSession = null;
+      tabellaProiezioneBaseline = null;
+    } else {
+      tabellaProiezioneModalitaModifica = true;
+      tabellaProiezioneBaseline = clonaOverride(data.tabellaProiezioneOverride);
+      tabellaProiezioneEditSession = clonaOverride(data.tabellaProiezioneOverride);
+      tabellaProiezioneUndoStack = [];
+    }
+    renderExpenses();
+  });
+  document.querySelectorAll("[data-sort-col]").forEach(th=>{
+    th.addEventListener("click", ()=>{
+      const col = th.dataset.sortCol;
+      if (tabellaProiezioneSortCol === col) tabellaProiezioneSortDir = tabellaProiezioneSortDir==="asc"?"desc":"asc";
+      else { tabellaProiezioneSortCol = col; tabellaProiezioneSortDir = "asc"; }
+      renderExpenses();
+    });
+  });
+  document.querySelectorAll("[data-cell-cat]").forEach(input=>{
+    input.addEventListener("change", ()=>{
+      tabellaProiezioneUndoStack.push(clonaOverride(tabellaProiezioneEditSession));
+      const chiave = chiaveCellaOverride(input.dataset.cellCat, thisYear, Number(input.dataset.cellMese));
+      const val = input.value.trim();
+      if (val === "") delete tabellaProiezioneEditSession.celle[chiave];
+      else tabellaProiezioneEditSession.celle[chiave] = Number(val);
+      renderExpenses();
+    });
+  });
+  const tabAddVirtualeForm = document.getElementById("tabellaAggiungiCategoriaVirtualeForm");
+  if (tabAddVirtualeForm) tabAddVirtualeForm.addEventListener("submit", ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const nome = (f.get("nome")||"").trim();
+    if (!nome) return;
+    const esisteReale = computeTabellaProiezioneSpese(thisYear).some(r=>r.categoria.toLowerCase()===nome.toLowerCase());
+    if (esisteReale) { alert(`Esiste già una categoria reale chiamata "${nome}" — scegli un altro nome per evitare ambiguità.`); return; }
+    if (tabellaProiezioneEditSession.categorieVirtuali.some(c=>c.nome.toLowerCase()===nome.toLowerCase())) { alert("Hai già aggiunto una categoria virtuale con questo nome."); return; }
+    tabellaProiezioneUndoStack.push(clonaOverride(tabellaProiezioneEditSession));
+    tabellaProiezioneEditSession.categorieVirtuali.push({ nome, macro: (f.get("macro")||"").trim() || "(virtuale)" });
+    renderExpenses();
+  });
+  document.querySelectorAll("[data-tab-action]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const azione = btn.dataset.tabAction;
+      if (azione === "ripristina-originali") {
+        tabellaProiezioneUndoStack.push(clonaOverride(tabellaProiezioneEditSession));
+        // Torna a quello che c'era PRIMA di aprire questa sessione di modifica —
+        // non a "vuoto": altrimenti si perderebbero override salvati in passato
+        // che l'utente non ha toccato oggi.
+        tabellaProiezioneEditSession = clonaOverride(tabellaProiezioneBaseline);
+      } else if (azione === "ripristina-ultima") {
+        if (!tabellaProiezioneUndoStack.length) { alert("Nessuna modifica da annullare in questa sessione."); return; }
+        tabellaProiezioneEditSession = tabellaProiezioneUndoStack.pop();
+      } else if (azione === "salva-solo-tabella") {
+        data.tabellaProiezioneOverride = clonaOverride(tabellaProiezioneEditSession);
+        saveData();
+        alert("Salvato — le modifiche restano visibili solo in questa tabella.");
+      } else if (azione === "chiudi-senza-modificare") {
+        // Stesso principio: ripristina al baseline di sessione (non a vuoto) E
+        // chiude, in un solo click — l'equivalente di "Ripristina" + "Chiudi"
+        // fatti insieme, mai un azzeramento distruttivo di dati salvati prima.
+        data.tabellaProiezioneOverride = clonaOverride(tabellaProiezioneBaseline);
+        saveData();
+        tabellaProiezioneModalitaModifica = false;
+        tabellaProiezioneEditSession = null;
+        tabellaProiezioneBaseline = null;
+      }
+      renderExpenses();
+    });
+  });
+
   if (monthsWithData>0) {
     const ctx3 = document.getElementById("monthlyTotalsChart");
     if (monthlyTotalsChartInstance) monthlyTotalsChartInstance.destroy();
@@ -5449,6 +5909,7 @@ function renderExpenses() {
       }
     });
   }
+
 }
 
 let portfolioTypeFilter = "all";
@@ -10801,6 +11262,8 @@ async function downloadFromDrive(silent) {
       },
       macroSpendingConfig: { expenses: (parsed.macroSpendingConfig&&parsed.macroSpendingConfig.expenses)||{} },
       ratingEntita: parsed.ratingEntita || [],
+      progetti: parsed.progetti || [],
+      tabellaProiezioneOverride: parsed.tabellaProiezioneOverride || { categorieVirtuali: [], celle: {} },
       macroCategories: {
         income: (parsed.macroCategories&&parsed.macroCategories.income)||[],
         expenses: (parsed.macroCategories&&parsed.macroCategories.expenses)||[],
@@ -11021,6 +11484,8 @@ function renderDrive() {
           },
           macroSpendingConfig: { expenses: (parsed.macroSpendingConfig&&parsed.macroSpendingConfig.expenses)||{} },
           ratingEntita: parsed.ratingEntita || [],
+          progetti: parsed.progetti || [],
+          tabellaProiezioneOverride: parsed.tabellaProiezioneOverride || { categorieVirtuali: [], celle: {} },
           macroCategories: {
             income: (parsed.macroCategories&&parsed.macroCategories.income)||[],
             expenses: (parsed.macroCategories&&parsed.macroCategories.expenses)||[],
@@ -12345,7 +12810,7 @@ function renderSettings() {
   });
 }
 
-const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, portfolio: renderPortfolio, liquidity: renderLiquidityTab, deposits: renderDepositsTab, fundsTab: renderFundsTab, bondsTab: renderBondsTab, assets: renderAssets, etf: renderETFTab, realEstateTab: renderRealEstateTab, commoditiesTab: renderCommoditiesTab, cryptoTab: renderCryptoTab, debts: renderDebts, budget: renderBudget, drive: renderDrive, settings: renderSettings };
+const RENDERERS = { dashboard: renderDashboard, income: renderIncome, expenses: renderExpenses, progetti: renderProgetti, portfolio: renderPortfolio, liquidity: renderLiquidityTab, deposits: renderDepositsTab, fundsTab: renderFundsTab, bondsTab: renderBondsTab, assets: renderAssets, etf: renderETFTab, realEstateTab: renderRealEstateTab, commoditiesTab: renderCommoditiesTab, cryptoTab: renderCryptoTab, debts: renderDebts, budget: renderBudget, drive: renderDrive, settings: renderSettings };
 // Ogni renderer, dopo aver disegnato, riapplica l'ordine dei riquadri salvato.
 // La versione avvolta sostituisce anche il NOME GLOBALE della funzione: senza
 // questo, le chiamate interne (per esempio renderFundsTab() dopo un aggiornamento
@@ -12371,6 +12836,7 @@ const TAB_DEFS = [
   { id:"dashboard", icon:"◆", label:"Panoramica" },
   { id:"income", icon:"＋", label:"Reddito" },
   { id:"expenses", icon:"－", label:"Spese" },
+  { id:"progetti", icon:"🏗", label:"Progetti" },
   { id:"portfolio", icon:"▤", label:"Patrimonio" },
   { id:"liquidity", icon:"💧", label:"Liquidità" },
   { id:"deposits", icon:"🏦", label:"Depositi" },
